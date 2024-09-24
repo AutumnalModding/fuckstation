@@ -297,8 +297,6 @@ void GPU_HW::Reset(bool clear_vram)
     m_sw_renderer->Reset();
 
   m_batch = {};
-  m_batch_ubo_data = {};
-  m_batch_ubo_dirty = true;
   m_current_depth = 1;
   SetClampedDrawingArea();
 
@@ -861,6 +859,11 @@ bool GPU_HW::CreateBuffers()
   }
 
   INFO_LOG("Created HW framebuffer of {}x{}", texture_width, texture_height);
+
+  m_batch_ubo_data.u_resolution_scale = static_cast<float>(m_resolution_scale);
+  m_batch_ubo_data.u_rcp_resolution_scale = 1.0f / m_batch_ubo_data.u_resolution_scale;
+  m_batch_ubo_data.u_resolution_scale_minus_one = m_batch_ubo_data.u_resolution_scale - 1.0f;
+  m_batch_ubo_dirty = true;
 
   SetVRAMRenderTarget();
   SetFullVRAMDirtyRectangle();
@@ -2710,7 +2713,7 @@ void GPU_HW::LoadVertices()
         const GSVector2i vstart_pos = GSVector2i(start_pos.x + m_drawing_offset.x, start_pos.y + m_drawing_offset.y);
         const GSVector2i vend_pos = GSVector2i(end_pos.x + m_drawing_offset.x, end_pos.y + m_drawing_offset.y);
         const GSVector4i bounds = GSVector4i::xyxy(vstart_pos, vend_pos);
-        const GSVector4i rect = GSVector4i::xyxy(vstart_pos.min_i32(vend_pos), vstart_pos.max_i32(vend_pos))
+        const GSVector4i rect = GSVector4i::xyxy(vstart_pos.min_s32(vend_pos), vstart_pos.max_s32(vend_pos))
                                   .add32(GSVector4i::cxpr(0, 0, 1, 1));
         const GSVector4i clamped_rect = rect.rintersect(m_clamped_drawing_area);
 
@@ -2770,7 +2773,7 @@ void GPU_HW::LoadVertices()
           const GSVector2i end_pos = GSVector2i(m_drawing_offset.x + vp.x, m_drawing_offset.y + vp.y);
           const GSVector4i bounds = GSVector4i::xyxy(start_pos, end_pos);
           const GSVector4i rect =
-            GSVector4i::xyxy(start_pos.min_i32(end_pos), start_pos.max_i32(end_pos)).add32(GSVector4i::cxpr(0, 0, 1, 1));
+            GSVector4i::xyxy(start_pos.min_s32(end_pos), start_pos.max_s32(end_pos)).add32(GSVector4i::cxpr(0, 0, 1, 1));
           const GSVector4i clamped_rect = rect.rintersect(m_clamped_drawing_area);
           if (rect.width() > MAX_PRIMITIVE_WIDTH || rect.height() > MAX_PRIMITIVE_HEIGHT || clamped_rect.rempty())
           {
@@ -2858,7 +2861,7 @@ ALWAYS_INLINE_RELEASE void GPU_HW::CheckForTexPageOverlap(GSVector4i uv_rect)
     uv_rect = ((uv_rect & twin.xyxy()) | twin.zwzw());
 
     // Min could be greater than max after applying window, correct for it.
-    uv_rect = uv_rect.min_i32(uv_rect.zwzw()).max_i32(uv_rect.xyxy());
+    uv_rect = uv_rect.min_s32(uv_rect.zwzw()).max_s32(uv_rect.xyxy());
   }
 
   const GPUTextureMode tmode = m_draw_mode.mode_reg.texture_mode;
