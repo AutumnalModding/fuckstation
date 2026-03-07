@@ -13,6 +13,8 @@
 #include "common/small_string.h"
 #include "common/types.h"
 
+#include "fmt/base.h"
+
 #include <cstring>
 #include <deque>
 #include <memory>
@@ -24,25 +26,12 @@
 #include <vector>
 
 class Error;
+class Image;
 
-enum class RenderAPI : u8
-{
-  None,
-  D3D11,
-  D3D12,
-  Vulkan,
-  OpenGL,
-  OpenGLES,
-  Metal
-};
-
-enum class GPUVSyncMode : u8
-{
-  Disabled,
-  FIFO,
-  Mailbox,
-  Count
-};
+// Enables debug event generation and object names for graphics debuggers.
+#if defined(_DEBUG) || defined(_DEVEL)
+#define ENABLE_GPU_OBJECT_NAMES
+#endif
 
 class GPUSampler
 {
@@ -96,45 +85,37 @@ public:
   GPUSampler();
   virtual ~GPUSampler();
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   virtual void SetDebugName(std::string_view name) = 0;
+  template<typename... T>
+  void SetDebugName(fmt::format_string<T...> fmt, T&&... args)
+  {
+    SetDebugName(TinyString::from_vformat(fmt, fmt::make_format_args(args...)));
+  }
+#endif
 
   static Config GetNearestConfig();
   static Config GetLinearConfig();
 };
 
-enum class GPUShaderStage : u8
-{
-  Vertex,
-  Fragment,
-  Geometry,
-  Compute,
-
-  MaxCount
-};
-
-enum class GPUShaderLanguage : u8
-{
-  None,
-  HLSL,
-  GLSL,
-  GLSLES,
-  GLSLVK,
-  MSL,
-  SPV,
-  Count
-};
-
 class GPUShader
 {
 public:
-  GPUShader(GPUShaderStage stage);
+  explicit GPUShader(GPUShaderStage stage);
   virtual ~GPUShader();
 
   static const char* GetStageName(GPUShaderStage stage);
 
   ALWAYS_INLINE GPUShaderStage GetStage() const { return m_stage; }
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   virtual void SetDebugName(std::string_view name) = 0;
+  template<typename... T>
+  void SetDebugName(fmt::format_string<T...> fmt, T&&... args)
+  {
+    SetDebugName(TinyString::from_vformat(fmt, fmt::make_format_args(args...)));
+  }
+#endif
 
 protected:
   GPUShaderStage m_stage;
@@ -160,6 +141,15 @@ public:
     // Multiple textures, 128 byte UBO via push constants.
     MultiTextureAndPushConstants,
 
+    // Multiple textures, 1 streamed UBO, 128 byte push constants.
+    MultiTextureAndUBOAndPushConstants,
+
+    // Multiple textures, 1 streamed UBO, compute shader.
+    ComputeMultiTextureAndUBO,
+
+    // 128 byte UBO via push constants, multiple textures, compute shader.
+    ComputeMultiTextureAndPushConstants,
+
     MaxCount
   };
 
@@ -167,8 +157,9 @@ public:
   {
     NoRenderPassFlags = 0,
     ColorFeedbackLoop = (1 << 0),
-    SampleDepthBuffer = (1 << 1),
-    BindRenderTargetsAsImages = (1 << 2),
+    ColorFeedbackLoopActive = (1 << 1),
+    SampleDepthBuffer = (1 << 2),
+    BindRenderTargetsAsImages = (1 << 3),
   };
 
   enum class Primitive : u8
@@ -220,8 +211,8 @@ public:
 
     // clang-format off
     ALWAYS_INLINE VertexAttribute() = default;
-    ALWAYS_INLINE constexpr VertexAttribute(const VertexAttribute& rhs) : key(rhs.key) {}
-    ALWAYS_INLINE VertexAttribute& operator=(const VertexAttribute& rhs) { key = rhs.key; return *this; }
+    ALWAYS_INLINE constexpr VertexAttribute(const VertexAttribute& rhs) = default;
+    ALWAYS_INLINE VertexAttribute& operator=(const VertexAttribute& rhs) = default;
     ALWAYS_INLINE bool operator==(const VertexAttribute& rhs) const { return key == rhs.key; }
     ALWAYS_INLINE bool operator!=(const VertexAttribute& rhs) const { return key != rhs.key; }
     ALWAYS_INLINE bool operator<(const VertexAttribute& rhs) const { return key < rhs.key; }
@@ -308,34 +299,31 @@ public:
     MaxCount
   };
 
-  // TODO: purge this?
   union RasterizationState
   {
-    BitField<u8, CullMode, 0, 2> cull_mode;
-    u8 key;
+    u16 key;
+
+    BitField<u16, CullMode, 0, 2> cull_mode;
+    BitField<u16, u8, 2, 6> multisamples;
+    BitField<u16, bool, 8, 1> per_sample_shading;
 
     // clang-format off
-    ALWAYS_INLINE RasterizationState() = default;
-    ALWAYS_INLINE RasterizationState(const RasterizationState& rhs) : key(rhs.key) {}
-    ALWAYS_INLINE RasterizationState& operator=(const RasterizationState& rhs) { key = rhs.key; return *this; }
     ALWAYS_INLINE bool operator==(const RasterizationState& rhs) const { return key == rhs.key; }
     ALWAYS_INLINE bool operator!=(const RasterizationState& rhs) const { return key != rhs.key; }
     ALWAYS_INLINE bool operator<(const RasterizationState& rhs) const { return key < rhs.key; }
     // clang-format on
 
-    static RasterizationState GetNoCullState();
+    static RasterizationState GetNoCullState(u8 multisamples = 1, bool per_sample_shading = false);
   };
 
   union DepthState
   {
-    BitField<u8, DepthFunc, 0, 3> depth_test;
-    BitField<u8, bool, 4, 1> depth_write;
     u8 key;
 
+    BitField<u8, DepthFunc, 0, 3> depth_test;
+    BitField<u8, bool, 4, 1> depth_write;
+
     // clang-format off
-    ALWAYS_INLINE DepthState() = default;
-    ALWAYS_INLINE DepthState(const DepthState& rhs) : key(rhs.key) {}
-    ALWAYS_INLINE DepthState& operator=(const DepthState& rhs) { key = rhs.key; return *this; }
     ALWAYS_INLINE bool operator==(const DepthState& rhs) const { return key == rhs.key; }
     ALWAYS_INLINE bool operator!=(const DepthState& rhs) const { return key != rhs.key; }
     ALWAYS_INLINE bool operator<(const DepthState& rhs) const { return key < rhs.key; }
@@ -347,6 +335,8 @@ public:
 
   union BlendState
   {
+    u64 key;
+
     BitField<u64, bool, 0, 1> enable;
     BitField<u64, BlendFunc, 1, 4> src_blend;
     BitField<u64, BlendFunc, 5, 4> src_alpha_blend;
@@ -364,12 +354,7 @@ public:
     BitField<u64, u16, 1, 16> blend_factors;
     BitField<u64, u8, 17, 6> blend_ops;
 
-    u64 key;
-
     // clang-format off
-    ALWAYS_INLINE BlendState() = default;
-    ALWAYS_INLINE BlendState(const BlendState& rhs) : key(rhs.key) {}
-    ALWAYS_INLINE BlendState& operator=(const BlendState& rhs) { key = rhs.key; return *this; }
     ALWAYS_INLINE bool operator==(const BlendState& rhs) const { return key == rhs.key; }
     ALWAYS_INLINE bool operator!=(const BlendState& rhs) const { return key != rhs.key; }
     ALWAYS_INLINE bool operator<(const BlendState& rhs) const { return key < rhs.key; }
@@ -392,34 +377,43 @@ public:
 
   struct GraphicsConfig
   {
-    Layout layout;
-
-    Primitive primitive;
     InputLayout input_layout;
-
-    RasterizationState rasterization;
-    DepthState depth;
-    BlendState blend;
-
     GPUShader* vertex_shader;
     GPUShader* geometry_shader;
     GPUShader* fragment_shader;
 
-    GPUTexture::Format color_formats[4];
-    GPUTexture::Format depth_format;
-    u8 samples;
-    bool per_sample_shading;
+    BlendState blend;
+    RasterizationState rasterization;
+    DepthState depth;
+
+    Layout layout;
+    Primitive primitive;
+
+    GPUTextureFormat color_formats[4];
+    GPUTextureFormat depth_format;
     RenderPassFlag render_pass_flags;
 
-    void SetTargetFormats(GPUTexture::Format color_format,
-                          GPUTexture::Format depth_format_ = GPUTexture::Format::Unknown);
+    void SetTargetFormats(GPUTextureFormat color_format, GPUTextureFormat depth_format_ = GPUTextureFormat::Unknown);
     u32 GetRenderTargetCount() const;
+  };
+
+  struct ComputeConfig
+  {
+    Layout layout;
+    GPUShader* compute_shader;
   };
 
   GPUPipeline();
   virtual ~GPUPipeline();
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   virtual void SetDebugName(std::string_view name) = 0;
+  template<typename... T>
+  void SetDebugName(fmt::format_string<T...> fmt, T&&... args)
+  {
+    SetDebugName(TinyString::from_vformat(fmt, fmt::make_format_args(args...)));
+  }
+#endif
 };
 
 class GPUTextureBuffer
@@ -445,7 +439,14 @@ public:
   virtual void* Map(u32 required_elements) = 0;
   virtual void Unmap(u32 used_elements) = 0;
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   virtual void SetDebugName(std::string_view name) = 0;
+  template<typename... T>
+  void SetDebugName(fmt::format_string<T...> fmt, T&&... args)
+  {
+    SetDebugName(TinyString::from_vformat(fmt, fmt::make_format_args(args...)));
+  }
+#endif
 
 protected:
   Format m_format;
@@ -453,25 +454,72 @@ protected:
   u32 m_current_position = 0;
 };
 
+class GPUSwapChain
+{
+public:
+  GPUSwapChain(const WindowInfo& wi, GPUVSyncMode vsync_mode);
+  virtual ~GPUSwapChain();
+
+  ALWAYS_INLINE const WindowInfo& GetWindowInfo() const { return m_window_info; }
+  ALWAYS_INLINE u32 GetWidth() const { return m_window_info.surface_width; }
+  ALWAYS_INLINE u32 GetHeight() const { return m_window_info.surface_height; }
+  ALWAYS_INLINE u32 GetPostRotatedWidth() const { return m_window_info.GetPostRotatedWidth(); }
+  ALWAYS_INLINE u32 GetPostRotatedHeight() const { return m_window_info.GetPostRotatedHeight(); }
+  ALWAYS_INLINE float GetScale() const { return m_window_info.surface_scale; }
+  ALWAYS_INLINE float GetRefreshRate() const { return m_window_info.surface_refresh_rate; }
+  ALWAYS_INLINE void SetScale(float scale) { m_window_info.surface_scale = scale; }
+  ALWAYS_INLINE void SetRefreshRate(float refresh_rate) { m_window_info.surface_refresh_rate = refresh_rate; }
+  ALWAYS_INLINE WindowInfoPrerotation GetPreRotation() const { return m_window_info.surface_prerotation; }
+  ALWAYS_INLINE GPUTextureFormat GetFormat() const { return m_window_info.surface_format; }
+  ALWAYS_INLINE GSVector2i GetSizeVec() const { return GSVector2i::load32(&m_window_info.surface_width).u16to32(); }
+  ALWAYS_INLINE GSVector2i GetPostRotatedSizeVec() const
+  {
+    return GSVector2i(m_window_info.GetPostRotatedWidth(), m_window_info.GetPostRotatedHeight());
+  }
+
+  ALWAYS_INLINE GPUVSyncMode GetVSyncMode() const { return m_vsync_mode; }
+  ALWAYS_INLINE bool IsVSyncModeBlocking() const { return (m_vsync_mode == GPUVSyncMode::FIFO); }
+
+  virtual bool ResizeBuffers(u32 new_width, u32 new_height, Error* error) = 0;
+  virtual bool SetVSyncMode(GPUVSyncMode mode, Error* error) = 0;
+
+  /// Returns true if exclusive fullscreen is currently active on this swap chain.
+  virtual bool IsExclusiveFullscreen() const;
+
+  static GSVector4i PreRotateClipRect(WindowInfoPrerotation prerotation, const GSVector2i surface_size,
+                                      const GSVector4i& v);
+
+protected:
+  // TODO: Merge WindowInfo into this struct...
+  WindowInfo m_window_info;
+
+  GPUVSyncMode m_vsync_mode = GPUVSyncMode::Disabled;
+};
+
 class GPUDevice
 {
 public:
   friend GPUTexture;
 
-  // TODO: drop virtuals
-  // TODO: gpu crash handling on present
   using DrawIndex = u16;
 
-  enum FeatureMask : u32
+  enum class CreateFlags : u32
   {
-    FEATURE_MASK_DUAL_SOURCE_BLEND = (1 << 0),
-    FEATURE_MASK_FEEDBACK_LOOPS = (1 << 1),
-    FEATURE_MASK_FRAMEBUFFER_FETCH = (1 << 2),
-    FEATURE_MASK_TEXTURE_BUFFERS = (1 << 3),
-    FEATURE_MASK_GEOMETRY_SHADERS = (1 << 4),
-    FEATURE_MASK_TEXTURE_COPY_TO_SELF = (1 << 5),
-    FEATURE_MASK_MEMORY_IMPORT = (1 << 6),
-    FEATURE_MASK_RASTER_ORDER_VIEWS = (1 << 7),
+    None = 0,
+    PreferGLESContext = (1 << 0),
+    EnableDebugDevice = (1 << 1),
+    EnableGPUValidation = (1 << 2),
+    DisableShaderCache = (1 << 3),
+    DisableDualSourceBlend = (1 << 4),
+    DisableFeedbackLoops = (1 << 5),
+    DisableFramebufferFetch = (1 << 6),
+    DisableTextureBuffers = (1 << 7),
+    DisableGeometryShaders = (1 << 8),
+    DisableComputeShaders = (1 << 9),
+    DisableTextureCopyToSelf = (1 << 10),
+    DisableMemoryImport = (1 << 11),
+    DisableRasterOrderViews = (1 << 12),
+    DisableCompressedTextures = (1 << 13),
   };
 
   enum class DrawBarrier : u32
@@ -481,13 +529,6 @@ public:
     Full
   };
 
-  enum class PresentResult : u32
-  {
-    OK,
-    SkipPresent,
-    DeviceLost,
-  };
-
   struct Features
   {
     bool dual_source_blend : 1;
@@ -495,12 +536,14 @@ public:
     bool per_sample_shading : 1;
     bool noperspective_interpolation : 1;
     bool texture_copy_to_self : 1;
-    bool supports_texture_buffers : 1;
+    bool texture_buffers : 1;
     bool texture_buffers_emulated_with_ssbo : 1;
     bool feedback_loops : 1;
     bool geometry_shaders : 1;
+    bool compute_shaders : 1;
     bool partial_msaa_resolve : 1;
     bool memory_import : 1;
+    bool exclusive_fullscreen : 1;
     bool explicit_present : 1;
     bool timed_present : 1;
     bool gpu_timing : 1;
@@ -508,6 +551,8 @@ public:
     bool pipeline_cache : 1;
     bool prefer_unused_textures : 1;
     bool raster_order_views : 1;
+    bool dxt_textures : 1;
+    bool bptc_textures : 1;
   };
 
   struct Statistics
@@ -521,12 +566,29 @@ public:
     u32 num_uploads;
   };
 
+  // Parameters for exclusive fullscreen.
+  struct ExclusiveFullscreenMode
+  {
+    u32 width;
+    u32 height;
+    float refresh_rate;
+
+    TinyString ToString() const;
+
+    bool operator==(const ExclusiveFullscreenMode& rhs) const;
+    bool operator!=(const ExclusiveFullscreenMode& rhs) const;
+    bool operator<(const ExclusiveFullscreenMode& rhs) const;
+
+    static std::optional<ExclusiveFullscreenMode> Parse(std::string_view str);
+  };
+
   struct AdapterInfo
   {
     std::string name;
-    std::vector<std::string> fullscreen_modes;
+    std::vector<ExclusiveFullscreenMode> fullscreen_modes;
     u32 max_texture_size;
     u32 max_multisamples;
+    GPUDriverType driver_type;
     bool supports_sample_shading;
   };
   using AdapterInfoList = std::vector<AdapterInfo>;
@@ -535,6 +597,7 @@ public:
   {
     void operator()(GPUTexture* const tex);
   };
+  using AutoRecycleTexture = std::unique_ptr<GPUTexture, PooledTextureDeleter>;
 
   static constexpr u32 MAX_TEXTURE_SAMPLERS = 8;
   static constexpr u32 MIN_TEXEL_BUFFER_ELEMENTS = 4 * 1024 * 512;
@@ -542,19 +605,23 @@ public:
   static constexpr u32 MAX_IMAGE_RENDER_TARGETS = 2;
   static constexpr u32 DEFAULT_CLEAR_COLOR = 0xFF000000u;
   static constexpr u32 PIPELINE_CACHE_HASH_SIZE = 20;
-  static_assert(sizeof(GPUPipeline::GraphicsConfig::color_formats) == sizeof(GPUTexture::Format) * MAX_RENDER_TARGETS);
+  static constexpr u32 BASE_UNIFORM_BUFFER_ALIGNMENT = 16;
+  static_assert(sizeof(GPUPipeline::GraphicsConfig::color_formats) == sizeof(GPUTextureFormat) * MAX_RENDER_TARGETS);
 
   GPUDevice();
   virtual ~GPUDevice();
 
   /// Returns the default/preferred API for the system.
-  static RenderAPI GetPreferredAPI();
+  static RenderAPI GetPreferredAPI(WindowInfoType window_type);
 
   /// Returns a string representing the specified API.
   static const char* RenderAPIToString(RenderAPI api);
 
   /// Returns a string representing the specified language.
   static const char* ShaderLanguageToString(GPUShaderLanguage language);
+
+  /// Returns a string representing the specified vsync mode.
+  static const char* VSyncModeToString(GPUVSyncMode mode);
 
   /// Returns a new device for the specified API.
   static std::unique_ptr<GPUDevice> CreateDeviceForAPI(RenderAPI api);
@@ -563,22 +630,19 @@ public:
   static bool IsSameRenderAPI(RenderAPI lhs, RenderAPI rhs);
 
   /// Returns a list of adapters for the given API.
-  static AdapterInfoList GetAdapterListForAPI(RenderAPI api);
-
-  /// Parses a fullscreen mode into its components (width * height @ refresh hz)
-  static bool GetRequestedExclusiveFullscreenMode(u32* width, u32* height, float* refresh_rate);
-
-  /// Converts a fullscreen mode to a string.
-  static std::string GetFullscreenModeString(u32 width, u32 height, float refresh_rate);
-
-  /// Returns the directory bad shaders are saved to.
-  static std::string GetShaderDumpPath(std::string_view name);
+  static std::optional<AdapterInfoList> GetAdapterListForAPI(RenderAPI api, WindowInfoType window_type, Error* error);
 
   /// Dumps out a shader that failed compilation.
   static void DumpBadShader(std::string_view code, std::string_view errors);
 
   /// Converts a RGBA8 value to 4 floating-point values.
   static std::array<float, 4> RGBA8ToFloat(u32 rgba);
+
+  /// Returns true if the given device creation flag is present.
+  static constexpr bool HasCreateFlag(CreateFlags flags, CreateFlags flag)
+  {
+    return ((static_cast<u32>(flags) & static_cast<u32>(flag)) != 0);
+  }
 
   /// Returns the number of texture bindings for a given pipeline layout.
   static constexpr u32 GetActiveTexturesForLayout(GPUPipeline::Layout layout)
@@ -589,10 +653,30 @@ public:
       0,                    // SingleTextureBufferAndPushConstants
       MAX_TEXTURE_SAMPLERS, // MultiTextureAndUBO
       MAX_TEXTURE_SAMPLERS, // MultiTextureAndPushConstants
+      MAX_TEXTURE_SAMPLERS, // MultiTextureAndUBOAndPushConstants
+      MAX_TEXTURE_SAMPLERS, // ComputeMultiTextureAndUBO
+      MAX_TEXTURE_SAMPLERS, // ComputeMultiTextureAndPushConstants
     };
 
     return counts[static_cast<u8>(layout)];
   }
+
+  /// Returns true if the given pipeline layout is used for compute shaders.
+  static constexpr bool IsComputeLayout(GPUPipeline::Layout layout)
+  {
+    return (layout >= GPUPipeline::Layout::ComputeMultiTextureAndUBO);
+  }
+
+  /// Returns the number of thread groups to dispatch for a given total count and local size.
+  static constexpr std::tuple<u32, u32, u32> GetDispatchCount(u32 count_x, u32 count_y, u32 count_z, u32 local_size_x,
+                                                              u32 local_size_y, u32 local_size_z)
+  {
+    return std::make_tuple((count_x + (local_size_x - 1)) / local_size_x, (count_y + (local_size_y - 1)) / local_size_y,
+                           (count_z + (local_size_z - 1)) / local_size_z);
+  }
+
+  /// Determines the driver type for a given adapter.
+  static GPUDriverType GuessDriverType(u32 pci_vendor_id, std::string_view vendor_name, std::string_view adapter_name);
 
   ALWAYS_INLINE const Features& GetFeatures() const { return m_features; }
   ALWAYS_INLINE RenderAPI GetRenderAPI() const { return m_render_api; }
@@ -600,59 +684,68 @@ public:
   ALWAYS_INLINE u32 GetMaxTextureSize() const { return m_max_texture_size; }
   ALWAYS_INLINE u32 GetMaxMultisamples() const { return m_max_multisamples; }
 
-  ALWAYS_INLINE const WindowInfo& GetWindowInfo() const { return m_window_info; }
-  ALWAYS_INLINE s32 GetWindowWidth() const { return static_cast<s32>(m_window_info.surface_width); }
-  ALWAYS_INLINE s32 GetWindowHeight() const { return static_cast<s32>(m_window_info.surface_height); }
-  ALWAYS_INLINE float GetWindowScale() const { return m_window_info.surface_scale; }
-  ALWAYS_INLINE GPUTexture::Format GetWindowFormat() const { return m_window_info.surface_format; }
+  ALWAYS_INLINE GPUSwapChain* GetMainSwapChain() const { return m_main_swap_chain.get(); }
+  ALWAYS_INLINE bool HasMainSwapChain() const { return static_cast<bool>(m_main_swap_chain); }
 
-  ALWAYS_INLINE GPUSampler* GetLinearSampler() const { return m_linear_sampler.get(); }
-  ALWAYS_INLINE GPUSampler* GetNearestSampler() const { return m_nearest_sampler.get(); }
+  ALWAYS_INLINE GPUTexture* GetEmptyTexture() const { return m_empty_texture.get(); }
+  ALWAYS_INLINE GPUSampler* GetLinearSampler() const { return m_linear_sampler; }
+  ALWAYS_INLINE GPUSampler* GetNearestSampler() const { return m_nearest_sampler; }
 
   ALWAYS_INLINE bool IsGPUTimingEnabled() const { return m_gpu_timing_enabled; }
 
-  bool Create(std::string_view adapter, std::string_view shader_cache_path, u32 shader_cache_version, bool debug_device,
-              GPUVSyncMode vsync, bool allow_present_throttle, std::optional<bool> exclusive_fullscreen_control,
-              FeatureMask disabled_features, Error* error);
+  bool Create(std::string_view adapter, CreateFlags create_flags, std::string_view shader_dump_path,
+              std::string_view shader_cache_path, u32 shader_cache_version, const WindowInfo& wi, GPUVSyncMode vsync,
+              const ExclusiveFullscreenMode* exclusive_fullscreen_mode,
+              std::optional<bool> exclusive_fullscreen_control, Error* error);
   void Destroy();
 
-  virtual bool HasSurface() const = 0;
-  virtual void DestroySurface() = 0;
-  virtual bool UpdateWindow() = 0;
+  virtual std::unique_ptr<GPUSwapChain> CreateSwapChain(const WindowInfo& wi, GPUVSyncMode vsync_mode,
+                                                        const ExclusiveFullscreenMode* exclusive_fullscreen_mode,
+                                                        std::optional<bool> exclusive_fullscreen_control,
+                                                        Error* error) = 0;
+  virtual bool SwitchToSurfacelessRendering(Error* error);
 
-  virtual bool SupportsExclusiveFullscreen() const;
-
-  /// Call when the window size changes externally to recreate any resources.
-  virtual void ResizeWindow(s32 new_window_width, s32 new_window_height, float new_window_scale) = 0;
+  bool RecreateMainSwapChain(const WindowInfo& wi, GPUVSyncMode vsync_mode,
+                             const ExclusiveFullscreenMode* exclusive_fullscreen_mode,
+                             std::optional<bool> exclusive_fullscreen_control, Error* error);
+  void DestroyMainSwapChain();
 
   virtual std::string GetDriverInfo() const = 0;
 
+  // Flushes current command buffer, but does not wait for completion.
+  virtual void FlushCommands() = 0;
+
   // Executes current command buffer, waits for its completion, and destroys all pending resources.
-  virtual void ExecuteAndWaitForGPUIdle() = 0;
+  virtual void WaitForGPUIdle() = 0;
 
   virtual std::unique_ptr<GPUTexture> CreateTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
-                                                    GPUTexture::Type type, GPUTexture::Format format,
-                                                    const void* data = nullptr, u32 data_stride = 0) = 0;
-  virtual std::unique_ptr<GPUSampler> CreateSampler(const GPUSampler::Config& config) = 0;
-  virtual std::unique_ptr<GPUTextureBuffer> CreateTextureBuffer(GPUTextureBuffer::Format format,
-                                                                u32 size_in_elements) = 0;
+                                                    GPUTexture::Type type, GPUTextureFormat format,
+                                                    GPUTexture::Flags flags, const void* data = nullptr,
+                                                    u32 data_stride = 0, Error* error = nullptr) = 0;
+  virtual std::unique_ptr<GPUSampler> CreateSampler(const GPUSampler::Config& config, Error* error = nullptr) = 0;
+  virtual std::unique_ptr<GPUTextureBuffer> CreateTextureBuffer(GPUTextureBuffer::Format format, u32 size_in_elements,
+                                                                Error* error = nullptr) = 0;
+
+  GPUSampler* GetSampler(const GPUSampler::Config& config, Error* error = nullptr);
 
   // Texture pooling.
   std::unique_ptr<GPUTexture> FetchTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
-                                           GPUTexture::Type type, GPUTexture::Format format, const void* data = nullptr,
-                                           u32 data_stride = 0);
-  std::unique_ptr<GPUTexture, PooledTextureDeleter>
-  FetchAutoRecycleTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples, GPUTexture::Type type,
-                          GPUTexture::Format format, const void* data = nullptr, u32 data_stride = 0,
-                          bool dynamic = false);
+                                           GPUTexture::Type type, GPUTextureFormat format, GPUTexture::Flags flags,
+                                           const void* data = nullptr, u32 data_stride = 0, Error* error = nullptr);
+  AutoRecycleTexture FetchAutoRecycleTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
+                                             GPUTexture::Type type, GPUTextureFormat format, GPUTexture::Flags flags,
+                                             const void* data = nullptr, u32 data_stride = 0, Error* error = nullptr);
+  std::unique_ptr<GPUTexture> FetchAndUploadTextureImage(const Image& image,
+                                                         GPUTexture::Flags flags = GPUTexture::Flags::None,
+                                                         Error* error = nullptr);
   void RecycleTexture(std::unique_ptr<GPUTexture> texture);
   void PurgeTexturePool();
 
-  virtual std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height,
-                                                                    GPUTexture::Format format) = 0;
-  virtual std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTexture::Format format,
-                                                                    void* memory, size_t memory_size,
-                                                                    u32 memory_stride) = 0;
+  virtual std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTextureFormat format,
+                                                                    Error* error = nullptr) = 0;
+  virtual std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTextureFormat format,
+                                                                    void* memory, size_t memory_size, u32 memory_stride,
+                                                                    Error* error = nullptr) = 0;
 
   virtual void CopyTextureRegion(GPUTexture* dst, u32 dst_x, u32 dst_y, u32 dst_layer, u32 dst_level, GPUTexture* src,
                                  u32 src_x, u32 src_y, u32 src_layer, u32 src_level, u32 width, u32 height) = 0;
@@ -667,11 +760,27 @@ public:
                                           Error* error = nullptr, const char* entry_point = "main");
   virtual std::unique_ptr<GPUPipeline> CreatePipeline(const GPUPipeline::GraphicsConfig& config,
                                                       Error* error = nullptr) = 0;
+  virtual std::unique_ptr<GPUPipeline> CreatePipeline(const GPUPipeline::ComputeConfig& config,
+                                                      Error* error = nullptr) = 0;
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   /// Debug messaging.
   virtual void PushDebugGroup(const char* name) = 0;
   virtual void PopDebugGroup() = 0;
   virtual void InsertDebugMessage(const char* msg) = 0;
+
+  /// Formatted debug variants.
+  template<typename... T>
+  void PushDebugGroup(fmt::format_string<T...> fmt, T&&... args)
+  {
+    PushDebugGroup(TinyString::from_vformat(fmt, fmt::make_format_args(args...)));
+  }
+  template<typename... T>
+  void InsertDebugMessage(fmt::format_string<T...> fmt, T&&... args)
+  {
+    InsertDebugMessage(TinyString::from_vformat(fmt, fmt::make_format_args(args...)));
+  }
+#endif
 
   /// Vertex/index buffer abstraction.
   virtual void MapVertexBuffer(u32 vertex_size, u32 vertex_count, void** map_ptr, u32* map_space,
@@ -684,7 +793,6 @@ public:
   void UploadIndexBuffer(const DrawIndex* indices, u32 index_count, u32* base_index);
 
   /// Uniform buffer abstraction.
-  virtual void PushUniformBuffer(const void* data, u32 data_size) = 0;
   virtual void* MapUniformBuffer(u32 size) = 0;
   virtual void UnmapUniformBuffer(u32 size) = 0;
   void UploadUniformBuffer(const void* data, u32 data_size);
@@ -706,34 +814,38 @@ public:
 
   // Drawing abstraction.
   virtual void Draw(u32 vertex_count, u32 base_vertex) = 0;
+  virtual void DrawWithPushConstants(u32 vertex_count, u32 base_vertex, const void* push_constants,
+                                     u32 push_constants_size) = 0;
   virtual void DrawIndexed(u32 index_count, u32 base_index, u32 base_vertex) = 0;
-  virtual void DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type) = 0;
+  virtual void DrawIndexedWithPushConstants(u32 index_count, u32 base_index, u32 base_vertex,
+                                            const void* push_constants, u32 push_constants_size) = 0;
+  virtual void DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type);
+  virtual void DrawIndexedWithBarrierWithPushConstants(u32 index_count, u32 base_index, u32 base_vertex,
+                                                       const void* push_constants, u32 push_constants_size,
+                                                       DrawBarrier type);
+  virtual void Dispatch(u32 threads_x, u32 threads_y, u32 threads_z, u32 group_size_x, u32 group_size_y,
+                        u32 group_size_z) = 0;
+  virtual void DispatchWithPushConstants(u32 threads_x, u32 threads_y, u32 threads_z, u32 group_size_x,
+                                         u32 group_size_y, u32 group_size_z, const void* push_constants,
+                                         u32 push_constants_size) = 0;
 
   /// Returns false if the window was completely occluded.
-  virtual PresentResult BeginPresent(u32 clear_color = DEFAULT_CLEAR_COLOR) = 0;
-  virtual void EndPresent(bool explicit_submit, u64 submit_time = 0) = 0;
-  virtual void SubmitPresent() = 0;
-
-  /// Renders ImGui screen elements. Call before EndPresent().
-  void RenderImGui();
-
-  ALWAYS_INLINE GPUVSyncMode GetVSyncMode() const { return m_vsync_mode; }
-  ALWAYS_INLINE bool IsVSyncModeBlocking() const { return (m_vsync_mode == GPUVSyncMode::FIFO); }
-  ALWAYS_INLINE bool IsPresentThrottleAllowed() const { return m_allow_present_throttle; }
-  virtual void SetVSyncMode(GPUVSyncMode mode, bool allow_present_throttle) = 0;
+  virtual GPUPresentResult BeginPresent(GPUSwapChain* swap_chain, u32 clear_color = DEFAULT_CLEAR_COLOR) = 0;
+  virtual void EndPresent(GPUSwapChain* swap_chain, bool explicit_submit, u64 submit_time = 0) = 0;
+  virtual void SubmitPresent(GPUSwapChain* swap_chain) = 0;
 
   ALWAYS_INLINE bool IsDebugDevice() const { return m_debug_device; }
   ALWAYS_INLINE size_t GetVRAMUsage() const { return s_total_vram_usage; }
 
-  bool UpdateImGuiFontTexture();
   bool UsesLowerLeftOrigin() const;
   static GSVector4i FlipToLowerLeft(GSVector4i rc, s32 target_height);
   bool ResizeTexture(std::unique_ptr<GPUTexture>* tex, u32 new_width, u32 new_height, GPUTexture::Type type,
-                     GPUTexture::Format format, bool preserve = true);
-  bool ShouldSkipPresentingFrame();
-  void ThrottlePresentation();
+                     GPUTextureFormat format, GPUTexture::Flags flags, bool preserve = true, Error* error = nullptr);
+  bool ResizeTexture(std::unique_ptr<GPUTexture>* tex, u32 new_width, u32 new_height, GPUTexture::Type type,
+                     GPUTextureFormat format, GPUTexture::Flags flags, const void* replace_data, u32 replace_data_pitch,
+                     Error* error = nullptr);
 
-  virtual bool SupportsTextureFormat(GPUTexture::Format format) const = 0;
+  virtual bool SupportsTextureFormat(GPUTextureFormat format) const = 0;
 
   /// Enables/disables GPU frame timing.
   virtual bool SetGPUTimingEnabled(bool enabled);
@@ -744,9 +856,14 @@ public:
   ALWAYS_INLINE static Statistics& GetStatistics() { return s_stats; }
   static void ResetStatistics();
 
+  /// Releases dynamic libraries and other resources used by the GPU device system.
+  static void UnloadDynamicLibraries();
+
 protected:
-  virtual bool CreateDevice(std::string_view adapter, std::optional<bool> exclusive_fullscreen_control,
-                            FeatureMask disabled_features, Error* error) = 0;
+  virtual bool CreateDeviceAndMainSwapChain(std::string_view adapter, CreateFlags create_flags, const WindowInfo& wi,
+                                            GPUVSyncMode vsync_mode,
+                                            const ExclusiveFullscreenMode* exclusive_fullscreen_mode,
+                                            std::optional<bool> exclusive_fullscreen_control, Error* error) = 0;
   virtual void DestroyDevice() = 0;
 
   std::string GetShaderCacheBaseName(std::string_view type) const;
@@ -762,8 +879,6 @@ protected:
                                                             std::string_view source, const char* entry_point,
                                                             DynamicHeapArray<u8>* out_binary, Error* error) = 0;
 
-  bool AcquireWindow(bool recreate_window);
-
   void TrimTexturePool();
 
   bool CompileGLSLShaderToVulkanSpv(GPUShaderStage stage, GPUShaderLanguage source_language, std::string_view source,
@@ -778,19 +893,21 @@ protected:
                                                                 DynamicHeapArray<u8>* out_binary, Error* error);
   static std::optional<DynamicHeapArray<u8>> OptimizeVulkanSpv(const std::span<const u8> spirv, Error* error);
 
+  void SetDriverType(GPUDriverType type);
+
   Features m_features = {};
   RenderAPI m_render_api = RenderAPI::None;
   u32 m_render_api_version = 0;
   u32 m_max_texture_size = 0;
-  u32 m_max_multisamples = 0;
+  GPUDriverType m_driver_type = GPUDriverType::Unknown;
+  u16 m_max_multisamples = 0;
 
-  WindowInfo m_window_info;
-  u64 m_last_frame_displayed_time = 0;
+  std::unique_ptr<GPUSwapChain> m_main_swap_chain;
+  std::unique_ptr<GPUTexture> m_empty_texture;
+  GPUSampler* m_nearest_sampler = nullptr;
+  GPUSampler* m_linear_sampler = nullptr;
 
   GPUShaderCache m_shader_cache;
-
-  std::unique_ptr<GPUSampler> m_nearest_sampler;
-  std::unique_ptr<GPUSampler> m_linear_sampler;
 
 private:
   static constexpr u32 MAX_TEXTURE_POOL_SIZE = 125;
@@ -805,8 +922,8 @@ private:
     u8 levels;
     u8 samples;
     GPUTexture::Type type;
-    GPUTexture::Format format;
-    u8 pad;
+    GPUTextureFormat format;
+    GPUTexture::Flags flags;
 
     ALWAYS_INLINE bool operator==(const TexturePoolKey& rhs) const
     {
@@ -825,6 +942,7 @@ private:
   };
 
   using TexturePool = std::deque<TexturePoolEntry>;
+  using SamplerMap = std::unordered_map<u64, std::unique_ptr<GPUSampler>>;
 
 #ifdef __APPLE__
   // We have to define these in the base class, because they're in Objective C++.
@@ -836,13 +954,11 @@ private:
   void CloseShaderCache();
   bool CreateResources(Error* error);
   void DestroyResources();
-
   static bool IsTexturePoolType(GPUTexture::Type type);
 
   static size_t s_total_vram_usage;
 
-  std::unique_ptr<GPUPipeline> m_imgui_pipeline;
-  std::unique_ptr<GPUTexture> m_imgui_font_texture;
+  SamplerMap m_sampler_map;
 
   TexturePool m_texture_pool;
   TexturePool m_target_pool;
@@ -852,62 +968,80 @@ private:
 protected:
   static Statistics s_stats;
 
-  GPUVSyncMode m_vsync_mode = GPUVSyncMode::Disabled;
-  bool m_allow_present_throttle = false;
   bool m_gpu_timing_enabled = false;
   bool m_debug_device = false;
 };
 
 extern std::unique_ptr<GPUDevice> g_gpu_device;
 
+IMPLEMENT_ENUM_CLASS_BITWISE_OPERATORS(GPUDevice::CreateFlags);
+
 ALWAYS_INLINE void GPUDevice::PooledTextureDeleter::operator()(GPUTexture* const tex)
 {
   g_gpu_device->RecycleTexture(std::unique_ptr<GPUTexture>(tex));
 }
 
-namespace Host {
-/// Called when the core is creating a render device.
-/// This could also be fullscreen transition.
-std::optional<WindowInfo> AcquireRenderWindow(bool recreate_window);
-
-/// Called when the core is finished with a render window.
-void ReleaseRenderWindow();
-
-/// Returns true if the hosting application is currently fullscreen.
-bool IsFullscreen();
-
-/// Alters fullscreen state of hosting application.
-void SetFullscreen(bool enabled);
-} // namespace Host
+// C preprocessor workarounds.
+#define GL_TOKEN_PASTE(x, y) x##y
+#define GL_TOKEN_PASTE2(x, y) GL_TOKEN_PASTE(x, y)
 
 // Macros for debug messages.
-#ifdef _DEBUG
+#ifdef ENABLE_GPU_OBJECT_NAMES
 struct GLAutoPop
 {
-  GLAutoPop(int dummy) {}
-  ~GLAutoPop() { g_gpu_device->PopDebugGroup(); }
+  GLAutoPop(const char* name)
+  {
+    if (g_gpu_device->IsDebugDevice()) [[unlikely]]
+      g_gpu_device->PushDebugGroup(name);
+  }
+
+  template<typename... T>
+  GLAutoPop(fmt::format_string<T...> fmt, T&&... args)
+  {
+    if (g_gpu_device->IsDebugDevice()) [[unlikely]]
+      g_gpu_device->PushDebugGroup(SmallString::from_vformat(fmt, fmt::make_format_args(args...)));
+  }
+
+  ~GLAutoPop()
+  {
+    if (g_gpu_device->IsDebugDevice()) [[unlikely]]
+      g_gpu_device->PopDebugGroup();
+  }
 };
 
-#define GL_SCOPE(name) GLAutoPop gl_auto_pop((g_gpu_device->PushDebugGroup(name), 0))
-#define GL_PUSH(name) g_gpu_device->PushDebugGroup(name)
-#define GL_POP() g_gpu_device->PopDebugGroup()
-#define GL_INS(msg) g_gpu_device->InsertDebugMessage(msg)
-#define GL_OBJECT_NAME(obj, name) (obj)->SetDebugName(name)
+#define GL_SCOPE(name) GLAutoPop GL_TOKEN_PASTE2(gl_auto_pop_, __LINE__)(name)
+#define GL_INS(msg)                                                                                                    \
+  do                                                                                                                   \
+  {                                                                                                                    \
+    if (g_gpu_device->IsDebugDevice()) [[unlikely]]                                                                    \
+      g_gpu_device->InsertDebugMessage(msg);                                                                           \
+  } while (0)
+#define GL_OBJECT_NAME(obj, name)                                                                                      \
+  do                                                                                                                   \
+  {                                                                                                                    \
+    if (g_gpu_device->IsDebugDevice()) [[unlikely]]                                                                    \
+      (obj)->SetDebugName(name);                                                                                       \
+  } while (0)
 
-#define GL_SCOPE_FMT(...)                                                                                              \
-  GLAutoPop gl_auto_pop((g_gpu_device->PushDebugGroup(SmallString::from_format(__VA_ARGS__)), 0))
-#define GL_PUSH_FMT(...) g_gpu_device->PushDebugGroup(SmallString::from_format(__VA_ARGS__))
-#define GL_INS_FMT(...) g_gpu_device->InsertDebugMessage(SmallString::from_format(__VA_ARGS__))
-#define GL_OBJECT_NAME_FMT(obj, ...) (obj)->SetDebugName(SmallString::from_format(__VA_ARGS__))
+#define GL_SCOPE_FMT(...) GLAutoPop GL_TOKEN_PASTE2(gl_auto_pop_, __LINE__)(__VA_ARGS__)
+#define GL_INS_FMT(...)                                                                                                \
+  do                                                                                                                   \
+  {                                                                                                                    \
+    if (g_gpu_device->IsDebugDevice()) [[unlikely]]                                                                    \
+      g_gpu_device->InsertDebugMessage(__VA_ARGS__);                                                                   \
+  } while (0)
+#define GL_OBJECT_NAME_FMT(obj, ...)                                                                                   \
+  do                                                                                                                   \
+  {                                                                                                                    \
+    if (g_gpu_device->IsDebugDevice()) [[unlikely]]                                                                    \
+      (obj)->SetDebugName(__VA_ARGS__);                                                                                \
+  } while (0)
 #else
 #define GL_SCOPE(name) (void)0
-#define GL_PUSH(name) (void)0
-#define GL_POP() (void)0
 #define GL_INS(msg) (void)0
 #define GL_OBJECT_NAME(obj, name) (void)0
 
 #define GL_SCOPE_FMT(...) (void)0
-#define GL_PUSH_FMT(...) (void)0
 #define GL_INS_FMT(...) (void)0
 #define GL_OBJECT_NAME_FMT(obj, ...) (void)0
 #endif

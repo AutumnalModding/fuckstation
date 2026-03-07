@@ -16,7 +16,7 @@ class BinarySpanReader
 {
 public:
   BinarySpanReader();
-  BinarySpanReader(std::span<const u8> buf);
+  explicit BinarySpanReader(std::span<const u8> buf);
 
   BinarySpanReader(const BinarySpanReader&) = delete;
   BinarySpanReader& operator=(const BinarySpanReader&) = delete;
@@ -146,7 +146,7 @@ class BinarySpanWriter
 {
 public:
   BinarySpanWriter();
-  BinarySpanWriter(std::span<u8> buf);
+  explicit BinarySpanWriter(std::span<u8> buf);
 
   BinarySpanWriter(const BinarySpanWriter&) = delete;
   BinarySpanWriter& operator=(const BinarySpanWriter&) = delete;
@@ -217,8 +217,8 @@ class BinaryFileReader
 {
 public:
   BinaryFileReader();
-  BinaryFileReader(std::FILE* fp);
-  
+  explicit BinaryFileReader(std::FILE* fp);
+
   BinaryFileReader(const BinaryFileReader&) = delete;
   BinaryFileReader& operator=(const BinaryFileReader&) = delete;
 
@@ -272,7 +272,7 @@ public:
   ALWAYS_INLINE BinaryFileReader& operator>>(s64& val) { val = ReadT<s64>(); return *this; }
   ALWAYS_INLINE BinaryFileReader& operator>>(u64& val) { val = ReadT<u64>(); return *this; }
   ALWAYS_INLINE BinaryFileReader& operator>>(float& val) { val = ReadT<float>(); return *this; }
-  ALWAYS_INLINE BinaryFileReader& operator>>(std::string_view& val) { val = ReadCString(); return *this; }
+  ALWAYS_INLINE BinaryFileReader& operator>>(std::string& val) { val = ReadCString(); return *this; }
   // clang-format on
 
   template<typename T>
@@ -308,8 +308,8 @@ class BinaryFileWriter
 {
 public:
   BinaryFileWriter();
-  BinaryFileWriter(std::FILE* fp);
-  
+  explicit BinaryFileWriter(std::FILE* fp);
+
   BinaryFileWriter(const BinaryFileWriter&) = delete;
   BinaryFileWriter& operator=(const BinaryFileWriter&) = delete;
 

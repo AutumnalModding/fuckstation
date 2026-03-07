@@ -1,6 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="..\msvc\vsprops\Configurations.props" />
+  <Import Project="..\vsprops\Configurations.props" />
   <PropertyGroup Label="Globals">
     <ProjectGuid>{1AD23A8A-4C20-434C-AE6B-0E07759EEB1E}</ProjectGuid>
   </PropertyGroup>
@@ -73,7 +73,7 @@
     <ClCompile Include="src\c4\yml\preprocess.cpp" />
     <ClCompile Include="src\c4\yml\tree.cpp" />
   </ItemGroup>
-  <Import Project="..\msvc\vsprops\StaticLibrary.props" />
+  <Import Project="..\vsprops\StaticLibrary.props" />
   <ItemDefinitionGroup>
     <ClCompile>
       <WarningLevel>TurnOffAllWarnings</WarningLevel>
@@ -81,5 +81,5 @@
       <PreprocessorDefinitions>C4_NO_DEBUG_BREAK;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
   </ItemDefinitionGroup>
-  <Import Project="..\msvc\vsprops\Targets.props" />
+  <Import Project="..\vsprops\Targets.props" />
 </Project>

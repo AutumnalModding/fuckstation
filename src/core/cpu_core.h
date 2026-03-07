@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
@@ -15,6 +15,7 @@
 #include <vector>
 
 class StateWrapper;
+class SmallStringBase;
 
 namespace CPU {
 
@@ -32,7 +33,7 @@ enum : PhysicalMemoryAddress
   ICACHE_SLOTS = ICACHE_SIZE / sizeof(u32),
   ICACHE_LINE_SIZE = 16,
   ICACHE_LINES = ICACHE_SIZE / ICACHE_LINE_SIZE,
-  ICACHE_SLOTS_PER_LINE = ICACHE_SLOTS / ICACHE_LINES,
+  ICACHE_WORDS_PER_LINE = ICACHE_SLOTS / ICACHE_LINES,
   ICACHE_TAG_ADDRESS_MASK = 0xFFFFFFF0u,
   ICACHE_INVALID_BITS = 0x0Fu,
 };
@@ -76,12 +77,13 @@ struct State
   u32 downcount = 0;
   u32 pending_ticks = 0;
   u32 gte_completion_tick = 0;
+  u32 muldiv_completion_tick = 0;
 
   Registers regs = {};
   Cop0Registers cop0_regs = {};
 
-  u32 pc;  // at execution time: the address of the next instruction to execute (already fetched)
-  u32 npc; // at execution time: the address of the next instruction to fetch
+  u32 pc = 0;  // at execution time: the address of the next instruction to execute (already fetched)
+  u32 npc = 0; // at execution time: the address of the next instruction to fetch
 
   // address of the instruction currently being executed
   Instruction current_instruction = {};
@@ -117,7 +119,7 @@ struct State
   PGXPValue pgxp_gte[64] = {};
 
   std::array<u32, ICACHE_LINES> icache_tags = {};
-  std::array<u8, ICACHE_SIZE> icache_data = {};
+  std::array<u32, ICACHE_LINES * ICACHE_WORDS_PER_LINE> icache_data = {};
 
   std::array<u8, SCRATCHPAD_SIZE> scratchpad = {};
 
@@ -125,7 +127,7 @@ struct State
   static constexpr u32 GTERegisterOffset(u32 index) { return OFFSETOF(State, gte_regs.r32) + (sizeof(u32) * index); }
 };
 
-ALIGN_TO_CACHE_LINE extern State g_state;
+extern State g_state;
 
 void Initialize();
 void Shutdown();
@@ -142,32 +144,35 @@ void Execute();
 // Forces an early exit from the CPU dispatcher.
 [[noreturn]] void ExitExecution();
 
-ALWAYS_INLINE static Registers& GetRegs()
+ALWAYS_INLINE Registers& GetRegs()
 {
   return g_state.regs;
 }
 
-ALWAYS_INLINE static u32 GetPendingTicks()
+ALWAYS_INLINE u32 GetPendingTicks()
 {
   return g_state.pending_ticks;
 }
-ALWAYS_INLINE static void ResetPendingTicks()
+ALWAYS_INLINE void ResetPendingTicks()
 {
   g_state.gte_completion_tick =
     (g_state.pending_ticks < g_state.gte_completion_tick) ? (g_state.gte_completion_tick - g_state.pending_ticks) : 0;
+  g_state.muldiv_completion_tick = (g_state.pending_ticks < g_state.muldiv_completion_tick) ?
+                                     (g_state.muldiv_completion_tick - g_state.pending_ticks) :
+                                     0;
   g_state.pending_ticks = 0;
 }
-ALWAYS_INLINE static void AddPendingTicks(TickCount ticks)
+ALWAYS_INLINE void AddPendingTicks(TickCount ticks)
 {
   g_state.pending_ticks += static_cast<u32>(ticks);
 }
 
 // state helpers
-ALWAYS_INLINE static bool InUserMode()
+ALWAYS_INLINE bool InUserMode()
 {
   return g_state.cop0_regs.sr.KUc;
 }
-ALWAYS_INLINE static bool InKernelMode()
+ALWAYS_INLINE bool InKernelMode()
 {
   return !g_state.cop0_regs.sr.KUc;
 }
@@ -178,12 +183,14 @@ ALWAYS_INLINE static bool InKernelMode()
 bool SafeReadMemoryByte(VirtualMemoryAddress addr, u8* value);
 bool SafeReadMemoryHalfWord(VirtualMemoryAddress addr, u16* value);
 bool SafeReadMemoryWord(VirtualMemoryAddress addr, u32* value);
-bool SafeReadMemoryCString(VirtualMemoryAddress addr, std::string* value, u32 max_length = 1024);
+bool SafeReadMemoryCString(VirtualMemoryAddress addr, SmallStringBase* value, u32 max_length = 1024);
 bool SafeReadMemoryBytes(VirtualMemoryAddress addr, void* data, u32 length);
 bool SafeWriteMemoryByte(VirtualMemoryAddress addr, u8 value);
 bool SafeWriteMemoryHalfWord(VirtualMemoryAddress addr, u16 value);
 bool SafeWriteMemoryWord(VirtualMemoryAddress addr, u32 value);
 bool SafeWriteMemoryBytes(VirtualMemoryAddress addr, const void* data, u32 length);
+bool SafeWriteMemoryBytes(VirtualMemoryAddress addr, const std::span<const u8> data);
+bool SafeZeroMemoryBytes(VirtualMemoryAddress addr, u32 length);
 
 // External IRQs
 void SetIRQRequest(bool state);
@@ -239,8 +246,6 @@ bool AddStepOverBreakpoint();
 bool AddStepOutBreakpoint(u32 max_instructions_to_search = 1000);
 void SetSingleStepFlag();
 
-extern bool TRACE_EXECUTION;
-
 // Debug register introspection
 struct DebuggerRegisterListEntry
 {
@@ -248,7 +253,21 @@ struct DebuggerRegisterListEntry
   u32* value_ptr;
 };
 
-static constexpr u32 NUM_DEBUGGER_REGISTER_LIST_ENTRIES = 103;
+inline constexpr u32 NUM_DEBUGGER_REGISTER_LIST_ENTRIES = 103;
 extern const std::array<DebuggerRegisterListEntry, NUM_DEBUGGER_REGISTER_LIST_ENTRIES> g_debugger_register_list;
 
+// Debugger events, calls Host::ReportDebuggerEvent()
+enum class DebuggerEvent : u8
+{
+  Message,
+  BreakpointHit,
+};
+
 } // namespace CPU
+
+namespace Host {
+
+/// Debugger feedback.
+void ReportDebuggerEvent(CPU::DebuggerEvent event, std::string_view message);
+
+} // namespace Host

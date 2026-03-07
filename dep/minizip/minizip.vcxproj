@@ -1,6 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="..\msvc\vsprops\Configurations.props" />
+  <Import Project="..\vsprops\Configurations.props" />
   <ItemGroup>
     <ClCompile Include="src\ioapi.c" />
     <ClCompile Include="src\iowin32.c" />
@@ -19,12 +19,12 @@
   <PropertyGroup Label="Globals">
     <ProjectGuid>{8BDA439C-6358-45FB-9994-2FF083BABE06}</ProjectGuid>
   </PropertyGroup>
-  <Import Project="..\msvc\vsprops\StaticLibrary.props" />
+  <Import Project="..\vsprops\StaticLibrary.props" />
   <ItemDefinitionGroup>
     <ClCompile>
       <WarningLevel>TurnOffAllWarnings</WarningLevel>
       <AdditionalIncludeDirectories>$(ProjectDir)include;$(SolutionDir)dep\zlib\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
-  <Import Project="..\msvc\vsprops\Targets.props" />
+  <Import Project="..\vsprops\Targets.props" />
 </Project>

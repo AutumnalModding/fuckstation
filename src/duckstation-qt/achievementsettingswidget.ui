@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>674</width>
-    <height>420</height>
+    <width>598</width>
+    <height>548</height>
    </rect>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
@@ -24,36 +24,70 @@
     <number>0</number>
    </property>
    <item>
-    <widget class="QGroupBox" name="groupBox">
-     <property name="title">
-      <string>Settings</string>
-     </property>
-     <layout class="QGridLayout" name="gridLayout">
-      <item row="1" column="1">
-       <widget class="QCheckBox" name="spectatorMode">
-        <property name="text">
-         <string>Enable Spectator Mode</string>
+    <widget class="QGroupBox" name="loginBox">
+     <layout class="QHBoxLayout" name="horizontalLayout" stretch="0,1,0,0">
+      <property name="spacing">
+       <number>10</number>
+      </property>
+      <item>
+       <widget class="QLabel" name="userBadge">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>32</width>
+          <height>32</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>32</width>
+          <height>32</height>
+         </size>
+        </property>
+        <property name="scaledContents">
+         <bool>true</bool>
         </property>
        </widget>
       </item>
+      <item>
+       <widget class="QLabel" name="loginStatus">
+        <property name="alignment">
+         <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="viewProfile">
+        <property name="text">
+         <string>View Profile...</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="loginButton">
+        <property name="text">
+         <string>Login...</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="settingsGroup">
+     <property name="title">
+      <string>Settings</string>
+     </property>
+     <layout class="QGridLayout" name="settingsLayout">
       <item row="0" column="0">
        <widget class="QCheckBox" name="enable">
         <property name="text">
          <string>Enable Achievements</string>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="0">
-       <widget class="QCheckBox" name="unofficialAchievements">
-        <property name="text">
-         <string>Test Unofficial Achievements</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="0">
-       <widget class="QCheckBox" name="encoreMode">
-        <property name="text">
-         <string>Enable Encore Mode</string>
         </property>
        </widget>
       </item>
@@ -64,10 +98,31 @@
         </property>
        </widget>
       </item>
-      <item row="2" column="1">
-       <widget class="QCheckBox" name="useFirstDiscFromPlaylist">
+      <item row="1" column="0">
+       <widget class="QCheckBox" name="encoreMode">
         <property name="text">
-         <string>Use First Disc From Playlist</string>
+         <string>Enable Encore Mode</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QCheckBox" name="spectatorMode">
+        <property name="text">
+         <string>Enable Spectator Mode</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QCheckBox" name="unofficialAchievements">
+        <property name="text">
+         <string>Test Unofficial Achievements</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QCheckBox" name="useRAIntegration">
+        <property name="text">
+         <string>Enable RAIntegration (Development Only)</string>
         </property>
        </widget>
       </item>
@@ -75,50 +130,11 @@
     </widget>
    </item>
    <item>
-    <widget class="QGroupBox" name="notificationBox">
+    <widget class="QGroupBox" name="notificationsGroup">
      <property name="title">
       <string>Notifications</string>
      </property>
      <layout class="QGridLayout" name="gridLayout_2" columnstretch="1,1">
-      <item row="0" column="1">
-       <layout class="QHBoxLayout" name="horizontalLayout_3" stretch="1,0">
-        <item>
-         <widget class="QSlider" name="achievementNotificationsDuration">
-          <property name="minimum">
-           <number>3</number>
-          </property>
-          <property name="maximum">
-           <number>30</number>
-          </property>
-          <property name="pageStep">
-           <number>1</number>
-          </property>
-          <property name="value">
-           <number>5</number>
-          </property>
-          <property name="orientation">
-           <enum>Qt::Horizontal</enum>
-          </property>
-          <property name="invertedAppearance">
-           <bool>false</bool>
-          </property>
-          <property name="tickPosition">
-           <enum>QSlider::TicksBelow</enum>
-          </property>
-          <property name="tickInterval">
-           <number>1</number>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QLabel" name="achievementNotificationsDurationLabel">
-          <property name="text">
-           <string>5 seconds</string>
-          </property>
-         </widget>
-        </item>
-       </layout>
-      </item>
       <item row="0" column="0">
        <widget class="QCheckBox" name="achievementNotifications">
         <property name="text">
@@ -126,40 +142,40 @@
         </property>
        </widget>
       </item>
-      <item row="1" column="1">
-       <layout class="QHBoxLayout" name="horizontalLayout_2" stretch="1,0">
+      <item row="0" column="1">
+       <layout class="QHBoxLayout" name="horizontalLayout_3" stretch="1,0">
         <item>
-         <widget class="QSlider" name="leaderboardNotificationsDuration">
+         <widget class="QSlider" name="achievementNotificationsDuration">
           <property name="minimum">
-           <number>3</number>
+           <number>1</number>
           </property>
           <property name="maximum">
            <number>30</number>
           </property>
           <property name="pageStep">
-           <number>1</number>
+           <number>5</number>
           </property>
           <property name="value">
            <number>5</number>
           </property>
           <property name="orientation">
-           <enum>Qt::Horizontal</enum>
-          </property>
-          <property name="invertedAppearance">
-           <bool>false</bool>
-          </property>
-          <property name="tickPosition">
-           <enum>QSlider::TicksBelow</enum>
-          </property>
-          <property name="tickInterval">
-           <number>1</number>
+           <enum>Qt::Orientation::Horizontal</enum>
           </property>
          </widget>
         </item>
         <item>
-         <widget class="QLabel" name="leaderboardNotificationsDurationLabel">
+         <widget class="QLabel" name="achievementNotificationsDurationLabel">
+          <property name="minimumSize">
+           <size>
+            <width>70</width>
+            <height>0</height>
+           </size>
+          </property>
           <property name="text">
            <string>5 seconds</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
           </property>
          </widget>
         </item>
@@ -172,53 +188,108 @@
         </property>
        </widget>
       </item>
-      <item row="2" column="0">
-       <widget class="QCheckBox" name="soundEffects">
-        <property name="text">
-         <string>Enable Sound Effects</string>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="1">
-       <widget class="QCheckBox" name="overlays">
-        <property name="text">
-         <string>Enable In-Game Overlays</string>
-        </property>
-       </widget>
-      </item>
-     </layout>
-    </widget>
-   </item>
-   <item>
-    <widget class="QGroupBox" name="loginBox">
-     <property name="title">
-      <string>Account</string>
-     </property>
-     <layout class="QHBoxLayout" name="horizontalLayout" stretch="1,0">
-      <item>
-       <widget class="QLabel" name="loginStatus">
-        <property name="text">
-         <string>Username:
-Login token generated at:</string>
-        </property>
-        <property name="alignment">
-         <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <layout class="QHBoxLayout" name="horizontalLayout_4">
+      <item row="1" column="1">
+       <layout class="QHBoxLayout" name="horizontalLayout_2" stretch="1,0">
         <item>
-         <widget class="QPushButton" name="viewProfile">
-          <property name="text">
-           <string>View Profile...</string>
+         <widget class="QSlider" name="leaderboardNotificationsDuration">
+          <property name="minimum">
+           <number>1</number>
+          </property>
+          <property name="maximum">
+           <number>30</number>
+          </property>
+          <property name="pageStep">
+           <number>5</number>
+          </property>
+          <property name="value">
+           <number>5</number>
+          </property>
+          <property name="orientation">
+           <enum>Qt::Orientation::Horizontal</enum>
           </property>
          </widget>
         </item>
         <item>
-         <widget class="QPushButton" name="loginButton">
+         <widget class="QLabel" name="leaderboardNotificationsDurationLabel">
+          <property name="minimumSize">
+           <size>
+            <width>70</width>
+            <height>0</height>
+           </size>
+          </property>
           <property name="text">
-           <string>Login...</string>
+           <string>5 seconds</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item row="2" column="0">
+       <layout class="QHBoxLayout" name="horizontalLayout_4" stretch="0,1">
+        <property name="spacing">
+         <number>0</number>
+        </property>
+        <item>
+         <widget class="QCheckBox" name="soundEffects">
+          <property name="text">
+           <string>Enable Sound Effects</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="changeSoundsLink">
+          <property name="openExternalLinks">
+           <bool>true</bool>
+          </property>
+          <property name="textInteractionFlags">
+           <set>Qt::TextInteractionFlag::LinksAccessibleByKeyboard|Qt::TextInteractionFlag::LinksAccessibleByMouse</set>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item row="2" column="1">
+       <widget class="QCheckBox" name="prefetchBadges">
+        <property name="text">
+         <string>Prefetch Badges</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="notificationLocationLabel">
+        <property name="text">
+         <string>Notification Location:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QComboBox" name="notificationLocation"/>
+      </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="notificationScaleLabel">
+        <property name="text">
+         <string>Notification Size:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1">
+       <layout class="QHBoxLayout" name="notificationScaleLayout">
+        <item>
+         <widget class="QComboBox" name="notificationScale"/>
+        </item>
+        <item>
+         <widget class="QSpinBox" name="notificationScaleCustom">
+          <property name="suffix">
+           <string>%</string>
+          </property>
+          <property name="minimum">
+           <number>1</number>
+          </property>
+          <property name="maximum">
+           <number>1000</number>
           </property>
          </widget>
         </item>
@@ -228,21 +299,69 @@ Login token generated at:</string>
     </widget>
    </item>
    <item>
-    <widget class="QGroupBox" name="gameInfoBox">
-     <property name="minimumSize">
-      <size>
-       <width>0</width>
-       <height>75</height>
-      </size>
-     </property>
+    <widget class="QGroupBox" name="progressTrackingGroup">
      <property name="title">
-      <string>Game Info</string>
+      <string>Progress Tracking</string>
      </property>
-     <layout class="QGridLayout" name="gridLayout_3">
+     <layout class="QGridLayout" name="gridLayout" columnstretch="1,1">
       <item row="0" column="0">
-       <widget class="QLabel" name="gameInfo">
-        <property name="alignment">
-         <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
+       <widget class="QLabel" name="challengeIndicatorModeLabel">
+        <property name="text">
+         <string>Challenge Indicators:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="challengeIndicatorMode"/>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="indicatorLocationLabel">
+        <property name="text">
+         <string>Indicator Location:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QComboBox" name="indicatorLocation"/>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="indicatorScaleLabel">
+        <property name="text">
+         <string>Indicator Size:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <layout class="QHBoxLayout" name="indicatorScaleLayout">
+        <item>
+         <widget class="QComboBox" name="indicatorScale"/>
+        </item>
+        <item>
+         <widget class="QSpinBox" name="indicatorScaleCustom">
+          <property name="suffix">
+           <string>%</string>
+          </property>
+          <property name="minimum">
+           <number>1</number>
+          </property>
+          <property name="maximum">
+           <number>1000</number>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item row="3" column="0">
+       <widget class="QCheckBox" name="progressIndicators">
+        <property name="text">
+         <string>Show Progress Indicators</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QCheckBox" name="leaderboardTrackers">
+        <property name="text">
+         <string>Show Leaderboard Trackers</string>
         </property>
        </widget>
       </item>
@@ -252,12 +371,12 @@ Login token generated at:</string>
    <item>
     <spacer name="verticalSpacer">
      <property name="orientation">
-      <enum>Qt::Vertical</enum>
+      <enum>Qt::Orientation::Vertical</enum>
      </property>
      <property name="sizeHint" stdset="0">
       <size>
-       <width>20</width>
-       <height>40</height>
+       <width>0</width>
+       <height>0</height>
       </size>
      </property>
     </spacer>
@@ -265,7 +384,7 @@ Login token generated at:</string>
   </layout>
  </widget>
  <resources>
-  <include location="resources/resources.qrc"/>
+  <include location="resources/duckstation-qt.qrc"/>
  </resources>
  <connections/>
 </ui>

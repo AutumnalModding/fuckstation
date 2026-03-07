@@ -6,14 +6,25 @@ import re
 
 START_IDENT = "// TRANSLATION-STRING-AREA-BEGIN"
 END_IDENT = "// TRANSLATION-STRING-AREA-END"
+SRC_FILES = ["src/core/fullscreenui.cpp",
+             "src/core/fullscreenui.h",
+             "src/core/fullscreenui_achievements.cpp",
+             "src/core/fullscreenui_game_list.cpp",
+             "src/core/fullscreenui_private.h",
+             "src/core/fullscreenui_settings.cpp",
+             "src/core/fullscreenui_widgets.cpp",
+             "src/core/fullscreenui_widgets.h"]
+DST_FILE = "src/core/fullscreenui_strings.h"
 
-src_file = os.path.join(os.path.dirname(__file__), "..", "src", "core", "fullscreen_ui.cpp")
-
-with open(src_file, "r") as f:
-    full_source = f.read()
+full_source = ""
+for src_file in SRC_FILES:
+    path = os.path.join(os.path.dirname(__file__), "..", src_file)
+    with open(path, "r") as f:
+        full_source += f.read()
+        full_source += "\n"
 
 strings = set()
-for token in ["FSUI_STR", "FSUI_CSTR", "FSUI_FSTR", "FSUI_NSTR", "FSUI_ICONSTR", "FSUI_VSTR"]:
+for token in ["FSUI_STR", "FSUI_CSTR", "FSUI_FSTR", "FSUI_NSTR", "FSUI_VSTR", "FSUI_ICONSTR", "FSUI_ICONVSTR", "FSUI_ICONCSTR"]:
     token_len = len(token)
     last_pos = 0
     while True:
@@ -51,12 +62,16 @@ for token in ["FSUI_STR", "FSUI_CSTR", "FSUI_FSTR", "FSUI_NSTR", "FSUI_ICONSTR",
                     pos = s.find('"', pos + 1)
             assert len(new_s) > 0
 
-            assert (end_pos - start_pos) < 300
+            assert (end_pos - start_pos) < 350
             strings.add(new_s)
         last_pos += len(token)
 
 print(f"Found {len(strings)} unique strings.")
 
+full_source = ""
+dst_path = os.path.join(os.path.dirname(__file__), "..", DST_FILE)
+with open(dst_path, "r") as f:
+    full_source = f.read()
 start = full_source.find(START_IDENT)
 end = full_source.find(END_IDENT)
 assert start >= 0 and end > start
@@ -66,5 +81,5 @@ for string in sorted(list(strings)):
     new_area += f"TRANSLATE_NOOP(\"FullscreenUI\", \"{string}\");\n"
 
 full_source = full_source[:start+len(START_IDENT)+1] + new_area + full_source[end:]
-with open(src_file, "w") as f:
+with open(dst_path, "w") as f:
     f.write(full_source)

@@ -8,6 +8,7 @@
 #include "common/file_system.h"
 #include "common/log.h"
 #include "common/path.h"
+#include "common/small_string.h"
 #include "common/string_util.h"
 
 LOG_CHANNEL(PCDrv);
@@ -77,19 +78,20 @@ static bool CloseFileHandle(u32 handle)
   return true;
 }
 
-static std::string ResolveHostPath(const std::string& path)
+static std::string ResolveHostPath(std::string_view path)
 {
-  // Double-check that it falls within the directory of the elf.
+  // Double-check that it falls within the directory of the root.
   // Not a real sandbox, but emulators shouldn't be treated as such. Don't run untrusted code!
   const std::string& root = g_settings.pcdrv_root;
-  std::string canonicalized_path = Path::Canonicalize(Path::Combine(root, path));
+  std::string canonicalized_path =
+    Path::IsAbsolute(path) ? Path::Canonicalize(path) : Path::Canonicalize(Path::Combine(root, path));
   if (canonicalized_path.length() < root.length() ||                      // Length has to be longer (a file),
       !canonicalized_path.starts_with(root) ||                            // and start with the host root,
       canonicalized_path[root.length()] != FS_OSPATH_SEPARATOR_CHARACTER) // and we can't access a sibling.
   {
     ERROR_LOG("Denying access to path outside of PCDrv directory. Requested path: '{}', "
               "Resolved path: '{}', Root directory: '{}'",
-              path, root, canonicalized_path);
+              path, canonicalized_path, root);
     canonicalized_path.clear();
   }
 
@@ -141,7 +143,7 @@ bool PCDrv::HandleSyscall(u32 instruction_bits, CPU::Registers& regs)
       const bool is_open = (code == 0x103);
       const char* func = (code == 0x102) ? "PCcreat" : "PCopen";
       const u32 mode = regs.a2;
-      std::string filename;
+      SmallString filename;
       if (!CPU::SafeReadMemoryCString(regs.a1, &filename))
       {
         ERROR_LOG("{}: Invalid string", func);

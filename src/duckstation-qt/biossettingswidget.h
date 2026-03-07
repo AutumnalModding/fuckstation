@@ -9,7 +9,7 @@
 
 class SettingsWindow;
 
-enum class ConsoleRegion;
+enum class ConsoleRegion : u8;
 namespace BIOS {
 struct ImageInfo;
 }
@@ -27,10 +27,11 @@ public:
                                         bool per_game);
   static void setDropDownValue(QComboBox* cb, const std::optional<std::string>& name, bool per_game);
 
-private Q_SLOTS:
-  void refreshList();
-
 private:
+  void refreshList();
+  void onPIODeviceTypeChanged();
+  void onPIOImagePathBrowseClicked();
+
   Ui::BIOSSettingsWidget m_ui;
 
   SettingsWindow* m_dialog;

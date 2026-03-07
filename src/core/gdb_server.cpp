@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com> and contributors.
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com> and contributors.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "gdb_server.h"
@@ -11,83 +11,71 @@
 #include "common/log.h"
 #include "common/small_string.h"
 #include "common/string_util.h"
+#include "common/thirdparty/SmallVector.h"
 
 #include "util/sockets.h"
 
-#include <functional>
-#include <iomanip>
-#include <map>
 #include <optional>
-#include <sstream>
-#include <string>
 
-LOG_CHANNEL(GDBProtocol);
+LOG_CHANNEL(GDBServer);
 
-namespace GDBProtocol {
+namespace GDBServer {
+
+namespace {
+
+class ClientSocket final : public BufferedStreamSocket
+{
+public:
+  ClientSocket(SocketMultiplexer& multiplexer, SocketDescriptor descriptor);
+  ~ClientSocket() override;
+
+  void OnSystemPaused();
+  void OnSystemResumed();
+
+  void SendReplyWithAck(std::string_view reply = std::string_view());
+
+protected:
+  void OnConnected() override;
+  void OnDisconnected(const Error& error) override;
+  void OnRead() override;
+
+private:
+  void SendPacket(std::string_view sv);
+
+  bool m_seen_resume = false;
+};
+
+} // namespace
+
+static u8 ComputeChecksum(std::string_view str);
+
+static bool Cmd$_questionMark(ClientSocket* client, std::string_view data);
+static bool Cmd$g(ClientSocket* client, std::string_view data);
+static bool Cmd$G(ClientSocket* client, std::string_view data);
+static bool Cmd$H(ClientSocket* client, std::string_view data);
+static bool Cmd$m(ClientSocket* client, std::string_view data);
+static bool Cmd$M(ClientSocket* client, std::string_view data);
+static bool Cmd$s(ClientSocket* client, std::string_view data);
+template<bool add_breakpoint>
+static bool Cmd$z(ClientSocket* client, std::string_view data);
+static bool Cmd$vMustReplyEmpty(ClientSocket* client, std::string_view data);
+static bool Cmd$qSupported(ClientSocket* client, std::string_view data);
+
+static bool IsPacketAck(std::string_view data);
 static bool IsPacketInterrupt(std::string_view data);
 static bool IsPacketContinue(std::string_view data);
 
 static bool IsPacketComplete(std::string_view data);
-static std::string ProcessPacket(std::string_view data);
-} // namespace GDBProtocol
+static bool ProcessPacket(ClientSocket* socket, std::string_view data);
 
-namespace GDBProtocol {
+/// yikes, lots of stack space
+using LargeReplyPacket = SmallStackString<768>;
 
-static u8* GetMemoryPointer(PhysicalMemoryAddress address, u32 length)
-{
-  auto region = Bus::GetMemoryRegionForAddress(address);
-  if (region)
-  {
-    u8* data = GetMemoryRegionPointer(*region);
-    if (data && (address + length <= GetMemoryRegionEnd(*region)))
-    {
-      return data + (address - GetMemoryRegionStart(*region));
-    }
-  }
-
-  return nullptr;
-}
-
-static u8 ComputeChecksum(std::string_view str)
-{
-  u8 checksum = 0;
-  for (char c : str)
-  {
-    checksum = (checksum + c) % 256;
-  }
-  return checksum;
-}
-
-static std::optional<std::string_view> DeserializePacket(std::string_view in)
-{
-  if ((in.size() < 4) || (in[0] != '$') || (in[in.size() - 3] != '#'))
-  {
-    return std::nullopt;
-  }
-  std::string_view data = in.substr(1, in.size() - 4);
-
-  u8 packetChecksum = StringUtil::FromChars<u8>(in.substr(in.size() - 2, 2), 16).value_or(0);
-  u8 computedChecksum = ComputeChecksum(data);
-
-  if (packetChecksum == computedChecksum)
-  {
-    return {data};
-  }
-  else
-  {
-    return std::nullopt;
-  }
-}
-
-static std::string SerializePacket(std::string_view in)
-{
-  std::stringstream ss;
-  ss << '$' << in << '#' << TinyString::from_format("{:02x}", ComputeChecksum(in));
-  return ss.str();
-}
+/// Number of registers in GDB remote protocol for MIPS III.
+static constexpr int NUM_GDB_REGISTERS = 73;
 
 /// List of GDB remote protocol registers for MIPS III (excluding FP).
-static const std::array<u32*, 38> REGISTERS{
+static constexpr std::array<u32*, 38> REGISTERS{
   &CPU::g_state.regs.r[0],
   &CPU::g_state.regs.r[1],
   &CPU::g_state.regs.r[2],
@@ -129,50 +117,84 @@ static const std::array<u32*, 38> REGISTERS{
   &CPU::g_state.pc,
 };
 
-/// Number of registers in GDB remote protocol for MIPS III.
-constexpr int NUM_GDB_REGISTERS = 73;
+/// List of all GDB remote protocol packets supported by us.
+static constexpr std::pair<std::string_view, bool (*)(ClientSocket*, std::string_view)> COMMANDS[] = {
+  {"?", Cmd$_questionMark},
+  {"g", Cmd$g},
+  {"G", Cmd$G},
+  {"H", Cmd$H},
+  {"m", Cmd$m},
+  {"M", Cmd$M},
+  {"s", Cmd$s},
+  {"z", Cmd$z<false>},
+  {"Z", Cmd$z<true>},
+  {"vMustReplyEmpty", Cmd$vMustReplyEmpty},
+  {"qSupported", Cmd$qSupported},
+};
+
+static std::shared_ptr<ListenSocket> s_gdb_listen_socket;
+static std::vector<std::shared_ptr<ClientSocket>> s_gdb_clients;
+
+} // namespace GDBServer
+
+u8 GDBServer::ComputeChecksum(std::string_view str)
+{
+  u8 checksum = 0;
+  for (char c : str)
+    checksum = (checksum + c) % 256;
+
+  return checksum;
+}
 
 /// Get stop reason.
-static std::optional<std::string> Cmd$_questionMark(std::string_view data)
+bool GDBServer::Cmd$_questionMark(ClientSocket* client, std::string_view data)
 {
-  return {"S02"};
+  client->SendReplyWithAck("S02");
+  return true;
 }
 
 /// Get general registers.
-static std::optional<std::string> Cmd$g(std::string_view data)
+bool GDBServer::Cmd$g(ClientSocket* client, std::string_view data)
 {
-  std::stringstream ss;
+  LargeReplyPacket reply;
 
-  for (u32* reg : REGISTERS)
+  for (const u32* reg : REGISTERS)
   {
     // Data is in host order (little endian).
-    ss << StringUtil::EncodeHex(reinterpret_cast<u8*>(reg), 4);
+    reply.append_format("{:02x}{:02x}{:02x}{:02x}", *reg & 0xFFu, (*reg >> 8) & 0xFFu, (*reg >> 16) & 0xFFu,
+                        (*reg >> 24));
   }
 
   // Pad with dummy data (FP registers stuff).
   for (int i = 0; i < NUM_GDB_REGISTERS - static_cast<int>(REGISTERS.size()); i++)
-  {
-    ss << "00000000";
-  }
+    reply.append("00000000");
 
-  return {ss.str()};
+  client->SendReplyWithAck(reply);
+  return true;
 }
 
 /// Set general registers.
-static std::optional<std::string> Cmd$G(std::string_view data)
+bool GDBServer::Cmd$G(ClientSocket* client, std::string_view data)
 {
   if (data.size() == NUM_GDB_REGISTERS * 8)
   {
-    int offset = 0;
+    size_t offset = 0;
 
     for (u32* reg : REGISTERS)
     {
       // Data is in host order (little endian).
-      auto value = StringUtil::DecodeHex({data.data() + offset, 8});
-      if (value)
+      const std::string_view tex_value = data.substr(offset, 8);
+      std::array<u8, 4> le_value;
+      if (StringUtil::DecodeHex(le_value, tex_value) == 4)
       {
-        *reg = *reinterpret_cast<u32*>(&(*value)[0]);
+        *reg = ZeroExtend32(le_value[0]) | (ZeroExtend32(le_value[1]) << 8) | (ZeroExtend32(le_value[2]) << 16) |
+               (ZeroExtend32(le_value[3]) << 16);
       }
+      else
+      {
+        ERROR_LOG("Invalid register set value: {}", tex_value);
+      }
+
       offset += 8;
     }
   }
@@ -181,209 +203,240 @@ static std::optional<std::string> Cmd$G(std::string_view data)
     ERROR_LOG("Wrong payload size for 'G' command, expected {} got {}", NUM_GDB_REGISTERS * 8, data.size());
   }
 
-  return {""};
+  client->SendReplyWithAck();
+  return true;
+}
+
+/// Thread operations, ignored.
+bool GDBServer::Cmd$H(ClientSocket* client, std::string_view data)
+{
+  WARNING_LOG("Ignoring thread command '{}'", data);
+  client->SendReplyWithAck("OK");
+  return true;
 }
 
 /// Get memory.
-static std::optional<std::string> Cmd$m(std::string_view data)
+bool GDBServer::Cmd$m(ClientSocket* client, std::string_view data)
 {
-  std::stringstream ss{std::string{data}};
-  std::string dataAddress, dataLength;
-
-  std::getline(ss, dataAddress, ',');
-  std::getline(ss, dataLength, '\0');
-
-  auto address = StringUtil::FromChars<VirtualMemoryAddress>(dataAddress, 16);
-  auto length = StringUtil::FromChars<u32>(dataLength, 16);
-
-  if (address && length)
+  // address,length
+  std::string_view caret = data;
+  std::optional<VirtualMemoryAddress> address;
+  std::optional<u32> length;
+  if (!(address = StringUtil::FromChars<VirtualMemoryAddress>(caret, 16, &caret)).has_value() || caret.empty() ||
+      caret[0] != ',' || !(length = StringUtil::FromChars<u32>(caret.substr(1), 16)).has_value())
   {
-    PhysicalMemoryAddress phys_addr = *address & CPU::PHYSICAL_MEMORY_ADDRESS_MASK;
-    u32 phys_length = *length;
-
-    u8* ptr_data = GetMemoryPointer(phys_addr, phys_length);
-    if (ptr_data)
-    {
-      return {StringUtil::EncodeHex(ptr_data, phys_length)};
-    }
+    ERROR_LOG("Invalid packet: {}", data);
+    return false;
   }
-  return {"E00"};
+
+  // large enough for most requests
+  llvm::SmallVector<u8, 128> buffer;
+  buffer.resize_for_overwrite(length.value());
+  if (!CPU::SafeReadMemoryBytes(address.value(), buffer.data(), length.value()))
+  {
+    ERROR_LOG("Failed to read {} bytes from address 0x{:08X}", buffer.size(), address.value());
+    client->SendReplyWithAck("E00");
+    return true;
+  }
+
+  SmallString reply;
+  reply.append_hex(buffer.data(), buffer.size());
+  client->SendReplyWithAck(reply);
+  return true;
 }
 
 /// Set memory.
-static std::optional<std::string> Cmd$M(std::string_view data)
+bool GDBServer::Cmd$M(ClientSocket* client, std::string_view data)
 {
-  std::stringstream ss{std::string{data}};
-  std::string dataAddress, dataLength, dataPayload;
-
-  std::getline(ss, dataAddress, ',');
-  std::getline(ss, dataLength, ':');
-  std::getline(ss, dataPayload, '\0');
-
-  auto address = StringUtil::FromChars<VirtualMemoryAddress>(dataAddress, 16);
-  auto length = StringUtil::FromChars<u32>(dataLength, 16);
-  auto payload = StringUtil::DecodeHex(dataPayload);
-
-  if (address && length && payload && (payload->size() == *length))
+  // address,length:data
+  std::string_view caret = data;
+  std::optional<VirtualMemoryAddress> address;
+  std::optional<u32> length;
+  if (!(address = StringUtil::FromChars<VirtualMemoryAddress>(caret, 16, &caret)).has_value() || caret.empty() ||
+      caret[0] != ',' || !(length = StringUtil::FromChars<u32>(caret.substr(1), 16, &caret)).has_value() ||
+      caret.empty() || caret[0] != ':')
   {
-    u32 phys_addr = *address & CPU::PHYSICAL_MEMORY_ADDRESS_MASK;
-    u32 phys_length = *length;
+    ERROR_LOG("Invalid packet: {}", data);
+    return false;
+  }
 
-    u8* ptr_data = GetMemoryPointer(phys_addr, phys_length);
-    if (ptr_data)
+  // remove ':'
+  caret = caret.substr(1);
+  if (length.value() != (caret.size() / 2))
+  {
+    ERROR_LOG("Invalid length in packet {}", data);
+    return false;
+  }
+
+  // large enough for most requests
+  llvm::SmallVector<u8, 128> buffer;
+  buffer.resize_for_overwrite(length.value());
+  if (!StringUtil::DecodeHex(buffer, caret))
+  {
+    ERROR_LOG("Invalid hex in packet {}", data);
+    return false;
+  }
+
+  if (!CPU::SafeWriteMemoryBytes(address.value(), buffer))
+  {
+    ERROR_LOG("Failed to write {} bytes to {}", buffer.size(), address.value());
+    client->SendReplyWithAck("E00");
+    return true;
+  }
+
+  client->SendReplyWithAck("OK");
+  return true;
+}
+
+/// Single step.
+bool GDBServer::Cmd$s(ClientSocket* client, std::string_view data)
+{
+  System::SingleStepCPU();
+  client->SendReplyWithAck("OK");
+  return true;
+}
+
+/// Remove hardware breakpoint (z).
+/// Insert hardware breakpoint (Z).
+template<bool add_breakpoint>
+bool GDBServer::Cmd$z(ClientSocket* client, std::string_view data)
+{
+  std::string_view caret = data;
+  std::optional<u32> bptype;
+  std::optional<VirtualMemoryAddress> bpaddr;
+
+  // type,addr
+  if (!(bptype = StringUtil::FromChars<u32>(caret, 10, &caret)) || caret.empty() || caret[0] != ',' ||
+      !(bpaddr = StringUtil::FromChars<VirtualMemoryAddress>(caret.substr(1), 16)).has_value())
+  {
+    ERROR_LOG("Invalid {} hw breakpoint packet: {}", add_breakpoint ? "add" : "remove", data);
+    return false;
+  }
+
+  if (bptype.value() == 0 || bptype.value() == 1) // software/hardware breakpoint
+  {
+    if constexpr (add_breakpoint)
+      CPU::AddBreakpoint(CPU::BreakpointType::Execute, bpaddr.value());
+    else
+      CPU::RemoveBreakpoint(CPU::BreakpointType::Execute, bpaddr.value());
+    client->SendReplyWithAck("OK");
+    return true;
+  }
+  else if (bptype.value() == 2) // write breakpoint
+  {
+    if constexpr (add_breakpoint)
+      CPU::AddBreakpoint(CPU::BreakpointType::Write, bpaddr.value());
+    else
+      CPU::RemoveBreakpoint(CPU::BreakpointType::Write, bpaddr.value());
+
+    client->SendReplyWithAck("OK");
+    return true;
+  }
+  else if (bptype.value() == 3) // read breakpoint
+  {
+    if constexpr (add_breakpoint)
+      CPU::AddBreakpoint(CPU::BreakpointType::Read, bpaddr.value());
+    else
+      CPU::RemoveBreakpoint(CPU::BreakpointType::Read, bpaddr.value());
+    client->SendReplyWithAck("OK");
+    return true;
+  }
+  else if (bptype.value() == 4) // read+write breakpoint
+  {
+    if constexpr (add_breakpoint)
     {
-      memcpy(ptr_data, payload->data(), phys_length);
-      return {"OK"};
+      CPU::AddBreakpoint(CPU::BreakpointType::Read, bpaddr.value());
+      CPU::AddBreakpoint(CPU::BreakpointType::Write, bpaddr.value());
     }
-  }
+    else
+    {
+      CPU::RemoveBreakpoint(CPU::BreakpointType::Read, bpaddr.value());
+      CPU::RemoveBreakpoint(CPU::BreakpointType::Write, bpaddr.value());
+    }
 
-  return {"E00"};
-}
-
-/// Remove hardware breakpoint.
-static std::optional<std::string> Cmd$z1(std::string_view data)
-{
-  auto address = StringUtil::FromChars<VirtualMemoryAddress>(data, 16);
-  if (address)
-  {
-    CPU::RemoveBreakpoint(CPU::BreakpointType::Execute, *address);
-    return {"OK"};
+    client->SendReplyWithAck("OK");
+    return true;
   }
   else
   {
-    return std::nullopt;
+    ERROR_LOG("Unknown breakpoint type {}", bptype.value());
+    return false;
   }
 }
 
-/// Insert hardware breakpoint.
-static std::optional<std::string> Cmd$Z1(std::string_view data)
+template bool GDBServer::Cmd$z<false>(ClientSocket* client, std::string_view data);
+template bool GDBServer::Cmd$z<true>(ClientSocket* client, std::string_view data);
+
+bool GDBServer::Cmd$vMustReplyEmpty(ClientSocket* client, std::string_view data)
 {
-  auto address = StringUtil::FromChars<VirtualMemoryAddress>(data, 16);
-  if (address)
-  {
-    CPU::AddBreakpoint(CPU::BreakpointType::Execute, *address, false);
-    return {"OK"};
-  }
-  else
-  {
-    return std::nullopt;
-  }
+  client->SendReplyWithAck();
+  return true;
 }
 
-static std::optional<std::string> Cmd$vMustReplyEmpty(std::string_view data)
+bool GDBServer::Cmd$qSupported(ClientSocket* client, std::string_view data)
 {
-  return {""};
+  client->SendReplyWithAck();
+  return true;
 }
 
-static std::optional<std::string> Cmd$qSupported(std::string_view data)
+bool GDBServer::IsPacketAck(std::string_view data)
 {
-  return {""};
+  DebugAssert(data.size() >= 1);
+  return (data[0] == '+' || data[0] == '-');
 }
 
-/// List of all GDB remote protocol packets supported by us.
-static const std::map<const char*, std::function<std::optional<std::string>(std::string_view)>> COMMANDS{
-  {"?", Cmd$_questionMark},
-  {"g", Cmd$g},
-  {"G", Cmd$G},
-  {"m", Cmd$m},
-  {"M", Cmd$M},
-  {"z0,", Cmd$z1},
-  {"Z0,", Cmd$Z1},
-  {"z1,", Cmd$z1},
-  {"Z1,", Cmd$Z1},
-  {"vMustReplyEmpty", Cmd$vMustReplyEmpty},
-  {"qSupported", Cmd$qSupported},
-};
-
-bool IsPacketInterrupt(std::string_view data)
+bool GDBServer::IsPacketInterrupt(std::string_view data)
 {
-  return (data.size() >= 1) && (data[data.size() - 1] == '\003');
+  DebugAssert(data.size() >= 1);
+  return (data[data.size() - 1] == '\003');
 }
 
-bool IsPacketContinue(std::string_view data)
+bool GDBServer::IsPacketContinue(std::string_view data)
 {
   return (data.size() >= 5) && (data.substr(data.size() - 5) == "$c#63");
 }
 
-bool IsPacketComplete(std::string_view data)
+bool GDBServer::IsPacketComplete(std::string_view data)
 {
   return ((data.size() == 1) && (data[0] == '\003')) || ((data.size() > 3) && (*(data.end() - 3) == '#'));
 }
 
-std::string ProcessPacket(std::string_view data)
+bool GDBServer::ProcessPacket(ClientSocket* client, std::string_view data)
 {
-  std::string_view trimmedData = data;
-
-  // Eat ACKs.
-  while (!trimmedData.empty() && (trimmedData[0] == '+' || trimmedData[0] == '-'))
-  {
-    if (trimmedData[0] == '-')
-    {
-      ERROR_LOG("Received negative ack");
-    }
-    trimmedData = trimmedData.substr(1);
-  }
-
   // Validate packet.
-  auto packet = DeserializePacket(trimmedData);
-  if (!packet)
+  if ((data.size() < 4) || (data[0] != '$') || (data[data.size() - 3] != '#'))
   {
-    ERROR_LOG("Malformed packet '{}'", trimmedData);
-    return "-";
+    ERROR_LOG("Invalid packet: {}", data);
+    return false;
   }
 
-  std::optional<std::string> reply = {""};
+  // Verify checksum.
+  const std::string_view request = data.substr(1, data.size() - 4);
+  const u8 packet_checksum = StringUtil::FromChars<u8>(data.substr(data.size() - 2, 2), 16).value_or(0);
+  const u8 computed_checksum = ComputeChecksum(request);
+  if (packet_checksum != computed_checksum)
+  {
+    ERROR_LOG("Incorrect checksum, expected 0x{:02x} got 0x{:02x} for '{}'", computed_checksum, packet_checksum, data);
+    return false;
+  }
 
   // Try to invoke packet command.
-  bool processed = false;
   for (const auto& command : COMMANDS)
   {
-    if (packet->starts_with(command.first))
+    if (request.starts_with(command.first))
     {
-      DEBUG_LOG("Processing command '{}'", command.first);
+      DEV_LOG("Processing command '{}'", command.first);
 
       // Invoke command, remove command name from payload.
-      reply = command.second(packet->substr(strlen(command.first)));
-      processed = true;
-      break;
+      return command.second(client, request.substr(command.first.size()));
     }
   }
 
-  if (!processed)
-    WARNING_LOG("Failed to process packet '{}'", trimmedData);
-
-  return reply ? "+" + SerializePacket(*reply) : "+";
+  // Don't bail out on unknown command
+  WARNING_LOG("Failed to process packet '{}'", request);
+  client->SendReplyWithAck({});
+  return true;
 }
-
-} // namespace GDBProtocol
-
-namespace GDBServer {
-
-namespace {
-class ClientSocket final : public BufferedStreamSocket
-{
-public:
-  ClientSocket(SocketMultiplexer& multiplexer, SocketDescriptor descriptor);
-  ~ClientSocket() override;
-
-  void OnSystemPaused();
-  void OnSystemResumed();
-
-protected:
-  void OnConnected() override;
-  void OnDisconnected(const Error& error) override;
-  void OnRead() override;
-
-private:
-  void SendPacket(std::string_view sv);
-
-  bool m_seen_resume = false;
-};
-} // namespace
-
-static std::shared_ptr<ListenSocket> s_gdb_listen_socket;
-static std::vector<std::shared_ptr<ClientSocket>> s_gdb_clients;
-} // namespace GDBServer
 
 GDBServer::ClientSocket::ClientSocket(SocketMultiplexer& multiplexer, SocketDescriptor descriptor)
   : BufferedStreamSocket(multiplexer, descriptor, 65536, 65536)
@@ -433,25 +486,35 @@ void GDBServer::ClientSocket::OnRead()
       const std::string_view current_packet(reinterpret_cast<const char*>(buffer.data() + buffer_offset),
                                             current_packet_size);
 
-      if (GDBProtocol::IsPacketInterrupt(current_packet))
+      if (GDBServer::IsPacketAck(current_packet))
+      {
+        // Eat ACKs.
+        if (current_packet[0] == '-')
+          ERROR_LOG("Received negative ack");
+
+        packet_complete = true;
+        break;
+      }
+      else if (GDBServer::IsPacketInterrupt(current_packet))
       {
         DEV_LOG("{} > Interrupt request", GetRemoteAddress().ToString());
         System::PauseSystem(true);
         packet_complete = true;
         break;
       }
-      else if (GDBProtocol::IsPacketContinue(current_packet))
+      else if (GDBServer::IsPacketContinue(current_packet))
       {
         DEV_LOG("{} > Continue request", GetRemoteAddress().ToString());
         System::PauseSystem(false);
         packet_complete = true;
         break;
       }
-      else if (GDBProtocol::IsPacketComplete(current_packet))
+      else if (GDBServer::IsPacketComplete(current_packet))
       {
-        // TODO: Make this not copy.
-        DEV_LOG("{} > {}", GetRemoteAddress().ToString(), current_packet);
-        SendPacket(GDBProtocol::ProcessPacket(current_packet));
+        DEBUG_LOG("{} > {}", GetRemoteAddress().ToString(), current_packet);
+        if (!ProcessPacket(this, current_packet))
+          SendPacket("-");
+
         packet_complete = true;
         break;
       }
@@ -459,7 +522,9 @@ void GDBServer::ClientSocket::OnRead()
 
     if (!packet_complete)
     {
-      WARNING_LOG("Incomplete packet, got {} bytes.", buffer.size() - buffer_offset);
+      WARNING_LOG(
+        "Incomplete packet, got {} bytes: {}", buffer.size() - buffer_offset,
+        std::string_view(reinterpret_cast<const char*>(buffer.data() + buffer_offset), buffer.size() - buffer_offset));
       break;
     }
     else
@@ -476,7 +541,7 @@ void GDBServer::ClientSocket::SendPacket(std::string_view sv)
   if (sv.empty())
     return;
 
-  WARNING_LOG("Write: {}", sv);
+  DEBUG_LOG("Send reply: {}", sv);
   if (size_t written = Write(sv.data(), sv.length()); written != sv.length())
     ERROR_LOG("Only wrote {} of {} bytes.", written, sv.length());
 }
@@ -489,7 +554,7 @@ void GDBServer::ClientSocket::OnSystemPaused()
   m_seen_resume = false;
 
   // Generate a stop reply packet, insert '?' command to generate it.
-  SendPacket(GDBProtocol::ProcessPacket("$?#3f"));
+  SendReplyWithAck("S00");
 }
 
 void GDBServer::ClientSocket::OnSystemResumed()
@@ -498,6 +563,11 @@ void GDBServer::ClientSocket::OnSystemResumed()
 
   // Send ack, in case GDB sent a continue request.
   SendPacket("+");
+}
+
+void GDBServer::ClientSocket::SendReplyWithAck(std::string_view reply)
+{
+  SendPacket(SmallString::from_format("+${}#{:02x}", reply, ComputeChecksum(reply)));
 }
 
 bool GDBServer::Initialize(u16 port)

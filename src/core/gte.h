@@ -6,12 +6,13 @@
 
 class StateWrapper;
 
+struct DisplayAspectRatio;
+
 namespace GTE {
 
-void Initialize();
 void Reset();
 bool DoState(StateWrapper& sw);
-void UpdateAspectRatio();
+void SetAspectRatio(const DisplayAspectRatio& aspect);
 
 // control registers are offset by +32
 u32 ReadRegister(u32 index);
@@ -24,5 +25,14 @@ void ExecuteInstruction(u32 inst_bits);
 
 using InstructionImpl = void (*)(Instruction);
 InstructionImpl GetInstructionImpl(u32 inst_bits, TickCount* ticks);
+
+void DrawFreecamWindow(float scale);
+
+bool IsFreecamEnabled();
+void SetFreecamEnabled(bool enabled);
+void SetFreecamMoveAxis(u32 axis, float x);
+void SetFreecamRotateAxis(u32 axis, float x);
+void UpdateFreecam(u64 current_time);
+void ResetFreecam();
 
 } // namespace GTE

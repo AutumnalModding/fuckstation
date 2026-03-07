@@ -12,6 +12,7 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -65,21 +66,22 @@ public:
 
   template<typename... T>
   void append_format(fmt::format_string<T...> fmt, T&&... args);
+  void append_vformat(fmt::string_view fmt, fmt::format_args args);
 
   // append hex string
   void append_hex(const void* data, size_t len, bool comma_separate = false);
 
-  // append a single character to this string
+  // prepend a single character to this string
   void prepend(char c);
 
-  // append a string to this string
+  // prepend a string to this string
   void prepend(const char* str);
   void prepend(const char* str, u32 length);
   void prepend(const std::string& str);
   void prepend(const std::string_view str);
   void prepend(const SmallStringBase& str);
 
-  // append formatted string to this string
+  // prepend formatted string to this string
   void prepend_sprintf(const char* format, ...) PRINTFLIKE(2, 3);
   void prepend_vsprintf(const char* format, va_list ap);
 
@@ -99,7 +101,6 @@ public:
 
   template<typename... T>
   void format(fmt::format_string<T...> fmt, T&&... args);
-
   void vformat(fmt::string_view fmt, fmt::format_args args);
 
   // compare one string to another
@@ -158,6 +159,9 @@ public:
   // Cuts characters off the string to reduce it to len bytes long.
   void resize(u32 new_size, char fill = ' ', bool shrink_if_smaller = false);
 
+  // sets the size externally, use with data()
+  void set_size(u32 new_size, bool shrink_if_smaller = false);
+
   // updates the internal length counter when the string is externally modified
   void update_size();
 
@@ -179,6 +183,9 @@ public:
 
   // returns the end of the string (pointer is past the last character)
   ALWAYS_INLINE const char* end_ptr() const { return m_buffer + m_length; }
+
+  // returns true if the string is heap-allocated
+  ALWAYS_INLINE bool is_heap_allocated() const { return m_on_heap; }
 
   // STL adapters
   ALWAYS_INLINE char& front() { return m_buffer[0]; }
@@ -204,10 +211,18 @@ public:
   std::wstring wstring() const;
 #endif
 
+  // span creators
+  std::span<const char> cspan() const;
+  std::span<char> span();
+  std::span<const u8> cbspan() const;
+  std::span<u8> bspan();
+
   // accessor operators
   ALWAYS_INLINE operator const char*() const { return c_str(); }
   ALWAYS_INLINE operator char*() { return data(); }
   ALWAYS_INLINE operator std::string_view() const { return view(); }
+  ALWAYS_INLINE operator std::span<const char>() const { return cspan(); }
+  ALWAYS_INLINE operator std::span<char>() { return span(); }
 
   // comparative operators
   ALWAYS_INLINE bool operator==(const char* str) const { return equals(str); }
@@ -254,13 +269,13 @@ class SmallStackString : public SmallStringBase
 public:
   ALWAYS_INLINE SmallStackString() { init(); }
 
-  ALWAYS_INLINE SmallStackString(const char* str)
+  ALWAYS_INLINE explicit SmallStackString(const char* str)
   {
     init();
     assign(str);
   }
 
-  ALWAYS_INLINE SmallStackString(const char* str, u32 length)
+  ALWAYS_INLINE explicit SmallStackString(const char* str, u32 length)
   {
     init();
     assign(str, length);
@@ -275,22 +290,28 @@ public:
   ALWAYS_INLINE SmallStackString(SmallStringBase&& move)
   {
     init();
-    assign(move);
+    move_assign(std::move(move));
   }
 
-  ALWAYS_INLINE SmallStackString(const SmallStackString& copy)
+  ALWAYS_INLINE explicit SmallStackString(const SmallStackString& copy)
   {
     init();
     assign(copy);
   }
 
-  ALWAYS_INLINE SmallStackString(SmallStackString&& move)
+  ALWAYS_INLINE explicit SmallStackString(SmallStackString&& move)
   {
     init();
-    assign(move);
+    move_assign(std::move(move));
   }
 
-  ALWAYS_INLINE SmallStackString(const std::string_view sv)
+  ALWAYS_INLINE explicit SmallStackString(const std::string& str)
+  {
+    init();
+    assign(str);
+  }
+
+  ALWAYS_INLINE explicit SmallStackString(const std::string_view sv)
   {
     init();
     assign(sv);
@@ -304,7 +325,7 @@ public:
 
   ALWAYS_INLINE SmallStackString& operator=(SmallStringBase&& move)
   {
-    assign(move);
+    move_assign(std::move(move));
     return *this;
   }
 
@@ -316,7 +337,13 @@ public:
 
   ALWAYS_INLINE SmallStackString& operator=(SmallStackString&& move)
   {
-    assign(move);
+    move_assign(std::move(move));
+    return *this;
+  }
+
+  ALWAYS_INLINE SmallStackString& operator=(const std::string& str)
+  {
+    assign(str);
     return *this;
   }
 
@@ -341,18 +368,27 @@ public:
   static SmallStackString from_vformat(fmt::string_view fmt, fmt::format_args args);
 
 private:
-  char m_stack_buffer[L + 1];
+  char m_stack_buffer[L];
 
   ALWAYS_INLINE void init()
   {
     m_buffer = m_stack_buffer;
-    m_buffer_size = L + 1;
+    m_buffer_size = L;
 
 #ifdef _DEBUG
     std::memset(m_stack_buffer, 0, sizeof(m_stack_buffer));
 #else
     m_stack_buffer[0] = '\0';
 #endif
+  }
+
+  ALWAYS_INLINE void move_assign(SmallStringBase&& move)
+  {
+    // only move if on the heap, otherwise copy
+    if (move.is_heap_allocated())
+      SmallStringBase::assign(std::move(move));
+    else
+      assign(move.data(), move.length());
   }
 };
 

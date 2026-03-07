@@ -27,27 +27,17 @@
 #include "opengl_context_egl_wayland.h"
 #endif
 #ifdef ENABLE_X11
-#include "opengl_context_egl_x11.h"
+#include "opengl_context_egl_xcb.h"
+#include "opengl_context_egl_xlib.h"
 #endif
 #endif
 #endif
 
-LOG_CHANNEL(OpenGLContext);
-
-static bool ShouldPreferESContext()
-{
-#if defined(__ANDROID__)
-  return true;
-#elif !defined(_MSC_VER)
-  const char* value = std::getenv("PREFER_GLES_CONTEXT");
-  return (value && std::strcmp(value, "1") == 0);
-#else
-  char buffer[2] = {};
-  size_t buffer_size = sizeof(buffer);
-  getenv_s(&buffer_size, buffer, "PREFER_GLES_CONTEXT");
-  return (std::strcmp(buffer, "1") == 0);
+#ifdef ENABLE_SDL
+#include "opengl_context_sdl.h"
 #endif
-}
+
+LOG_CHANNEL(GPUDevice);
 
 static void DisableBrokenExtensions(const char* gl_vendor, const char* gl_renderer, const char* gl_version)
 {
@@ -95,6 +85,14 @@ static void DisableBrokenExtensions(const char* gl_vendor, const char* gl_render
       VERBOSE_LOG("Keeping GL_EXT_shader_framebuffer_fetch on Adreno version {}", major_version);
     }
   }
+  else if (std::strstr(gl_vendor, "Imagination Technologies") && std::strstr(gl_renderer, "PowerVR"))
+  {
+    // Framebuffer fetch is apparently also broken on older PowerVR drivers.
+    // No clue what the range is, so just disable all of them...
+    GLAD_GL_EXT_shader_framebuffer_fetch = 0;
+    GLAD_GL_ARM_shader_framebuffer_fetch = 0;
+    VERBOSE_LOG("Disabling GL_EXT_shader_framebuffer_fetch on PowerVR driver.");
+  }
 
   // If we're missing GLES 3.2, but have OES_draw_elements_base_vertex, redirect the function pointers.
   if (!glad_glDrawElementsBaseVertex && GLAD_GL_OES_draw_elements_base_vertex && !GLAD_GL_ES_VERSION_3_2)
@@ -105,13 +103,12 @@ static void DisableBrokenExtensions(const char* gl_vendor, const char* gl_render
   }
 }
 
-OpenGLContext::OpenGLContext(const WindowInfo& wi) : m_wi(wi)
-{
-}
+OpenGLContext::OpenGLContext() = default;
 
 OpenGLContext::~OpenGLContext() = default;
 
-std::unique_ptr<OpenGLContext> OpenGLContext::Create(const WindowInfo& wi, Error* error)
+std::unique_ptr<OpenGLContext> OpenGLContext::Create(WindowInfo& wi, SurfaceHandle* surface, bool prefer_gles_context,
+                                                     Error* error)
 {
   static constexpr std::array<Version, 14> vlist = {{{Profile::Core, 4, 6},
                                                      {Profile::Core, 4, 5},
@@ -122,14 +119,14 @@ std::unique_ptr<OpenGLContext> OpenGLContext::Create(const WindowInfo& wi, Error
                                                      {Profile::Core, 4, 0},
                                                      {Profile::Core, 3, 3},
                                                      {Profile::Core, 3, 2},
-                                                     {Profile::Core, 3, 1},
-                                                     {Profile::Core, 3, 0},
                                                      {Profile::ES, 3, 2},
                                                      {Profile::ES, 3, 1},
-                                                     {Profile::ES, 3, 0}}};
+                                                     {Profile::ES, 3, 0},
+                                                     {Profile::Core, 3, 1},
+                                                     {Profile::Core, 3, 0}}};
 
   std::span<const Version> versions_to_try = vlist;
-  if (ShouldPreferESContext())
+  if (prefer_gles_context)
   {
     // move ES versions to the front
     Version* new_versions_to_try = static_cast<Version*>(alloca(sizeof(Version) * versions_to_try.size()));
@@ -149,22 +146,28 @@ std::unique_ptr<OpenGLContext> OpenGLContext::Create(const WindowInfo& wi, Error
 
   std::unique_ptr<OpenGLContext> context;
 #if defined(_WIN32) && !defined(_M_ARM64)
-  context = OpenGLContextWGL::Create(wi, versions_to_try, error);
+  context = OpenGLContextWGL::Create(wi, surface, versions_to_try, error);
 #elif defined(__APPLE__)
-  context = OpenGLContextAGL::Create(wi, versions_to_try, error);
+  context = OpenGLContextAGL::Create(wi, surface, versions_to_try, error);
 #elif defined(__ANDROID__)
-  context = ContextEGLAndroid::Create(wi, versions_to_try, error);
+  context = OpenGLContextEGLAndroid::Create(wi, surface, versions_to_try, error);
 #else
 #if defined(ENABLE_X11)
-  if (wi.type == WindowInfo::Type::X11)
-    context = OpenGLContextEGLX11::Create(wi, versions_to_try, error);
+  if (wi.type == WindowInfoType::Xlib)
+    context = OpenGLContextEGLXlib::Create(wi, surface, versions_to_try, error);
+  else if (wi.type == WindowInfoType::XCB)
+    context = OpenGLContextEGLXCB::Create(wi, surface, versions_to_try, error);
 #endif
 #if defined(ENABLE_WAYLAND)
-  if (wi.type == WindowInfo::Type::Wayland)
-    context = OpenGLContextEGLWayland::Create(wi, versions_to_try, error);
+  if (wi.type == WindowInfoType::Wayland)
+    context = OpenGLContextEGLWayland::Create(wi, surface, versions_to_try, error);
 #endif
-  if (wi.type == WindowInfo::Type::Surfaceless)
-    context = OpenGLContextEGL::Create(wi, versions_to_try, error);
+  if (wi.type == WindowInfoType::Surfaceless)
+    context = OpenGLContextEGL::Create(wi, surface, versions_to_try, error);
+#endif
+#ifdef ENABLE_SDL
+  if (wi.type == WindowInfoType::SDL)
+    context = OpenGLContextSDL::Create(wi, surface, versions_to_try, error);
 #endif
 
   if (!context)
@@ -206,4 +209,14 @@ std::unique_ptr<OpenGLContext> OpenGLContext::Create(const WindowInfo& wi, Error
   DisableBrokenExtensions(gl_vendor, gl_renderer, gl_version);
 
   return context;
+}
+
+GPUDevice::AdapterInfoList OpenGLContext::GetAdapterList(WindowInfoType window_type, Error* error)
+{
+#ifdef ENABLE_SDL
+  if (window_type == WindowInfoType::SDL)
+    return OpenGLContextSDL::GetAdapterList(window_type, error);
+#endif
+
+  return {};
 }

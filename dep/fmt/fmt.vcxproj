@@ -1,6 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="..\msvc\vsprops\Configurations.props" />
+  <Import Project="..\vsprops\Configurations.props" />
   <PropertyGroup Label="Globals">
     <ProjectGuid>{8BE398E6-B882-4248-9065-FECC8728E038}</ProjectGuid>
   </PropertyGroup>
@@ -24,13 +24,13 @@
     <ClInclude Include="include\fmt\std.h" />
     <ClInclude Include="include\fmt\xchar.h" />
   </ItemGroup>
-  <Import Project="..\msvc\vsprops\StaticLibrary.props" />
+  <Import Project="..\vsprops\StaticLibrary.props" />
   <ItemDefinitionGroup>
     <ClCompile>
       <WarningLevel>TurnOffAllWarnings</WarningLevel>
-      <AdditionalIncludeDirectories>$(SolutionDir)dep\fmt\include;$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>FMT_EXCEPTIONS=0;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(ProjectDir)include</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);FMT_EXCEPTIONS=0;FMT_USE_RTTI=0;FMT_CPP_LIB_FILESYSTEM=0</PreprocessorDefinitions>
     </ClCompile>
   </ItemDefinitionGroup>
-  <Import Project="..\msvc\vsprops\Targets.props" />
+  <Import Project="..\vsprops\Targets.props" />
 </Project>

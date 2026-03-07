@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>652</width>
-    <height>483</height>
+    <height>572</height>
    </rect>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
@@ -24,11 +24,53 @@
     <number>0</number>
    </property>
    <item>
-    <widget class="QGroupBox" name="groupBox_4">
+    <widget class="QGroupBox" name="behaviorGroup">
      <property name="title">
-      <string>Behaviour</string>
+      <string>Behavior</string>
      </property>
      <layout class="QGridLayout" name="formLayout_4">
+      <item row="0" column="0">
+       <widget class="QCheckBox" name="confirmGameClose">
+        <property name="text">
+         <string>Confirm Game Close</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QCheckBox" name="saveStateOnGameClose">
+        <property name="text">
+         <string>Save State On Game Close</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QCheckBox" name="inhibitScreensaver">
+        <property name="text">
+         <string>Inhibit Screensaver</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QCheckBox" name="pauseOnControllerDisconnection">
+        <property name="text">
+         <string>Pause On Controller Disconnection</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QCheckBox" name="pauseOnFocusLoss">
+        <property name="text">
+         <string>Pause On Focus Loss</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QCheckBox" name="disableBackgroundInput">
+        <property name="text">
+         <string>Disable Background Input</string>
+        </property>
+       </widget>
+      </item>
       <item row="3" column="0">
        <widget class="QCheckBox" name="createSaveStateBackups">
         <property name="text">
@@ -43,53 +85,11 @@
         </property>
        </widget>
       </item>
-      <item row="2" column="1">
-       <widget class="QCheckBox" name="pauseOnControllerDisconnection">
-        <property name="text">
-         <string>Pause On Controller Disconnection</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="0">
-       <widget class="QCheckBox" name="confirmPowerOff">
-        <property name="text">
-         <string>Confirm Power Off</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="0">
-       <widget class="QCheckBox" name="inhibitScreensaver">
-        <property name="text">
-         <string>Inhibit Screensaver</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="1">
-       <widget class="QCheckBox" name="saveStateOnExit">
-        <property name="text">
-         <string>Save State On Shutdown</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="1">
-       <widget class="QCheckBox" name="pauseOnStart">
-        <property name="text">
-         <string>Pause On Start</string>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="0">
-       <widget class="QCheckBox" name="pauseOnFocusLoss">
-        <property name="text">
-         <string>Pause On Focus Loss</string>
-        </property>
-       </widget>
-      </item>
      </layout>
     </widget>
    </item>
    <item>
-    <widget class="QGroupBox" name="groupBox_2">
+    <widget class="QGroupBox" name="gameDisplayGroup">
      <property name="title">
       <string>Game Display</string>
      </property>
@@ -116,23 +116,37 @@
        </widget>
       </item>
       <item row="1" column="1">
+       <widget class="QCheckBox" name="hideMouseCursor">
+        <property name="text">
+         <string>Hide Cursor In Fullscreen</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
        <widget class="QCheckBox" name="hideMainWindow">
         <property name="text">
          <string>Hide Main Window When Running</string>
         </property>
        </widget>
       </item>
-      <item row="2" column="0">
+      <item row="2" column="1">
+       <widget class="QCheckBox" name="displayLogInMainWindow">
+        <property name="text">
+         <string>Display System Log In Main Window</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
        <widget class="QCheckBox" name="disableWindowResizing">
         <property name="text">
          <string>Disable Window Resizing</string>
         </property>
        </widget>
       </item>
-      <item row="2" column="1">
-       <widget class="QCheckBox" name="hideMouseCursor">
+      <item row="3" column="1">
+       <widget class="QCheckBox" name="automaticallyResizeWindow">
         <property name="text">
-         <string>Hide Cursor In Fullscreen</string>
+         <string>Automatically Resize Window</string>
         </property>
        </widget>
       </item>
@@ -144,26 +158,26 @@
      <property name="title">
       <string>Appearance</string>
      </property>
-     <layout class="QGridLayout" name="gridLayout_3" columnstretch="0,1,0,1">
-      <item row="0" column="3">
-       <widget class="QComboBox" name="theme"/>
-      </item>
+     <layout class="QGridLayout" name="appearanceLayout" columnstretch="0,1,0,1">
       <item row="0" column="0">
-       <widget class="QLabel" name="label">
+       <widget class="QLabel" name="languageLabel">
         <property name="text">
          <string>Language:</string>
         </property>
        </widget>
       </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="language"/>
+      </item>
       <item row="0" column="2">
-       <widget class="QLabel" name="label_2">
+       <widget class="QLabel" name="themeLabel">
         <property name="text">
          <string>Theme:</string>
         </property>
        </widget>
       </item>
-      <item row="0" column="1">
-       <widget class="QComboBox" name="language"/>
+      <item row="0" column="3">
+       <widget class="QComboBox" name="theme"/>
       </item>
      </layout>
     </widget>
@@ -173,9 +187,9 @@
      <property name="title">
       <string>Updates</string>
      </property>
-     <layout class="QFormLayout" name="formLayout_2">
+     <layout class="QGridLayout" name="gridLayout_2" columnstretch="0,1">
       <item row="0" column="0">
-       <widget class="QLabel" name="label_4">
+       <widget class="QLabel" name="autoUpdateTagLabel">
         <property name="text">
          <string>Update Channel:</string>
         </property>
@@ -185,7 +199,7 @@
        <widget class="QComboBox" name="autoUpdateTag"/>
       </item>
       <item row="1" column="0">
-       <widget class="QLabel" name="label_5">
+       <widget class="QLabel" name="autoUpdateCurrentVersionLabel">
         <property name="text">
          <string>Current Version:</string>
         </property>
@@ -193,13 +207,13 @@
       </item>
       <item row="1" column="1">
        <widget class="QLabel" name="autoUpdateCurrentVersion">
-        <property name="text">
-         <string/>
+        <property name="textInteractionFlags">
+         <set>Qt::TextInteractionFlag::TextSelectableByMouse</set>
         </property>
        </widget>
       </item>
       <item row="2" column="0" colspan="2">
-       <layout class="QHBoxLayout" name="horizontalLayout_2">
+       <layout class="QHBoxLayout" name="autoUpdateCheckLayout">
         <item>
          <widget class="QCheckBox" name="autoUpdateEnabled">
           <property name="text">

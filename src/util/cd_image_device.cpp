@@ -1,13 +1,14 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "assert.h"
 #include "cd_image.h"
 
 // TODO: Remove me..
-#include "core/host.h"
+#include "core/core.h"
 
 #include "common/assert.h"
+#include "common/bitutils.h"
 #include "common/error.h"
 #include "common/log.h"
 #include "common/path.h"
@@ -23,7 +24,7 @@
 #include <optional>
 #include <span>
 
-LOG_CHANNEL(CDImageDevice);
+LOG_CHANNEL(CDImage);
 
 // Common code
 [[maybe_unused]] static constexpr u32 MAX_TRACK_NUMBER = 99;
@@ -177,7 +178,7 @@ enum class SCSIReadMode : u8
 
 [[maybe_unused]] static bool ShouldTryReadingSubcode()
 {
-  return !Host::GetBaseBoolSettingValue("CDROM", "IgnoreHostSubcode", false);
+  return !Core::GetBaseBoolSettingValue("CDROM", "IgnoreHostSubcode", false);
 }
 
 #if defined(_WIN32)
@@ -213,7 +214,7 @@ public:
   bool Open(const char* filename, Error* error);
 
   bool ReadSubChannelQ(SubChannelQ* subq, const Index& index, LBA lba_in_index) override;
-  bool HasNonStandardSubchannel() const override;
+  bool HasSubchannelData() const override;
 
 protected:
   bool ReadSectorFromIndex(void* buffer, const Index& index, LBA lba_in_index) override;
@@ -252,11 +253,11 @@ bool CDImageDeviceWin32::Open(const char* filename, Error* error)
   bool try_sptd = true;
 
   m_filename = filename;
-  m_hDevice = CreateFile(filename, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                         OPEN_EXISTING, 0, NULL);
+  m_hDevice = CreateFileA(filename, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                          OPEN_EXISTING, 0, NULL);
   if (m_hDevice == INVALID_HANDLE_VALUE)
   {
-    m_hDevice = CreateFile(filename, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, NULL);
+    m_hDevice = CreateFileA(filename, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, NULL);
     if (m_hDevice != INVALID_HANDLE_VALUE)
     {
       WARNING_LOG("Could not open '{}' as read/write, can't use SPTD", filename);
@@ -441,7 +442,7 @@ bool CDImageDeviceWin32::ReadSubChannelQ(SubChannelQ* subq, const Index& index, 
   }
 }
 
-bool CDImageDeviceWin32::HasNonStandardSubchannel() const
+bool CDImageDeviceWin32::HasSubchannelData() const
 {
   return m_has_valid_subcode;
 }
@@ -544,7 +545,7 @@ bool CDImageDeviceWin32::ReadSectorToBuffer(LBA lba)
     const u32 expected_size = SCSIReadCommandOutputSize(m_scsi_read_mode);
     if (size.value_or(0) != expected_size)
     {
-      ERROR_LOG("Read of LBA {} failed: only got {} of {} bytes", lba, size.value(), expected_size);
+      ERROR_LOG("Read of LBA {} failed: only got {} of {} bytes", lba, size.value_or(0), expected_size);
       return false;
     }
   }
@@ -634,10 +635,10 @@ bool CDImageDeviceWin32::DetermineReadMode(bool try_sptd)
   return false;
 }
 
-std::unique_ptr<CDImage> CDImage::OpenDeviceImage(const char* filename, Error* error)
+std::unique_ptr<CDImage> CDImage::OpenDeviceImage(const char* path, Error* error)
 {
   std::unique_ptr<CDImageDeviceWin32> image = std::make_unique<CDImageDeviceWin32>();
-  if (!image->Open(filename, error))
+  if (!image->Open(path, error))
     return {};
 
   return image;
@@ -679,9 +680,9 @@ std::vector<std::pair<std::string, std::string>> CDImage::GetDeviceList()
   return ret;
 }
 
-bool CDImage::IsDeviceName(const char* filename)
+bool CDImage::IsDeviceName(const char* path)
 {
-  return std::string_view(filename).starts_with("\\\\.\\");
+  return std::string_view(path).starts_with("\\\\.\\");
 }
 
 #elif defined(__linux__) && !defined(__ANDROID__)
@@ -704,7 +705,7 @@ public:
   bool Open(const char* filename, Error* error);
 
   bool ReadSubChannelQ(SubChannelQ* subq, const Index& index, LBA lba_in_index) override;
-  bool HasNonStandardSubchannel() const override;
+  bool HasSubchannelData() const override;
 
 protected:
   bool ReadSectorFromIndex(void* buffer, const Index& index, LBA lba_in_index) override;
@@ -932,7 +933,7 @@ bool CDImageDeviceLinux::ReadSubChannelQ(SubChannelQ* subq, const Index& index, 
   }
 }
 
-bool CDImageDeviceLinux::HasNonStandardSubchannel() const
+bool CDImageDeviceLinux::HasSubchannelData() const
 {
   // Can only read subchannel through SPTD.
   return m_scsi_read_mode >= SCSIReadMode::Full;
@@ -1015,7 +1016,7 @@ bool CDImageDeviceLinux::ReadSectorToBuffer(LBA lba)
     const u32 expected_size = SCSIReadCommandOutputSize(m_scsi_read_mode);
     if (size.value_or(0) != expected_size)
     {
-      ERROR_LOG("Read of LBA {} failed: only got {} of {} bytes", lba, size.value(), expected_size);
+      ERROR_LOG("Read of LBA {} failed: only got {} of {} bytes", lba, size.value_or(0), expected_size);
       return false;
     }
   }
@@ -1083,10 +1084,10 @@ bool CDImageDeviceLinux::DetermineReadMode(Error* error)
   return false;
 }
 
-std::unique_ptr<CDImage> CDImage::OpenDeviceImage(const char* filename, Error* error)
+std::unique_ptr<CDImage> CDImage::OpenDeviceImage(const char* path, Error* error)
 {
   std::unique_ptr<CDImageDeviceLinux> image = std::make_unique<CDImageDeviceLinux>();
-  if (!image->Open(filename, error))
+  if (!image->Open(path, error))
     return {};
 
   return image;
@@ -1165,7 +1166,7 @@ public:
   bool Open(const char* filename, Error* error);
 
   bool ReadSubChannelQ(SubChannelQ* subq, const Index& index, LBA lba_in_index) override;
-  bool HasNonStandardSubchannel() const override;
+  bool HasSubchannelData() const override;
 
 protected:
   bool ReadSectorFromIndex(void* buffer, const Index& index, LBA lba_in_index) override;
@@ -1440,7 +1441,7 @@ bool CDImageDeviceMacOS::ReadSubChannelQ(SubChannelQ* subq, const Index& index, 
   }
 }
 
-bool CDImageDeviceMacOS::HasNonStandardSubchannel() const
+bool CDImageDeviceMacOS::HasSubchannelData() const
 {
   // Can only read subchannel through SPTD.
   return m_read_mode >= SCSIReadMode::Full;
@@ -1550,10 +1551,10 @@ bool CDImageDeviceMacOS::DetermineReadMode(Error* error)
   return false;
 }
 
-std::unique_ptr<CDImage> CDImage::OpenDeviceImage(const char* filename, Error* error)
+std::unique_ptr<CDImage> CDImage::OpenDeviceImage(const char* path, Error* error)
 {
   std::unique_ptr<CDImageDeviceMacOS> image = std::make_unique<CDImageDeviceMacOS>();
-  if (!image->Open(filename, error))
+  if (!image->Open(path, error))
     return {};
 
   return image;
@@ -1591,7 +1592,6 @@ std::vector<std::pair<std::string, std::string>> CDImage::GetDeviceList()
             ret.emplace_back(fmt::format("/dev/r{}", buf), buf);
         }
         CFRelease(path);
-        IOObjectRelease(media);
       }
       IOObjectRelease(media);
     }
@@ -1605,12 +1605,12 @@ std::vector<std::pair<std::string, std::string>> CDImage::GetDeviceList()
   return ret;
 }
 
-bool CDImage::IsDeviceName(const char* filename)
+bool CDImage::IsDeviceName(const char* path)
 {
-  if (!std::string_view(filename).starts_with("/dev"))
+  if (!std::string_view(path).starts_with("/dev"))
     return false;
 
-  io_service_t service = GetDeviceMediaService(filename);
+  io_service_t service = GetDeviceMediaService(path);
   const bool valid = (service != 0);
   if (valid)
     IOObjectRelease(service);
@@ -1620,7 +1620,7 @@ bool CDImage::IsDeviceName(const char* filename)
 
 #else
 
-std::unique_ptr<CDImage> CDImage::OpenDeviceImage(const char* filename, Error* error)
+std::unique_ptr<CDImage> CDImage::OpenDeviceImage(const char* path, Error* error)
 {
   return {};
 }
@@ -1630,7 +1630,7 @@ std::vector<std::pair<std::string, std::string>> CDImage::GetDeviceList()
   return {};
 }
 
-bool CDImage::IsDeviceName(const char* filename)
+bool CDImage::IsDeviceName(const char* path)
 {
   return false;
 }

@@ -14,12 +14,12 @@ VULKAN_MODULE_ENTRY_POINT(vkGetInstanceProcAddr, true)
 VULKAN_MODULE_ENTRY_POINT(vkEnumerateInstanceExtensionProperties, true)
 VULKAN_MODULE_ENTRY_POINT(vkEnumerateInstanceLayerProperties, true)
 VULKAN_MODULE_ENTRY_POINT(vkEnumerateInstanceVersion, false)
-VULKAN_MODULE_ENTRY_POINT(vkDestroyInstance, true)
 
 #endif // VULKAN_MODULE_ENTRY_POINT
 
 #ifdef VULKAN_INSTANCE_ENTRY_POINT
 
+VULKAN_INSTANCE_ENTRY_POINT(vkDestroyInstance, true)
 VULKAN_INSTANCE_ENTRY_POINT(vkGetDeviceProcAddr, true)
 VULKAN_INSTANCE_ENTRY_POINT(vkEnumeratePhysicalDevices, true)
 VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceFeatures, true)
@@ -40,12 +40,10 @@ VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceSurfacePresentModesKHR, false)
 
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
 VULKAN_INSTANCE_ENTRY_POINT(vkCreateWin32SurfaceKHR, false)
-VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceWin32PresentationSupportKHR, false)
 #endif
 
-#if defined(VK_USE_PLATFORM_XLIB_KHR)
-VULKAN_INSTANCE_ENTRY_POINT(vkCreateXlibSurfaceKHR, false)
-VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceXlibPresentationSupportKHR, false)
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+VULKAN_INSTANCE_ENTRY_POINT(vkCreateXcbSurfaceKHR, false)
 #endif
 
 #if defined(VK_USE_PLATFORM_WAYLAND_KHR)
@@ -247,6 +245,9 @@ VULKAN_DEVICE_ENTRY_POINT(vkCmdEndRenderingKHR, false)
 
 // VK_KHR_push_descriptor
 VULKAN_DEVICE_ENTRY_POINT(vkCmdPushDescriptorSetKHR, false)
+
+// VK_KHR_swapchain_maintenance1
+VULKAN_DEVICE_ENTRY_POINT(vkReleaseSwapchainImagesKHR, false)
 
 // VK_EXT_external_memory_host
 VULKAN_DEVICE_ENTRY_POINT(vkGetMemoryHostPointerPropertiesEXT, false)

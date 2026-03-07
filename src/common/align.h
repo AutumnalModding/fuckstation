@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
@@ -15,42 +15,42 @@
 
 namespace Common {
 template<typename T>
-constexpr bool IsAligned(T value, unsigned int alignment)
+ALWAYS_INLINE constexpr bool IsAligned(T value, unsigned int alignment)
 {
   return (value % static_cast<T>(alignment)) == 0;
 }
 template<typename T>
-constexpr T AlignUp(T value, unsigned int alignment)
+ALWAYS_INLINE constexpr T AlignUp(T value, unsigned int alignment)
 {
   return (value + static_cast<T>(alignment - 1)) / static_cast<T>(alignment) * static_cast<T>(alignment);
 }
 template<typename T>
-constexpr T AlignDown(T value, unsigned int alignment)
+ALWAYS_INLINE constexpr T AlignDown(T value, unsigned int alignment)
 {
   return value / static_cast<T>(alignment) * static_cast<T>(alignment);
 }
 template<typename T>
-constexpr bool IsAlignedPow2(T value, unsigned int alignment)
+ALWAYS_INLINE constexpr bool IsAlignedPow2(T value, unsigned int alignment)
 {
   return (value & static_cast<T>(alignment - 1)) == 0;
 }
 template<typename T>
-constexpr T AlignUpPow2(T value, unsigned int alignment)
+ALWAYS_INLINE constexpr T AlignUpPow2(T value, unsigned int alignment)
 {
   return (value + static_cast<T>(alignment - 1)) & static_cast<T>(~static_cast<T>(alignment - 1));
 }
 template<typename T>
-constexpr T AlignDownPow2(T value, unsigned int alignment)
+ALWAYS_INLINE constexpr T AlignDownPow2(T value, unsigned int alignment)
 {
   return value & static_cast<T>(~static_cast<T>(alignment - 1));
 }
 template<typename T>
-constexpr bool IsPow2(T value)
+ALWAYS_INLINE constexpr bool IsPow2(T value)
 {
   return (value & (value - 1)) == 0;
 }
 template<typename T>
-constexpr T PreviousPow2(T value)
+ALWAYS_INLINE constexpr T PreviousPow2(T value)
 {
   if (value == static_cast<T>(0))
     return 0;
@@ -58,16 +58,19 @@ constexpr T PreviousPow2(T value)
   value |= (value >> 1);
   value |= (value >> 2);
   value |= (value >> 4);
-  if constexpr (sizeof(T) >= 16)
+  if constexpr (sizeof(T) >= 2)
     value |= (value >> 8);
-  if constexpr (sizeof(T) >= 32)
+  if constexpr (sizeof(T) >= 4)
     value |= (value >> 16);
-  if constexpr (sizeof(T) >= 64)
+  if constexpr (sizeof(T) >= 8)
     value |= (value >> 32);
-  return value - (value >> 1);
+
+  return (value >> 1) + 1;
 }
+
+/// NOTE: Undefined for values greater than (1 << BITS-1), i.e. 0x80000000 for 32-bit.
 template<typename T>
-constexpr T NextPow2(T value)
+ALWAYS_INLINE constexpr T NextPow2(T value)
 {
   // https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
   if (value == static_cast<T>(0))
@@ -77,17 +80,17 @@ constexpr T NextPow2(T value)
   value |= (value >> 1);
   value |= (value >> 2);
   value |= (value >> 4);
-  if constexpr (sizeof(T) >= 16)
+  if constexpr (sizeof(T) >= 2)
     value |= (value >> 8);
-  if constexpr (sizeof(T) >= 32)
+  if constexpr (sizeof(T) >= 4)
     value |= (value >> 16);
-  if constexpr (sizeof(T) >= 64)
+  if constexpr (sizeof(T) >= 8)
     value |= (value >> 32);
   value++;
   return value;
 }
 
-ALWAYS_INLINE static void* AlignedMalloc(size_t size, size_t alignment)
+ALWAYS_INLINE void* AlignedMalloc(size_t size, size_t alignment)
 {
 #ifdef _MSC_VER
   return _aligned_malloc(size, alignment);
@@ -102,7 +105,7 @@ ALWAYS_INLINE static void* AlignedMalloc(size_t size, size_t alignment)
 #endif
 }
 
-ALWAYS_INLINE static void AlignedFree(void* ptr)
+ALWAYS_INLINE void AlignedFree(void* ptr)
 {
 #ifdef _MSC_VER
   _aligned_free(ptr);
@@ -115,25 +118,46 @@ namespace detail {
 template<class T>
 struct unique_aligned_ptr_deleter
 {
-  ALWAYS_INLINE void operator()(T* ptr) { Common::AlignedFree(ptr); }
+  ALWAYS_INLINE void operator()(T* ptr) const
+  {
+    // Array types - do nothing, elements must be trivially destructible
+    if constexpr (!std::is_array_v<T> && !std::is_trivially_destructible_v<T>)
+    {
+      if (!ptr)
+        return;
+
+      ptr->~T();
+    }
+
+    Common::AlignedFree(const_cast<std::remove_cv_t<T>*>(ptr));
+  }
+
+  // Allow conversion between compatible deleters for derived-to-base conversions
+  template<class U>
+    requires std::is_convertible_v<U*, T*>
+  constexpr unique_aligned_ptr_deleter(const unique_aligned_ptr_deleter<U>&) noexcept
+  {
+  }
+
+  constexpr unique_aligned_ptr_deleter() noexcept = default;
 };
-
-template<class>
-constexpr bool is_unbounded_array_v = false;
-template<class T>
-constexpr bool is_unbounded_array_v<T[]> = true;
-
-template<class>
-constexpr bool is_bounded_array_v = false;
-template<class T, std::size_t N>
-constexpr bool is_bounded_array_v<T[N]> = true;
 } // namespace detail
 
 template<class T>
 using unique_aligned_ptr = std::unique_ptr<T, detail::unique_aligned_ptr_deleter<std::remove_extent_t<T>>>;
 
 template<class T, class... Args>
-  requires(std::is_unbounded_array_v<T>, std::is_trivially_default_constructible_v<std::remove_extent_t<T>>,
+  requires(!std::is_array_v<T>)
+unique_aligned_ptr<T> make_unique_aligned(size_t alignment, Args&&... args)
+{
+  unique_aligned_ptr<T> ptr(static_cast<T*>(AlignedMalloc(sizeof(T), alignment)));
+  if (ptr)
+    new (ptr.get()) T(std::forward<Args>(args)...);
+  return ptr;
+}
+
+template<class T, class... Args>
+  requires(std::is_unbounded_array_v<T> && std::is_trivially_default_constructible_v<std::remove_extent_t<T>> &&
            std::is_trivially_destructible_v<std::remove_extent_t<T>>)
 unique_aligned_ptr<T> make_unique_aligned(size_t alignment, size_t n)
 {
@@ -145,7 +169,7 @@ unique_aligned_ptr<T> make_unique_aligned(size_t alignment, size_t n)
 }
 
 template<class T, class... Args>
-  requires(std::is_unbounded_array_v<T>, std::is_trivially_default_constructible_v<std::remove_extent_t<T>>,
+  requires(std::is_unbounded_array_v<T> && std::is_trivially_default_constructible_v<std::remove_extent_t<T>> &&
            std::is_trivially_destructible_v<std::remove_extent_t<T>>)
 unique_aligned_ptr<T> make_unique_aligned_for_overwrite(size_t alignment, size_t n)
 {

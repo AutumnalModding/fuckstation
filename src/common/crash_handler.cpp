@@ -6,6 +6,7 @@
 #include "file_system.h"
 #include "string_util.h"
 #include <cinttypes>
+#include <csignal>
 #include <cstdio>
 #include <ctime>
 
@@ -14,6 +15,7 @@
 
 #include "thirdparty/StackWalker.h"
 #include <DbgHelp.h>
+#include <exception>
 
 namespace {
 class CrashHandlerStackWalker : public StackWalker
@@ -57,7 +59,9 @@ static bool WriteMinidump(HMODULE hDbgHelp, HANDLE hFile, HANDLE hProcess, DWORD
                   PMINIDUMP_CALLBACK_INFORMATION CallbackParam);
 
   PFNMINIDUMPWRITEDUMP minidump_write_dump =
-    hDbgHelp ? reinterpret_cast<PFNMINIDUMPWRITEDUMP>(GetProcAddress(hDbgHelp, "MiniDumpWriteDump")) : nullptr;
+    hDbgHelp ?
+      reinterpret_cast<PFNMINIDUMPWRITEDUMP>(reinterpret_cast<void*>(GetProcAddress(hDbgHelp, "MiniDumpWriteDump"))) :
+      nullptr;
   if (!minidump_write_dump)
     return false;
 
@@ -98,7 +102,7 @@ static void GenerateCrashFilename(wchar_t* buf, size_t len, const wchar_t* prefi
                extension);
 }
 
-static void WriteMinidumpAndCallstack(PEXCEPTION_POINTERS exi)
+static void WriteMinidumpAndCallstack(PEXCEPTION_POINTERS exi, const std::string_view message)
 {
   wchar_t filename[1024] = {};
   GenerateCrashFilename(filename, std::size(filename), s_write_directory.empty() ? nullptr : s_write_directory.c_str(),
@@ -106,13 +110,13 @@ static void WriteMinidumpAndCallstack(PEXCEPTION_POINTERS exi)
 
   // might fail
   HANDLE hFile = CreateFileW(filename, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
-  if (exi && hFile != INVALID_HANDLE_VALUE)
+  DWORD written;
+
+  if (!message.empty() && hFile != INVALID_HANDLE_VALUE)
   {
-    char line[1024];
-    DWORD written;
-    std::snprintf(line, std::size(line), "Exception 0x%08X at 0x%p\n",
-                  static_cast<unsigned>(exi->ExceptionRecord->ExceptionCode), exi->ExceptionRecord->ExceptionAddress);
-    WriteFile(hFile, line, static_cast<DWORD>(std::strlen(line)), &written, nullptr);
+    const char newline = '\n';
+    WriteFile(hFile, message.data(), static_cast<DWORD>(message.length()), &written, nullptr);
+    WriteFile(hFile, &newline, sizeof(newline), &written, nullptr);
   }
 
   GenerateCrashFilename(filename, std::size(filename), s_write_directory.empty() ? nullptr : s_write_directory.c_str(),
@@ -128,10 +132,7 @@ static void WriteMinidumpAndCallstack(PEXCEPTION_POINTERS exi)
   {
     static const char error_message[] = "Failed to write minidump file.\n";
     if (hFile != INVALID_HANDLE_VALUE)
-    {
-      DWORD written;
       WriteFile(hFile, error_message, sizeof(error_message) - 1, &written, nullptr);
-    }
   }
   if (hMinidumpFile != INVALID_HANDLE_VALUE)
     CloseHandle(hMinidumpFile);
@@ -152,13 +153,96 @@ static LONG NTAPI ExceptionHandler(PEXCEPTION_POINTERS exi)
     if (s_cleanup_handler)
       s_cleanup_handler();
 
-    WriteMinidumpAndCallstack(exi);
+    char message[128];
+    std::snprintf(message, std::size(message), "Exception 0x%08X at 0x%p",
+                  static_cast<unsigned>(exi->ExceptionRecord->ExceptionCode), exi->ExceptionRecord->ExceptionAddress);
+
+    WriteMinidumpAndCallstack(exi, message);
   }
 
   // returning EXCEPTION_CONTINUE_SEARCH makes sense, except for the fact that it seems to leave zombie processes
   // around. instead, force ourselves to terminate.
   TerminateProcess(GetCurrentProcess(), 0xFEFEFEFEu);
   return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static void InvalidParameterHandler(const wchar_t* expression, const wchar_t* function, const wchar_t* file,
+                                    unsigned int line, uintptr_t pReserved)
+{
+  // if the debugger is attached, or we're recursively crashing, let it take care of it.
+  if (!s_in_crash_handler && !IsDebuggerPresent())
+  {
+    s_in_crash_handler = true;
+    if (s_cleanup_handler)
+      s_cleanup_handler();
+
+    WriteMinidumpAndCallstack(nullptr, "Invalid parameter handler invoked");
+  }
+
+  __fastfail(FAST_FAIL_INVALID_ARG);
+}
+
+static void RaiseHandler(const std::exception& ex)
+{
+  // if the debugger is attached, or we're recursively crashing, let it take care of it.
+  if (!s_in_crash_handler && !IsDebuggerPresent())
+  {
+    s_in_crash_handler = true;
+    if (s_cleanup_handler)
+      s_cleanup_handler();
+
+    WriteMinidumpAndCallstack(nullptr, ex.what());
+  }
+}
+
+static void PureCallHandler()
+{
+  // if the debugger is attached, or we're recursively crashing, let it take care of it.
+  if (!s_in_crash_handler && !IsDebuggerPresent())
+  {
+    s_in_crash_handler = true;
+    if (s_cleanup_handler)
+      s_cleanup_handler();
+
+    WriteMinidumpAndCallstack(nullptr, "Pure call handler invoked");
+  }
+
+  __fastfail(FAST_FAIL_INVALID_ARG);
+}
+
+static void TerminateHandler()
+{
+  if (!s_in_crash_handler && !IsDebuggerPresent())
+  {
+    s_in_crash_handler = true;
+    if (s_cleanup_handler)
+      s_cleanup_handler();
+
+    WriteMinidumpAndCallstack(nullptr, "Terminate handler invoked");
+  }
+
+  if (IsDebuggerPresent())
+    __debugbreak();
+
+  TerminateProcess(GetCurrentProcess(), 0xFBFBFBFBu);
+}
+
+static void AbortSignalHandler(int signal)
+{
+  // if the debugger is attached, or we're recursively crashing, let it take care of it.
+  if (!s_in_crash_handler && !IsDebuggerPresent())
+  {
+    s_in_crash_handler = true;
+    if (s_cleanup_handler)
+      s_cleanup_handler();
+
+    WriteMinidumpAndCallstack(nullptr, "Pure call handler invoked");
+  }
+
+  if (IsDebuggerPresent())
+    __debugbreak();
+
+  TerminateProcess(GetCurrentProcess(), 0xFAFAFAFAu);
 }
 
 bool CrashHandler::Install(CleanupHandler cleanup_handler)
@@ -169,8 +253,19 @@ bool CrashHandler::Install(CleanupHandler cleanup_handler)
   if (mod)
     s_dbghelp_module.Adopt(mod);
 
-  SetUnhandledExceptionFilter(ExceptionHandler);
   s_cleanup_handler = cleanup_handler;
+
+  SetUnhandledExceptionFilter(ExceptionHandler);
+  _set_invalid_parameter_handler(InvalidParameterHandler);
+  _set_purecall_handler(PureCallHandler);
+  std::exception::_Set_raise_handler(RaiseHandler);
+  std::set_terminate(TerminateHandler);
+#ifdef _DEBUG
+  _set_abort_behavior(_WRITE_ABORT_MSG, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#else
+  _set_abort_behavior(_WRITE_ABORT_MSG | _CALL_REPORTFAULT, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
+  signal(SIGABRT, AbortSignalHandler);
   return true;
 }
 
@@ -179,12 +274,12 @@ void CrashHandler::SetWriteDirectory(std::string_view dump_directory)
   s_write_directory = StringUtil::UTF8StringToWideString(dump_directory);
 }
 
-void CrashHandler::WriteDumpForCaller()
+void CrashHandler::WriteDumpForCaller(std::string_view message)
 {
-  WriteMinidumpAndCallstack(nullptr);
+  WriteMinidumpAndCallstack(nullptr, message);
 }
 
-#elif !defined(__APPLE__)
+#elif !defined(__APPLE__) && !defined(__ANDROID__)
 
 #include <backtrace.h>
 #include <cstdarg>
@@ -226,6 +321,7 @@ const char* CrashHandler::GetSignalName(int signal_no)
       // clang-format off
     case SIGSEGV: return "SIGSEGV";
     case SIGBUS: return "SIGBUS";
+    case SIGABRT: return "SIGABRT";
     default: return "UNKNOWN";
       // clang-format on
   }
@@ -332,14 +428,18 @@ void CrashHandler::CrashSignalHandler(int signal, siginfo_t* siginfo, void* ctx)
   lock.unlock();
 
   // We can't continue from here. Just bail out and dump core.
-  std::fputs("Aborting application.\n", stderr);
-  std::fflush(stderr);
-  std::abort();
+  static const char abort_message[] = "Aborting application.\n";
+  write(STDERR_FILENO, abort_message, sizeof(abort_message) - 1);
+
+  // Call default abort signal handler, regardless of whether this was SIGSEGV or SIGABRT.
+  lock.lock();
+  std::signal(SIGABRT, SIG_DFL);
+  raise(SIGABRT);
 }
 
 bool CrashHandler::Install(CleanupHandler cleanup_handler)
 {
-  const std::string progpath = FileSystem::GetProgramPath();
+  const std::string progpath = FileSystem::GetProgramPath(nullptr);
   s_backtrace_state = backtrace_create_state(progpath.empty() ? nullptr : progpath.c_str(), 0, nullptr, nullptr);
   if (!s_backtrace_state)
     return false;
@@ -353,6 +453,8 @@ bool CrashHandler::Install(CleanupHandler cleanup_handler)
     return false;
   if (sigaction(SIGSEGV, &sa, nullptr) != 0)
     return false;
+  if (sigaction(SIGABRT, &sa, nullptr) != 0)
+    return false;
 
   s_cleanup_handler = cleanup_handler;
   return true;
@@ -362,12 +464,12 @@ void CrashHandler::SetWriteDirectory(std::string_view dump_directory)
 {
 }
 
-void CrashHandler::WriteDumpForCaller()
+void CrashHandler::WriteDumpForCaller(std::string_view message)
 {
   LogCallstack(0, nullptr);
 }
 
-#else
+#elif !defined(__ANDROID__)
 
 bool CrashHandler::Install(CleanupHandler cleanup_handler)
 {
@@ -378,7 +480,7 @@ void CrashHandler::SetWriteDirectory(std::string_view dump_directory)
 {
 }
 
-void CrashHandler::WriteDumpForCaller()
+void CrashHandler::WriteDumpForCaller(std::string_view message)
 {
 }
 

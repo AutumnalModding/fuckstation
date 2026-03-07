@@ -6,9 +6,10 @@
 
 #include "common/align.h"
 #include "common/assert.h"
+#include "common/error.h"
 #include "common/log.h"
 
-LOG_CHANNEL(MetalDevice);
+LOG_CHANNEL(GPUDevice);
 
 MetalStreamBuffer::MetalStreamBuffer() = default;
 
@@ -18,7 +19,7 @@ MetalStreamBuffer::~MetalStreamBuffer()
     Destroy();
 }
 
-bool MetalStreamBuffer::Create(id<MTLDevice> device, u32 size)
+bool MetalStreamBuffer::Create(id<MTLDevice> device, u32 size, Error* error)
 {
   @autoreleasepool
   {
@@ -27,7 +28,7 @@ bool MetalStreamBuffer::Create(id<MTLDevice> device, u32 size)
     id<MTLBuffer> new_buffer = [device newBufferWithLength:size options:options];
     if (new_buffer == nil)
     {
-      ERROR_LOG("Failed to create buffer.");
+      Error::SetStringView(error, "newBufferWithLength failed");
       return false;
     }
 

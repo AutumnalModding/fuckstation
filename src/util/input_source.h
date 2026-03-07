@@ -14,7 +14,10 @@
 #include "common/types.h"
 #include "input_manager.h"
 
+class Error;
 class SettingsInterface;
+
+class ForceFeedbackDevice;
 
 class InputSource
 {
@@ -22,22 +25,45 @@ public:
   InputSource();
   virtual ~InputSource();
 
-  virtual bool Initialize(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock) = 0;
-  virtual void UpdateSettings(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock) = 0;
+  // Sets up the input source.
+  virtual bool Initialize(const SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock) = 0;
+
+  /// Updates the settings for this input source. This should be called when settings change.
+  virtual void UpdateSettings(const SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock) = 0;
+
+  /// Reloads the devices for this input source. This should be called when a device change is detected.
   virtual bool ReloadDevices() = 0;
+
+  /// Shuts down the input source, releasing any resources it holds.
   virtual void Shutdown() = 0;
 
+  /// Polls the input source for events. This should be called at a regular interval, such as every frame.
   virtual void PollEvents() = 0;
 
+  /// Returns the current value for the specified device and key.
+  virtual std::optional<float> GetCurrentValue(InputBindingKey key) = 0;
+
+  /// Returns true if the source contains the specified device.
+  virtual bool ContainsDevice(std::string_view device) const = 0;
+
+  /// Parses a key string for the specified device. Returns std::nullopt if the key is not valid.
   virtual std::optional<InputBindingKey> ParseKeyString(std::string_view device, std::string_view binding) = 0;
+
+  /// Converts a key to a string representation. The string should be suitable for parsing with ParseKeyString().
   virtual TinyString ConvertKeyToString(InputBindingKey key) = 0;
-  virtual TinyString ConvertKeyToIcon(InputBindingKey key) = 0;
+
+  /// Converts a key to an icon representation. The icon is suitable for display in the UI.
+  virtual TinyString ConvertKeyToIcon(InputBindingKey key, InputManager::BindingIconMappingFunction mapper) = 0;
 
   /// Enumerates available devices. Returns a pair of the prefix (e.g. SDL-0) and the device name.
-  virtual std::vector<std::pair<std::string, std::string>> EnumerateDevices() = 0;
+  virtual InputManager::DeviceList EnumerateDevices() = 0;
 
   /// Enumerates available vibration motors at the time of call.
-  virtual std::vector<InputBindingKey> EnumerateMotors() = 0;
+  virtual InputManager::DeviceEffectList EnumerateEffects(std::optional<InputBindingInfo::Type> type,
+                                                          std::optional<InputBindingKey> for_device) = 0;
+
+  /// Returns the number of pollable devices managed by this source.
+  virtual u32 GetPollableDeviceCount() const = 0;
 
   /// Retrieves bindings that match the generic bindings for the specified device.
   /// Returns false if it's not one of our devices.
@@ -50,6 +76,18 @@ public:
   virtual void UpdateMotorState(InputBindingKey large_key, InputBindingKey small_key, float large_intensity,
                                 float small_intensity);
 
+  /// Adjusts intensities of LEDs or other indicators on the device.
+  virtual void UpdateLEDState(InputBindingKey key, float intensity) = 0;
+
+  /// Toggles whether updates for the specified subtype are enabled. If devices is null, all devices are enabled.
+  virtual void SetSubclassPollDeviceList(InputSubclass subclass, const std::span<const InputBindingKey>* devices) = 0;
+
+  /// Creates a force-feedback device from this source.
+  virtual std::unique_ptr<ForceFeedbackDevice> CreateForceFeedbackDevice(std::string_view device, Error* error) = 0;
+
+  /// Creates a key for a generic controller device.
+  static InputBindingKey MakeGenericControllerDeviceKey(InputSourceType clazz, u32 controller_index);
+
   /// Creates a key for a generic controller axis event.
   static InputBindingKey MakeGenericControllerAxisKey(InputSourceType clazz, u32 controller_index, s32 axis_index);
 
@@ -59,6 +97,9 @@ public:
   /// Creates a key for a generic controller hat event.
   static InputBindingKey MakeGenericControllerHatKey(InputSourceType clazz, u32 controller_index, s32 hat_index,
                                                      u8 hat_direction, u32 num_directions);
+
+  /// Creates a key for a generic controller sensor event.
+  static InputBindingKey MakeGenericControllerSensorKey(InputSourceType clazz, u32 controller_index, u32 sensor_index);
 
   /// Creates a key for a generic controller motor event.
   static InputBindingKey MakeGenericControllerMotorKey(InputSourceType clazz, u32 controller_index, s32 motor_index);
@@ -77,6 +118,7 @@ public:
 #endif
 #ifndef __ANDROID__
   static std::unique_ptr<InputSource> CreateSDLSource();
+  static void CopySDLSourceSettings(SettingsInterface* dest_si, const SettingsInterface& src_si);
 #else
   static std::unique_ptr<InputSource> CreateAndroidSource();
 #endif

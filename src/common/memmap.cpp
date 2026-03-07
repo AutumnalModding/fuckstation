@@ -27,12 +27,21 @@
 #include <mach/mach_vm.h>
 #include <mach/vm_map.h>
 #include <sys/mman.h>
-#elif !defined(__ANDROID__)
+#include <sys/sysctl.h>
+#else
 #include <cerrno>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
+#if defined(__linux__) && defined(CPU_ARCH_RISCV64)
+#include <sys/cachectl.h>
+#endif
+
+#if defined(__linux__) && !defined(MAP_FIXED_NOREPLACE)
+// Compatibility with old libc.
+#define MAP_FIXED_NOREPLACE 0x100000
 #endif
 
 LOG_CHANNEL(MemMap);
@@ -42,7 +51,25 @@ namespace MemMap {
 static void* AllocateJITMemoryAt(const void* addr, size_t size);
 } // namespace MemMap
 
+#ifdef DYNAMIC_HOST_PAGE_SIZE
+const u32 HOST_PAGE_SIZE = MemMap::GetRuntimePageSize();
+const u32 HOST_PAGE_MASK = MemMap::GetRuntimePageSize() - 1;
+const u32 HOST_PAGE_SHIFT = std::bit_width(MemMap::GetRuntimePageSize() - 1);
+#endif
+
 #ifdef _WIN32
+
+u32 MemMap::GetRuntimePageSize()
+{
+  static u32 cached_page_size = 0;
+  if (cached_page_size != 0) [[likely]]
+    return cached_page_size;
+
+  SYSTEM_INFO si = {};
+  GetSystemInfo(&si);
+  cached_page_size = si.dwPageSize;
+  return cached_page_size;
+}
 
 bool MemMap::MemProtect(void* baseaddr, size_t size, PageProtect mode)
 {
@@ -193,7 +220,7 @@ bool SharedMemoryMappingArea::Create(size_t size)
     return false;
 
   m_size = size;
-  m_num_pages = size / HOST_PAGE_SIZE;
+  m_num_pages = size >> HOST_PAGE_SHIFT;
   m_placeholder_ranges.emplace(0, size);
   return true;
 }
@@ -339,6 +366,18 @@ bool SharedMemoryMappingArea::Unmap(void* map_base, size_t map_size)
 
 #elif defined(__APPLE__)
 
+u32 MemMap::GetRuntimePageSize()
+{
+  static u32 cached_page_size = 0;
+  if (cached_page_size != 0) [[likely]]
+    return cached_page_size;
+
+  size_t page_size_size = sizeof(cached_page_size);
+  if (sysctlbyname("hw.pagesize", &cached_page_size, &page_size_size, nullptr, 0) != 0) [[unlikely]]
+    cached_page_size = 0;
+  return cached_page_size;
+}
+
 bool MemMap::MemProtect(void* baseaddr, size_t size, PageProtect mode)
 {
   DebugAssertMsg((size & (HOST_PAGE_SIZE - 1)) == 0, "Size is page aligned");
@@ -408,6 +447,11 @@ void MemMap::UnmapSharedMemory(void* baseaddr, size_t size)
 
 const void* MemMap::GetBaseAddress()
 {
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
+
   u32 name_buffer_size = 0;
   _NSGetExecutablePath(nullptr, &name_buffer_size);
   if (name_buffer_size > 0) [[likely]]
@@ -432,6 +476,10 @@ const void* MemMap::GetBaseAddress()
   }
 
   return reinterpret_cast<const void*>(&GetBaseAddress);
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 }
 
 void* MemMap::AllocateJITMemoryAt(const void* addr, size_t size)
@@ -515,7 +563,7 @@ bool SharedMemoryMappingArea::Create(size_t size)
   }
 
   m_size = size;
-  m_num_pages = size / HOST_PAGE_SIZE;
+  m_num_pages = size >> HOST_PAGE_SHIFT;
   return true;
 }
 
@@ -598,7 +646,18 @@ void MemMap::EndCodeWrite()
 
 #endif
 
-#elif !defined(__ANDROID__)
+#else
+
+u32 MemMap::GetRuntimePageSize()
+{
+  static u32 cached_page_size = 0;
+  if (cached_page_size != 0) [[likely]]
+    return cached_page_size;
+
+  const int res = sysconf(_SC_PAGESIZE);
+  cached_page_size = (res > 0) ? static_cast<u32>(res) : 0;
+  return cached_page_size;
+}
 
 bool MemMap::MemProtect(void* baseaddr, size_t size, PageProtect mode)
 {
@@ -624,6 +683,8 @@ std::string MemMap::GetFileMappingName(const char* prefix)
   return fmt::format("{}_{}", prefix, pid);
 #endif
 }
+
+#ifndef __ANDROID__
 
 void* MemMap::CreateSharedMemory(const char* name, size_t size, Error* error)
 {
@@ -682,6 +743,8 @@ void MemMap::DeleteSharedMemory(const char* name)
 {
   shm_unlink(name);
 }
+
+#endif
 
 void* MemMap::MapSharedMemory(void* handle, size_t offset, void* baseaddr, size_t size, PageProtect mode)
 {
@@ -761,7 +824,11 @@ void MemMap::ReleaseJITMemory(void* ptr, size_t size)
 
 void MemMap::FlushInstructionCache(void* address, size_t size)
 {
+#if defined(CPU_ARCH_RISCV64) && defined(__linux__) && defined(__clang__) && (__clang_major__ <= 18)
+  __riscv_flush_icache(reinterpret_cast<char*>(address), reinterpret_cast<char*>(address) + size, 0);
+#else
   __builtin___clear_cache(reinterpret_cast<char*>(address), reinterpret_cast<char*>(address) + size);
+#endif
 }
 
 #endif
@@ -784,7 +851,7 @@ bool SharedMemoryMappingArea::Create(size_t size)
 
   m_base_ptr = static_cast<u8*>(alloc);
   m_size = size;
-  m_num_pages = size / HOST_PAGE_SIZE;
+  m_num_pages = size >> HOST_PAGE_SHIFT;
   return true;
 }
 

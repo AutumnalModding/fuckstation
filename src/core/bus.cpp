@@ -14,6 +14,7 @@
 #include "interrupt_controller.h"
 #include "mdec.h"
 #include "pad.h"
+#include "pio.h"
 #include "psf_loader.h"
 #include "settings.h"
 #include "sio.h"
@@ -23,24 +24,25 @@
 #include "timing_event.h"
 
 #include "util/cd_image.h"
+#include "util/elf_file.h"
 #include "util/state_wrapper.h"
 
 #include "common/align.h"
 #include "common/assert.h"
+#include "common/binary_reader_writer.h"
 #include "common/error.h"
 #include "common/file_system.h"
 #include "common/intrin.h"
 #include "common/log.h"
 #include "common/memmap.h"
 #include "common/path.h"
+#include "common/string_util.h"
 
 #include <cstdio>
 #include <tuple>
 #include <utility>
 
 LOG_CHANNEL(Bus);
-
-// TODO: Get rid of page code bits, instead use page faults to track SMC.
 
 // Exports for external debugger access
 #ifndef __ANDROID__
@@ -136,8 +138,6 @@ std::array<TickCount, 3> g_bios_access_time = {};
 std::array<TickCount, 3> g_cdrom_access_time = {};
 std::array<TickCount, 3> g_spu_access_time = {};
 
-static std::vector<u8> s_exp1_rom;
-
 static MEMCTRL s_MEMCTRL = {};
 static RAM_SIZE_REG s_RAM_SIZE = {};
 
@@ -167,12 +167,12 @@ static void SetRAMPageWritable(u32 page_index, bool writable);
 
 static void KernelInitializedHook();
 static bool SideloadEXE(const std::string& path, Error* error);
+static bool InjectCPE(std::span<const u8> buffer, bool set_pc, Error* error);
+static bool InjectELF(const ELFFile& elf, bool set_pc, Error* error);
 
 static void SetHandlers();
 static void UpdateMappedRAMSize();
 
-template<typename FP>
-static FP* OffsetHandlerArray(void** handlers, MemoryAccessSize size, MemoryAccessType type);
 } // namespace Bus
 
 namespace MemoryMap {
@@ -383,7 +383,7 @@ void Bus::CleanupMemoryMap()
 
 void Bus::Initialize()
 {
-  SetRAMSize(g_settings.enable_8mb_ram);
+  SetRAMSize(g_settings.cpu_enable_8mb_ram);
   MapFastmemViews();
 }
 
@@ -513,6 +513,8 @@ void Bus::RecalculateMemoryTimings()
     CalculateMemoryTiming(s_MEMCTRL.cdrom_delay_size, s_MEMCTRL.common_delay);
   std::tie(g_spu_access_time[0], g_spu_access_time[1], g_spu_access_time[2]) =
     CalculateMemoryTiming(s_MEMCTRL.spu_delay_size, s_MEMCTRL.common_delay);
+  std::tie(g_exp1_access_time[0], g_exp1_access_time[1], g_exp1_access_time[2]) =
+    CalculateMemoryTiming(s_MEMCTRL.exp1_delay_size, s_MEMCTRL.common_delay);
 
   TRACE_LOG("BIOS Memory Timing: {} bit bus, byte={}, halfword={}, word={}",
             s_MEMCTRL.bios_delay_size.data_bus_16bit ? 16 : 8, g_bios_access_time[0] + 1, g_bios_access_time[1] + 1,
@@ -521,6 +523,9 @@ void Bus::RecalculateMemoryTimings()
             s_MEMCTRL.cdrom_delay_size.data_bus_16bit ? 16 : 8, g_cdrom_access_time[0] + 1, g_cdrom_access_time[1] + 1,
             g_cdrom_access_time[2] + 1);
   TRACE_LOG("SPU Memory Timing: {} bit bus, byte={}, halfword={}, word={}",
+            s_MEMCTRL.spu_delay_size.data_bus_16bit ? 16 : 8, g_spu_access_time[0] + 1, g_spu_access_time[1] + 1,
+            g_spu_access_time[2] + 1);
+  TRACE_LOG("EXP1 Memory Timing: {} bit bus, byte={}, halfword={}, word={}",
             s_MEMCTRL.spu_delay_size.data_bus_16bit ? 16 : 8, g_spu_access_time[0] + 1, g_spu_access_time[1] + 1,
             g_spu_access_time[2] + 1);
 }
@@ -544,14 +549,15 @@ u8* Bus::GetLUTFastmemPointer(u32 address, u8* ram_ptr)
 
 void Bus::MapFastmemViews()
 {
+#ifdef ENABLE_MMAP_FASTMEM
   Assert(s_fastmem_ram_views.empty());
+#endif
 
   const CPUFastmemMode mode = g_settings.cpu_fastmem_mode;
   if (mode == CPUFastmemMode::MMap)
   {
 #ifdef ENABLE_MMAP_FASTMEM
     auto MapRAM = [](u32 base_address) {
-      // No need to check mapped RAM range here, we only ever fastmem map the first 2MB.
       u8* map_address = s_fastmem_arena.BasePointer() + base_address;
       if (!s_fastmem_arena.Map(s_shmem_handle, 0, map_address, g_ram_size, PageProtect::ReadWrite)) [[unlikely]]
       {
@@ -561,11 +567,12 @@ void Bus::MapFastmemViews()
       }
 
       // mark all pages with code as non-writable
-      for (u32 i = 0; i < static_cast<u32>(g_ram_code_bits.size()); i++)
+      const u32 page_count = g_ram_size >> HOST_PAGE_SHIFT;
+      for (u32 i = 0; i < page_count; i++)
       {
         if (g_ram_code_bits[i])
         {
-          u8* page_address = map_address + (i * HOST_PAGE_SIZE);
+          u8* page_address = map_address + (i << HOST_PAGE_SHIFT);
           if (!MemMap::MemProtect(page_address, HOST_PAGE_SIZE, PageProtect::ReadOnly)) [[unlikely]]
           {
             ERROR_LOG("Failed to write-protect code page at {}", static_cast<void*>(page_address));
@@ -586,6 +593,16 @@ void Bus::MapFastmemViews()
 
     // KSEG1 - uncached
     MapRAM(0xA0000000);
+
+    // Mirrors of 2MB
+    if (g_ram_size == RAM_2MB_SIZE)
+    {
+      // Instead of mapping all the RAM mirrors, we only map the KSEG0 uppermost mirror.
+      // This is where some games place their stack, so we avoid the backpatching overhead/slowdown,
+      // but don't pay the cost of 4x the mprotect() calls when a page's protection changes, which
+      // can have a non-trivial impact on slow ARM devices.
+      MapRAM(0x80600000);
+    }
 #else
     Panic("MMap fastmem should not be selected on this platform.");
 #endif
@@ -606,7 +623,7 @@ void Bus::MapFastmemViews()
 
     auto MapRAM = [](u32 base_address) {
       // Don't map RAM that isn't accessible.
-      if ((base_address & CPU::PHYSICAL_MEMORY_ADDRESS_MASK) >= g_ram_mapped_size)
+      if (CPU::VirtualAddressToPhysical(base_address) >= g_ram_mapped_size)
         return;
 
       u8* ram_ptr = g_ram + (base_address & g_ram_mask);
@@ -657,7 +674,7 @@ void Bus::RemapFastmemViews()
 
 bool Bus::CanUseFastmemForAddress(VirtualMemoryAddress address)
 {
-  const PhysicalMemoryAddress paddr = address & CPU::PHYSICAL_MEMORY_ADDRESS_MASK;
+  const PhysicalMemoryAddress paddr = CPU::VirtualAddressToPhysical(address);
 
   switch (g_settings.cpu_fastmem_mode)
   {
@@ -666,7 +683,8 @@ bool Bus::CanUseFastmemForAddress(VirtualMemoryAddress address)
     {
       // Currently since we don't map the mirrors, don't use fastmem for them.
       // This is because the swapping of page code bits for SMC is too expensive.
-      return (paddr < g_ram_size);
+      // Except for the uppermost mirror in KSEG0, see above.
+      return (paddr < g_ram_size) || (address >= 0x80600000 && address < 0x80800000);
     }
 #endif
 
@@ -677,11 +695,6 @@ bool Bus::CanUseFastmemForAddress(VirtualMemoryAddress address)
     default:
       return false;
   }
-}
-
-bool Bus::IsRAMCodePage(u32 index)
-{
-  return g_ram_code_bits[index];
 }
 
 void Bus::SetRAMCodePage(u32 index)
@@ -706,7 +719,7 @@ void Bus::ClearRAMCodePage(u32 index)
 
 void Bus::SetRAMPageWritable(u32 page_index, bool writable)
 {
-  if (!MemMap::MemProtect(&g_ram[page_index * HOST_PAGE_SIZE], HOST_PAGE_SIZE,
+  if (!MemMap::MemProtect(&g_ram[page_index << HOST_PAGE_SHIFT], HOST_PAGE_SIZE,
                           writable ? PageProtect::ReadWrite : PageProtect::ReadOnly)) [[unlikely]]
   {
     ERROR_LOG("Failed to set RAM host page {} ({}) to {}", page_index,
@@ -722,11 +735,11 @@ void Bus::SetRAMPageWritable(u32 page_index, bool writable)
     // unprotect fastmem pages
     for (const auto& it : s_fastmem_ram_views)
     {
-      u8* page_address = it.first + (page_index * HOST_PAGE_SIZE);
+      u8* page_address = it.first + (page_index << HOST_PAGE_SHIFT);
       if (!MemMap::MemProtect(page_address, HOST_PAGE_SIZE, protect)) [[unlikely]]
       {
         ERROR_LOG("Failed to {} code page {} (0x{:08X}) @ {}", writable ? "unprotect" : "protect", page_index,
-                  page_index * static_cast<u32>(HOST_PAGE_SIZE), static_cast<void*>(page_address));
+                  page_index << HOST_PAGE_SHIFT, static_cast<void*>(page_address));
       }
     }
 
@@ -757,7 +770,7 @@ void Bus::ClearRAMCodePageFlags()
 
 bool Bus::IsCodePageAddress(PhysicalMemoryAddress address)
 {
-  return IsRAMAddress(address) ? g_ram_code_bits[(address & g_ram_mask) / HOST_PAGE_SIZE] : false;
+  return IsRAMAddress(address) ? g_ram_code_bits[(address & g_ram_mask) >> HOST_PAGE_SHIFT] : false;
 }
 
 bool Bus::HasCodePagesInRange(PhysicalMemoryAddress start_address, u32 size)
@@ -770,7 +783,7 @@ bool Bus::HasCodePagesInRange(PhysicalMemoryAddress start_address, u32 size)
   const u32 end_address = start_address + size;
   while (start_address < end_address)
   {
-    const u32 code_page_index = start_address / HOST_PAGE_SIZE;
+    const u32 code_page_index = start_address >> HOST_PAGE_SHIFT;
     if (g_ram_code_bits[code_page_index])
       return true;
 
@@ -785,6 +798,8 @@ const TickCount* Bus::GetMemoryAccessTimePtr(PhysicalMemoryAddress address, Memo
   // Currently only BIOS, but could be EXP1 as well.
   if (address >= BIOS_BASE && address < (BIOS_BASE + BIOS_MIRROR_SIZE))
     return &g_bios_access_time[static_cast<size_t>(size)];
+  else if (address >= EXP1_BASE && address < (EXP1_BASE + EXP1_SIZE))
+    return &g_exp1_access_time[static_cast<size_t>(size)];
 
   return nullptr;
 }
@@ -919,11 +934,6 @@ std::optional<PhysicalMemoryAddress> Bus::SearchMemory(PhysicalMemoryAddress sta
   return std::nullopt;
 }
 
-void Bus::SetExpansionROM(std::vector<u8> data)
-{
-  s_exp1_rom = std::move(data);
-}
-
 void Bus::AddTTYCharacter(char ch)
 {
   if (ch == '\r')
@@ -933,15 +943,15 @@ void Bus::AddTTYCharacter(char ch)
   {
     if (!s_tty_line_buffer.empty())
     {
-      Log::FastWrite("TTY", "", Log::Level::Info, "\033[1;34m{}\033[0m", s_tty_line_buffer);
-#ifdef _DEBUG
+      GENERIC_LOG(Log::Channel::TTY, Log::Level::Info, Log::Color::StrongBlue, s_tty_line_buffer);
+#if defined(_DEBUG) || defined(_DEVEL)
       if (CPU::IsTraceEnabled())
         CPU::WriteToExecutionLog("TTY: %s\n", s_tty_line_buffer.c_str());
 #endif
     }
     s_tty_line_buffer.clear();
   }
-  else
+  else if (ch != '\0')
   {
     s_tty_line_buffer += ch;
   }
@@ -969,15 +979,12 @@ bool Bus::InjectExecutable(std::span<const u8> buffer, bool set_pc, Error* error
     return false;
   }
 
-  if (header.memfill_size > 0)
+  if (header.memfill_size > 0 &&
+      !CPU::SafeZeroMemoryBytes(header.memfill_start & ~UINT32_C(3), Common::AlignDownPow2(header.memfill_size, 4)))
   {
-    const u32 words_to_write = header.memfill_size / 4;
-    u32 address = header.memfill_start & ~UINT32_C(3);
-    for (u32 i = 0; i < words_to_write; i++)
-    {
-      CPU::SafeWriteMemoryWord(address, 0);
-      address += sizeof(u32);
-    }
+    Error::SetStringFmt(error, "Failed to zero {} bytes of memory at address 0x{:08X}.", header.memfill_start,
+                        header.memfill_size);
+    return false;
   }
 
   const u32 data_load_size =
@@ -1007,6 +1014,167 @@ bool Bus::InjectExecutable(std::span<const u8> buffer, bool set_pc, Error* error
   }
 
   return true;
+}
+
+bool Bus::InjectCPE(std::span<const u8> buffer, bool set_pc, Error* error)
+{
+  // https://psx-spx.consoledev.net/cdromfileformats/#cdrom-file-psyq-cpe-files-debug-executables
+  BinarySpanReader reader(buffer);
+  if (reader.ReadU32() != BIOS::CPE_MAGIC)
+  {
+    Error::SetStringView(error, "Invalid CPE signature.");
+    return false;
+  }
+
+  static constexpr auto set_register = [](u32 reg, u32 value) {
+    if (reg == 0x90)
+    {
+      CPU::SetPC(value);
+    }
+    else
+    {
+      WARNING_LOG("Ignoring set register 0x{:X} to 0x{:X}", reg, value);
+    }
+  };
+
+  for (;;)
+  {
+    if (!reader.CheckRemaining(1))
+    {
+      Error::SetStringView(error, "End of file reached before EOF chunk.");
+      return false;
+    }
+
+    // Little error checking on chunk sizes, because if any of them run out of buffer,
+    // it'll loop around and hit the EOF if above.
+    const u8 chunk = reader.ReadU8();
+    switch (chunk)
+    {
+      case 0x00:
+      {
+        // End of file
+        return true;
+      }
+
+      case 0x01:
+      {
+        // Load data
+        const u32 addr = reader.ReadU32();
+        const u32 size = reader.ReadU32();
+        if (size > 0)
+        {
+          if (!reader.CheckRemaining(size))
+          {
+            Error::SetStringFmt(error, "EOF reached in the middle of load to 0x{:08X}", addr);
+            return false;
+          }
+
+          if (const auto data = reader.GetRemainingSpan(size); !CPU::SafeWriteMemoryBytes(addr, data))
+          {
+            Error::SetStringFmt(error, "Failed to write {} bytes to address 0x{:08X}", size, addr);
+            return false;
+          }
+
+          reader.IncrementPosition(size);
+        }
+      }
+      break;
+
+      case 0x02:
+      {
+        // Run address, ignored
+        DEV_LOG("Ignoring run address 0x{:X}", reader.ReadU32());
+      }
+      break;
+
+      case 0x03:
+      {
+        // Set register 32-bit
+        const u16 reg = reader.ReadU16();
+        const u32 value = reader.ReadU32();
+        set_register(reg, value);
+      }
+      break;
+
+      case 0x04:
+      {
+        // Set register 16-bit
+        const u16 reg = reader.ReadU16();
+        const u16 value = reader.ReadU16();
+        set_register(reg, value);
+      }
+      break;
+
+      case 0x05:
+      {
+        // Set register 8-bit
+        const u16 reg = reader.ReadU16();
+        const u8 value = reader.ReadU8();
+        set_register(reg, value);
+      }
+      break;
+
+      case 0x06:
+      {
+        // Set register 24-bit
+        const u16 reg = reader.ReadU16();
+        const u16 low = reader.ReadU16();
+        const u8 high = reader.ReadU8();
+        set_register(reg, ZeroExtend32(low) | (ZeroExtend32(high) << 16));
+      }
+      break;
+
+      case 0x07:
+      {
+        // Select workspace
+        DEV_LOG("Ignoring set workspace 0x{:X}", reader.ReadU32());
+      }
+      break;
+
+      case 0x08:
+      {
+        // Select unit
+        DEV_LOG("Ignoring select unit 0x{:X}", reader.ReadU8());
+      }
+      break;
+
+      default:
+      {
+        WARNING_LOG("Unknown chunk 0x{:02X} in CPE file, parsing will probably fail now.", chunk);
+      }
+      break;
+    }
+  }
+
+  return true;
+}
+
+bool Bus::InjectELF(const ELFFile& elf, bool set_pc, Error* error)
+{
+  const bool okay = elf.LoadExecutableSections(
+    [](std::span<const u8> data, u32 dest_addr, u32 dest_size, Error* error) {
+      if (!data.empty() && !CPU::SafeWriteMemoryBytes(dest_addr, data))
+      {
+        Error::SetStringFmt(error, "Failed to load {} bytes to 0x{:08X}", data.size(), dest_addr);
+        return false;
+      }
+
+      const u32 zero_addr = dest_addr + static_cast<u32>(data.size());
+      const u32 zero_bytes = dest_size - static_cast<u32>(data.size());
+      if (zero_bytes > 0 && !CPU::SafeZeroMemoryBytes(zero_addr, zero_bytes))
+      {
+        Error::SetStringFmt(error, "Failed to zero {} bytes at 0x{:08X}", zero_bytes, zero_addr);
+        return false;
+      }
+
+      return true;
+    },
+    error);
+
+  if (okay && set_pc)
+    CPU::SetPC(elf.GetEntryPoint());
+
+  return okay;
 }
 
 void Bus::KernelInitializedHook()
@@ -1043,23 +1211,50 @@ void Bus::KernelInitializedHook()
 
 bool Bus::SideloadEXE(const std::string& path, Error* error)
 {
-  // look for a libps.exe next to the exe, if it exists, load it
-  bool okay = true;
-  if (const std::string libps_path = Path::BuildRelativePath(path, "libps.exe");
-      FileSystem::FileExists(libps_path.c_str()))
+  std::optional<DynamicHeapArray<u8>> exe_data = FileSystem::ReadBinaryFile(path.c_str(), error);
+  if (!exe_data.has_value())
   {
-    const std::optional<DynamicHeapArray<u8>> exe_data = FileSystem::ReadBinaryFile(libps_path.c_str(), error);
-    okay = (exe_data.has_value() && InjectExecutable(exe_data->cspan(), false, error));
-    if (!okay)
-      Error::AddPrefix(error, "Failed to load libps.exe: ");
+    Error::AddPrefixFmt(error, "Failed to read {}: ", Path::GetFileName(path));
+    return false;
   }
-  if (okay)
+
+  // Stupid Android...
+  std::string filename = FileSystem::GetDisplayNameFromPath(path);
+
+  bool okay = true;
+  if (StringUtil::EndsWithNoCase(filename, ".cpe"))
   {
-    const std::optional<DynamicHeapArray<u8>> exe_data =
-      FileSystem::ReadBinaryFile(System::GetExeOverride().c_str(), error);
-    okay = (exe_data.has_value() && InjectExecutable(exe_data->cspan(), true, error));
-    if (!okay)
-      Error::AddPrefixFmt(error, "Failed to load {}: ", Path::GetFileName(path));
+    okay = InjectCPE(exe_data->cspan(), true, error);
+  }
+  else if (StringUtil::EndsWithNoCase(filename, ".elf"))
+  {
+    ELFFile elf;
+    if (!elf.Open(std::move(exe_data.value()), error))
+      return false;
+
+    okay = InjectELF(elf, true, error);
+  }
+  else
+  {
+    // look for a libps.exe next to the exe, if it exists, load it
+    if (const std::string libps_path = Path::BuildRelativePath(path, "libps.exe");
+        FileSystem::FileExists(libps_path.c_str()))
+    {
+      const std::optional<DynamicHeapArray<u8>> libps_data = FileSystem::ReadBinaryFile(libps_path.c_str(), error);
+      if (!libps_data.has_value() || !InjectExecutable(libps_data->cspan(), false, error))
+      {
+        Error::AddPrefix(error, "Failed to load libps.exe: ");
+        return false;
+      }
+    }
+
+    okay = InjectExecutable(exe_data->cspan(), true, error);
+  }
+
+  if (!okay)
+  {
+    Error::AddPrefixFmt(error, "Failed to load {}: ", Path::GetFileName(path));
+    return false;
   }
 
   return okay;
@@ -1284,10 +1479,10 @@ template<MemoryAccessSize size>
 u32 Bus::ICacheReadHandler(VirtualMemoryAddress address)
 {
   const u32 line = CPU::GetICacheLine(address);
-  const u8* line_data = &CPU::g_state.icache_data[line * CPU::ICACHE_LINE_SIZE];
+  const u32* line_data = &CPU::g_state.icache_data[line * CPU::ICACHE_WORDS_PER_LINE];
   const u32 offset = CPU::GetICacheLineOffset(address);
   u32 result;
-  std::memcpy(&result, &line_data[offset], sizeof(result));
+  std::memcpy(&result, reinterpret_cast<const u8*>(line_data) + offset, sizeof(result));
   return result;
 }
 
@@ -1295,14 +1490,15 @@ template<MemoryAccessSize size>
 void Bus::ICacheWriteHandler(VirtualMemoryAddress address, u32 value)
 {
   const u32 line = CPU::GetICacheLine(address);
+  u32* line_data = &CPU::g_state.icache_data[line * CPU::ICACHE_WORDS_PER_LINE];
   const u32 offset = CPU::GetICacheLineOffset(address);
   CPU::g_state.icache_tags[line] = CPU::GetICacheTagForAddress(address) | CPU::ICACHE_INVALID_BITS;
   if constexpr (size == MemoryAccessSize::Byte)
-    std::memcpy(&CPU::g_state.icache_data[line * CPU::ICACHE_LINE_SIZE + offset], &value, sizeof(u8));
+    std::memcpy(reinterpret_cast<u8*>(line_data) + offset, &value, sizeof(u8));
   else if constexpr (size == MemoryAccessSize::HalfWord)
-    std::memcpy(&CPU::g_state.icache_data[line * CPU::ICACHE_LINE_SIZE + offset], &value, sizeof(u16));
+    std::memcpy(reinterpret_cast<u8*>(line_data) + offset, &value, sizeof(u16));
   else
-    std::memcpy(&CPU::g_state.icache_data[line * CPU::ICACHE_LINE_SIZE + offset], &value, sizeof(u32));
+    std::memcpy(reinterpret_cast<u8*>(line_data) + offset, &value, sizeof(u32));
 }
 
 template<MemoryAccessSize size>
@@ -1310,53 +1506,49 @@ u32 Bus::EXP1ReadHandler(VirtualMemoryAddress address)
 {
   BUS_CYCLES(g_exp1_access_time[static_cast<u32>(size)]);
 
+  // TODO: auto-increment should be handled elsewhere...
+
   const u32 offset = address & EXP1_MASK;
-  u32 value;
-  if (s_exp1_rom.empty())
+  u32 ret;
+
+  if constexpr (size >= MemoryAccessSize::HalfWord)
   {
-    // EXP1 not present.
-    value = UINT32_C(0xFFFFFFFF);
-  }
-  else if (offset == 0x20018)
-  {
-    // Bit 0 - Action Replay On/Off
-    value = UINT32_C(1);
+    ret = g_pio_device->ReadHandler(offset);
+    ret |= ZeroExtend32(g_pio_device->ReadHandler(offset + 1)) << 8;
+    if constexpr (size == MemoryAccessSize::Word)
+    {
+      ret |= ZeroExtend32(g_pio_device->ReadHandler(offset + 2)) << 16;
+      ret |= ZeroExtend32(g_pio_device->ReadHandler(offset + 3)) << 24;
+    }
   }
   else
   {
-    const u32 transfer_size = u32(1) << static_cast<u32>(size);
-    if ((offset + transfer_size) > s_exp1_rom.size())
-    {
-      value = UINT32_C(0);
-    }
-    else
-    {
-      if constexpr (size == MemoryAccessSize::Byte)
-      {
-        value = ZeroExtend32(s_exp1_rom[offset]);
-      }
-      else if constexpr (size == MemoryAccessSize::HalfWord)
-      {
-        u16 halfword;
-        std::memcpy(&halfword, &s_exp1_rom[offset], sizeof(halfword));
-        value = ZeroExtend32(halfword);
-      }
-      else
-      {
-        std::memcpy(&value, &s_exp1_rom[offset], sizeof(value));
-      }
-
-      // Log_DevPrintf("EXP1 read: 0x%08X -> 0x%08X", address, value);
-    }
+    ret = ZeroExtend32(g_pio_device->ReadHandler(offset));
   }
 
-  return value;
+  return ret;
 }
 
 template<MemoryAccessSize size>
 void Bus::EXP1WriteHandler(VirtualMemoryAddress address, u32 value)
 {
-  WARNING_LOG("EXP1 write: 0x{:08X} <- 0x{:08X}", address, value);
+  // TODO: auto-increment should be handled elsewhere...
+
+  const u32 offset = address & EXP1_MASK;
+  if constexpr (size >= MemoryAccessSize::HalfWord)
+  {
+    g_pio_device->WriteHandler(offset, Truncate8(value));
+    g_pio_device->WriteHandler(offset + 1, Truncate8(value >> 8));
+    if constexpr (size == MemoryAccessSize::Word)
+    {
+      g_pio_device->WriteHandler(offset + 2, Truncate8(value >> 16));
+      g_pio_device->WriteHandler(offset + 3, Truncate8(value >> 24));
+    }
+  }
+  else
+  {
+    g_pio_device->WriteHandler(offset, Truncate8(value));
+  }
 }
 
 template<MemoryAccessSize size>
@@ -1375,6 +1567,11 @@ u32 Bus::EXP2ReadHandler(VirtualMemoryAddress address)
   else if (offset >= 0x60 && offset <= 0x67)
   {
     // nocash expansion area
+    value = UINT32_C(0xFFFFFFFF);
+  }
+  else if (offset == 0x80)
+  {
+    // pcsx_present()
     value = UINT32_C(0xFFFFFFFF);
   }
   else
@@ -1452,8 +1649,7 @@ template<MemoryAccessSize size>
 u32 Bus::SIO2ReadHandler(PhysicalMemoryAddress address)
 {
   // Stub for using PS2 BIOS.
-  if (const BIOS::ImageInfo* ii = System::GetBIOSImageInfo();
-      !ii || ii->fastboot_patch != BIOS::ImageInfo::FastBootPatch::Type2) [[unlikely]]
+  if (System::IsUsingKnownPS1BIOS()) [[unlikely]]
   {
     // Throw exception when not using PS2 BIOS.
     return UnmappedReadHandler<size>(address);
@@ -1467,8 +1663,7 @@ template<MemoryAccessSize size>
 void Bus::SIO2WriteHandler(PhysicalMemoryAddress address, u32 value)
 {
   // Stub for using PS2 BIOS.
-  if (const BIOS::ImageInfo* ii = System::GetBIOSImageInfo();
-      !ii || ii->fastboot_patch != BIOS::ImageInfo::FastBootPatch::Type2) [[unlikely]]
+  if (System::IsUsingKnownPS1BIOS()) [[unlikely]]
   {
     // Throw exception when not using PS2 BIOS.
     UnmappedWriteHandler<size>(address, value);
@@ -1689,7 +1884,7 @@ template<MemoryAccessSize size>
 u32 Bus::HWHandlers::GPURead(PhysicalMemoryAddress address)
 {
   const u32 offset = address & GPU_MASK;
-  u32 value = g_gpu->ReadRegister(FIXUP_WORD_OFFSET(size, offset));
+  u32 value = g_gpu.ReadRegister(FIXUP_WORD_OFFSET(size, offset));
   value = FIXUP_WORD_READ_VALUE(size, offset, value);
   BUS_CYCLES(2);
   return value;
@@ -1699,7 +1894,7 @@ template<MemoryAccessSize size>
 void Bus::HWHandlers::GPUWrite(PhysicalMemoryAddress address, u32 value)
 {
   const u32 offset = address & GPU_MASK;
-  g_gpu->WriteRegister(FIXUP_WORD_OFFSET(size, offset), FIXUP_WORD_WRITE_VALUE(size, offset, value));
+  g_gpu.WriteRegister(FIXUP_WORD_OFFSET(size, offset), FIXUP_WORD_WRITE_VALUE(size, offset, value));
 }
 
 template<MemoryAccessSize size>
@@ -2107,7 +2302,7 @@ void** Bus::GetMemoryHandlers(bool isolate_cache, bool swap_caches)
   if (!isolate_cache)
     return g_memory_handlers;
 
-#ifdef _DEBUG
+#if defined(_DEBUG) || defined(_DEVEL)
   if (swap_caches)
     WARNING_LOG("Cache isolated and swapped, icache will be written instead of scratchpad?");
 #endif

@@ -17,18 +17,17 @@
 class MemoryCard final
 {
 public:
-  MemoryCard();
+  MemoryCard(u32 index);
   ~MemoryCard();
 
   static constexpr u32 STATE_SIZE = 1 + 1 + 2 + 1 + 1 + 1 + MemoryCardImage::DATA_SIZE + 1;
 
-  static std::unique_ptr<MemoryCard> Create();
-  static std::unique_ptr<MemoryCard> Open(std::string_view filename);
+  static std::unique_ptr<MemoryCard> Create(u32 index);
+  static std::unique_ptr<MemoryCard> Open(u32 index, std::string path);
 
   const MemoryCardImage::DataArray& GetData() const { return m_data; }
   MemoryCardImage::DataArray& GetData() { return m_data; }
-  const std::string& GetFilename() const { return m_filename; }
-  void SetFilename(std::string filename) { m_filename = std::move(filename); }
+  const std::string& GetPath() const { return m_path; }
 
   void Reset();
   bool DoState(StateWrapper& sw);
@@ -95,6 +94,8 @@ private:
 
   static TickCount GetSaveDelayInTicks();
 
+  static std::string GetOSDMessageKey(u32 index);
+
   bool SaveIfChanged(bool display_osd_message);
   void QueueFileSave();
 
@@ -107,7 +108,8 @@ private:
   bool m_changed = false;
 
   TimingEvent m_save_event;
-  std::string m_filename;
+  std::string m_path;
+  u32 m_index;
 
   MemoryCardImage::DataArray m_data{};
 };

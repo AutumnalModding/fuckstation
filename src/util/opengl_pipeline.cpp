@@ -21,7 +21,9 @@
 
 #include <cerrno>
 
-LOG_CHANNEL(OpenGLDevice);
+LOG_CHANNEL(GPUDevice);
+
+namespace {
 
 struct PipelineDiskCacheFooter
 {
@@ -42,6 +44,28 @@ struct PipelineDiskCacheIndexEntry
   u32 compressed_size;
 };
 static_assert(sizeof(PipelineDiskCacheIndexEntry) == 112); // No padding
+
+struct VAMapping
+{
+  GLenum type;
+  GLboolean normalized;
+  GLboolean integer;
+};
+
+} // namespace
+
+static constexpr const std::array<VAMapping, static_cast<u8>(GPUPipeline::VertexAttribute::Type::MaxCount)>
+  s_vao_format_mapping = {{
+    {GL_FLOAT, GL_FALSE, GL_FALSE},         // Float
+    {GL_UNSIGNED_BYTE, GL_FALSE, GL_TRUE},  // UInt8
+    {GL_BYTE, GL_FALSE, GL_TRUE},           // SInt8
+    {GL_UNSIGNED_BYTE, GL_TRUE, GL_FALSE},  // UNorm8
+    {GL_UNSIGNED_SHORT, GL_FALSE, GL_TRUE}, // UInt16
+    {GL_SHORT, GL_FALSE, GL_TRUE},          // SInt16
+    {GL_UNSIGNED_SHORT, GL_TRUE, GL_FALSE}, // UNorm16
+    {GL_UNSIGNED_INT, GL_FALSE, GL_TRUE},   // UInt32
+    {GL_INT, GL_FALSE, GL_TRUE},            // SInt32
+  }};
 
 static GLenum GetGLShaderType(GPUShaderStage stage)
 {
@@ -78,9 +102,10 @@ OpenGLShader::~OpenGLShader()
     glDeleteShader(m_id.value());
 }
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
+
 void OpenGLShader::SetDebugName(std::string_view name)
 {
-#ifdef _DEBUG
   if (glObjectLabel)
   {
     if (m_id.has_value())
@@ -94,8 +119,9 @@ void OpenGLShader::SetDebugName(std::string_view name)
       m_debug_name = name;
     }
   }
-#endif
 }
+
+#endif
 
 bool OpenGLShader::Compile(Error* error)
 {
@@ -155,7 +181,7 @@ bool OpenGLShader::Compile(Error* error)
 
   m_id = shader;
 
-#ifdef _DEBUG
+#ifdef ENABLE_GPU_OBJECT_NAMES
   if (glObjectLabel && !m_debug_name.empty())
   {
     glObjectLabel(GL_SHADER, shader, static_cast<GLsizei>(m_debug_name.length()),
@@ -373,14 +399,25 @@ GLuint OpenGLDevice::CompileProgram(const GPUPipeline::GraphicsConfig& plconfig,
       }
     }
 
-    glBindFragDataLocation(program_id, 0, "o_col0");
+    // Output colour is implicit in GLES.
+    const bool is_gles = m_gl_context->IsGLES();
+    if (!is_gles)
+      glBindFragDataLocation(program_id, 0, "o_col0");
 
     if (m_features.dual_source_blend)
     {
       if (GLAD_GL_VERSION_3_3 || GLAD_GL_ARB_blend_func_extended)
+      {
+        if (is_gles)
+          glBindFragDataLocationIndexed(program_id, 0, 0, "o_col0");
         glBindFragDataLocationIndexed(program_id, 1, 0, "o_col1");
+      }
       else if (GLAD_GL_EXT_blend_func_extended)
+      {
+        if (is_gles)
+          glBindFragDataLocationIndexedEXT(program_id, 0, 0, "o_col1");
         glBindFragDataLocationIndexedEXT(program_id, 1, 0, "o_col1");
+      }
     }
   }
 
@@ -416,7 +453,7 @@ GLuint OpenGLDevice::CompileProgram(const GPUPipeline::GraphicsConfig& plconfig,
         ss << "\n########## FRAGMENT SHADER ##########\n";
         ss << fragment_shader->GetSource();
         ss << "\n#####################################\n";
-        DumpBadShader(ss.str(), info_log);
+        DumpBadShader(std::move(ss).str(), info_log);
       }
 
       ERROR_LOG("Program failed to link:\n{}", info_log);
@@ -435,9 +472,12 @@ void OpenGLDevice::PostLinkProgram(const GPUPipeline::GraphicsConfig& plconfig, 
 {
   if (!ShaderGen::UseGLSLBindingLayout())
   {
-    GLint location = glGetUniformBlockIndex(program_id, "UBOBlock");
-    if (location >= 0)
-      glUniformBlockBinding(program_id, location, 0);
+    const GLint ubo_location = glGetUniformBlockIndex(program_id, "UBOBlock");
+    if (ubo_location >= 0)
+      glUniformBlockBinding(program_id, ubo_location, 0);
+    const GLint push_constant_location = glGetUniformBlockIndex(program_id, "PushConstants");
+    if (push_constant_location >= 0)
+      glUniformBlockBinding(program_id, push_constant_location, 1);
 
     glUseProgram(program_id);
 
@@ -445,9 +485,9 @@ void OpenGLDevice::PostLinkProgram(const GPUPipeline::GraphicsConfig& plconfig, 
     const u32 num_textures = std::max<u32>(GetActiveTexturesForLayout(plconfig.layout), 1);
     for (u32 i = 0; i < num_textures; i++)
     {
-      location = glGetUniformLocation(program_id, TinyString::from_format("samp{}", i));
-      if (location >= 0)
-        glUniform1i(location, i);
+      const GLint samp_location = glGetUniformLocation(program_id, TinyString::from_format("samp{}", i));
+      if (samp_location >= 0)
+        glUniform1i(samp_location, i);
     }
 
     glUseProgram(m_last_program);
@@ -513,29 +553,10 @@ GLuint OpenGLDevice::CreateVAO(std::span<const GPUPipeline::VertexAttribute> att
   m_vertex_buffer->Bind();
   m_index_buffer->Bind();
 
-  struct VAMapping
-  {
-    GLenum type;
-    GLboolean normalized;
-    GLboolean integer;
-  };
-  static constexpr const std::array<VAMapping, static_cast<u8>(GPUPipeline::VertexAttribute::Type::MaxCount)>
-    format_mapping = {{
-      {GL_FLOAT, GL_FALSE, GL_FALSE},         // Float
-      {GL_UNSIGNED_BYTE, GL_FALSE, GL_TRUE},  // UInt8
-      {GL_BYTE, GL_FALSE, GL_TRUE},           // SInt8
-      {GL_UNSIGNED_BYTE, GL_TRUE, GL_FALSE},  // UNorm8
-      {GL_UNSIGNED_SHORT, GL_FALSE, GL_TRUE}, // UInt16
-      {GL_SHORT, GL_FALSE, GL_TRUE},          // SInt16
-      {GL_UNSIGNED_SHORT, GL_TRUE, GL_FALSE}, // UNorm16
-      {GL_UNSIGNED_INT, GL_FALSE, GL_TRUE},   // UInt32
-      {GL_INT, GL_FALSE, GL_TRUE},            // SInt32
-    }};
-
   for (u32 i = 0; i < static_cast<u32>(attributes.size()); i++)
   {
     const GPUPipeline::VertexAttribute& va = attributes[i];
-    const VAMapping& m = format_mapping[static_cast<u8>(va.type.GetValue())];
+    const VAMapping& m = s_vao_format_mapping[static_cast<u8>(va.type.GetValue())];
     const void* ptr = reinterpret_cast<void*>(static_cast<uintptr_t>(va.offset.GetValue()));
     glEnableVertexAttribArray(i);
     if (m.integer)
@@ -548,6 +569,35 @@ GLuint OpenGLDevice::CreateVAO(std::span<const GPUPipeline::VertexAttribute> att
     glBindVertexArray(m_last_vao->second.vao_id);
 
   return vao;
+}
+
+void OpenGLDevice::SetVertexBufferOffsets(u32 base_vertex)
+{
+  const OpenGLPipeline::VertexArrayCacheKey& va = m_last_vao->first;
+  const u32 stride = va.vertex_attribute_stride;
+  const u32 base_vertex_start = base_vertex * stride;
+
+  if (glBindVertexBuffer) [[likely]]
+  {
+    for (u32 i = 0; i < va.num_vertex_attributes; i++)
+    {
+      glBindVertexBuffer(i, m_vertex_buffer->GetGLBufferId(), base_vertex_start + va.vertex_attributes[i].offset,
+                         static_cast<GLsizei>(stride));
+    }
+  }
+  else
+  {
+    for (u32 i = 0; i < va.num_vertex_attributes; i++)
+    {
+      const GPUPipeline::VertexAttribute& attrib = va.vertex_attributes[i];
+      const void* ptr = reinterpret_cast<void*>(static_cast<uintptr_t>(base_vertex_start + attrib.offset));
+      const VAMapping& m = s_vao_format_mapping[static_cast<u8>(attrib.type.GetValue())];
+      if (m.integer)
+        glVertexAttribIPointer(i, attrib.components, m.type, stride, ptr);
+      else
+        glVertexAttribPointer(i, attrib.components, m.type, m.normalized, stride, ptr);
+    }
+  }
 }
 
 void OpenGLDevice::UnrefVAO(const OpenGLPipeline::VertexArrayCacheKey& key)
@@ -584,13 +634,15 @@ OpenGLPipeline::~OpenGLPipeline()
   dev.UnrefVAO(m_key.va_key);
 }
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
+
 void OpenGLPipeline::SetDebugName(std::string_view name)
 {
-#ifdef _DEBUG
   if (glObjectLabel)
     glObjectLabel(GL_PROGRAM, m_program, static_cast<u32>(name.length()), name.data());
-#endif
 }
+
+#endif
 
 std::unique_ptr<GPUPipeline> OpenGLDevice::CreatePipeline(const GPUPipeline::GraphicsConfig& config, Error* error)
 {
@@ -757,12 +809,22 @@ bool OpenGLDevice::OpenPipelineCache(const std::string& path, Error* error)
 {
   DebugAssert(!m_pipeline_disk_cache_file);
 
-  m_pipeline_disk_cache_file = FileSystem::OpenCFile(path.c_str(), "r+b", error);
-  if (!m_pipeline_disk_cache_file)
+  auto fp = FileSystem::OpenManagedCFile(path.c_str(), "r+b", error);
+  if (!fp)
     return false;
 
+#ifdef HAS_POSIX_FILE_LOCK
+  // Unix doesn't prevent concurrent write access, need to explicitly lock it.
+  FileSystem::POSIXLock fp_lock(fp.get(), false, error);
+  if (!fp_lock.IsLocked())
+  {
+    Error::AddPrefix(error, "Failed to lock cache file: ");
+    return false;
+  }
+#endif
+
   // Read footer.
-  const s64 size = FileSystem::FSize64(m_pipeline_disk_cache_file);
+  const s64 size = FileSystem::FSize64(fp.get());
   if (size < static_cast<s64>(sizeof(PipelineDiskCacheFooter)) ||
       size >= static_cast<s64>(std::numeric_limits<u32>::max()))
   {
@@ -771,8 +833,8 @@ bool OpenGLDevice::OpenPipelineCache(const std::string& path, Error* error)
   }
 
   PipelineDiskCacheFooter file_footer;
-  if (FileSystem::FSeek64(m_pipeline_disk_cache_file, size - sizeof(PipelineDiskCacheFooter), SEEK_SET) != 0 ||
-      std::fread(&file_footer, sizeof(file_footer), 1, m_pipeline_disk_cache_file) != 1)
+  if (FileSystem::FSeek64(fp.get(), size - sizeof(PipelineDiskCacheFooter), SEEK_SET) != 0 ||
+      std::fread(&file_footer, sizeof(file_footer), 1, fp.get()) != 1)
   {
     Error::SetStringView(error, "Invalid cache file footer.");
     return false;
@@ -796,7 +858,7 @@ bool OpenGLDevice::OpenPipelineCache(const std::string& path, Error* error)
   m_pipeline_disk_cache_data_end = static_cast<u32>(size) - sizeof(PipelineDiskCacheFooter) -
                                    (sizeof(PipelineDiskCacheIndexEntry) * file_footer.num_programs);
   if (m_pipeline_disk_cache_data_end < 0 ||
-      FileSystem::FSeek64(m_pipeline_disk_cache_file, m_pipeline_disk_cache_data_end, SEEK_SET) != 0)
+      FileSystem::FSeek64(fp.get(), m_pipeline_disk_cache_data_end, SEEK_SET) != 0)
   {
     Error::SetStringView(error, "Failed to seek to start of index entries.");
     return false;
@@ -806,7 +868,7 @@ bool OpenGLDevice::OpenPipelineCache(const std::string& path, Error* error)
   for (u32 i = 0; i < file_footer.num_programs; i++)
   {
     PipelineDiskCacheIndexEntry entry;
-    if (std::fread(&entry, sizeof(entry), 1, m_pipeline_disk_cache_file) != 1 ||
+    if (std::fread(&entry, sizeof(entry), 1, fp.get()) != 1 ||
         (static_cast<s64>(entry.offset) + static_cast<s64>(entry.compressed_size)) >= size)
     {
       Error::SetStringView(error, "Failed to read disk cache entry.");
@@ -832,14 +894,42 @@ bool OpenGLDevice::OpenPipelineCache(const std::string& path, Error* error)
   }
 
   VERBOSE_LOG("Read {} programs from disk cache.", m_program_cache.size());
+  m_pipeline_disk_cache_file = fp.release();
+#ifdef HAS_POSIX_FILE_LOCK
+  m_pipeline_disk_cache_file_lock = std::move(fp_lock);
+#endif
   return true;
 }
 
 bool OpenGLDevice::CreatePipelineCache(const std::string& path, Error* error)
 {
+#ifndef HAS_POSIX_FILE_LOCK
   m_pipeline_disk_cache_file = FileSystem::OpenCFile(path.c_str(), "w+b", error);
   if (!m_pipeline_disk_cache_file)
     return false;
+#else
+  // Manually truncate it, that way we don't blow away another process's file on Linux.
+  m_pipeline_disk_cache_file = FileSystem::OpenCFile(path.c_str(), "a+b", error);
+  if (!m_pipeline_disk_cache_file || !FileSystem::FSeek64(m_pipeline_disk_cache_file, 0, SEEK_SET, error))
+    return false;
+
+  m_pipeline_disk_cache_file_lock = FileSystem::POSIXLock(m_pipeline_disk_cache_file, false, error);
+  if (!m_pipeline_disk_cache_file_lock.IsLocked())
+  {
+    Error::AddPrefix(error, "Failed to lock cache file: ");
+    std::fclose(m_pipeline_disk_cache_file);
+    m_pipeline_disk_cache_file = nullptr;
+    return false;
+  }
+
+  if (!FileSystem::FTruncate64(m_pipeline_disk_cache_file, 0, error))
+  {
+    Error::AddPrefix(error, "Failed to truncate cache file: ");
+    m_pipeline_disk_cache_file_lock = {};
+    std::fclose(m_pipeline_disk_cache_file);
+    m_pipeline_disk_cache_file = nullptr;
+  }
+#endif
 
   m_pipeline_disk_cache_data_end = 0;
   m_pipeline_disk_cache_changed = true;
@@ -973,6 +1063,9 @@ bool OpenGLDevice::DiscardPipelineCache()
   if (!FileSystem::FTruncate64(m_pipeline_disk_cache_file, 0, &error))
   {
     ERROR_LOG("Failed to truncate pipeline cache: {}", error.GetDescription());
+#ifdef HAS_POSIX_FILE_LOCK
+    m_pipeline_disk_cache_file_lock.Unlock();
+#endif
     std::fclose(m_pipeline_disk_cache_file);
     m_pipeline_disk_cache_file = nullptr;
     return false;
@@ -985,19 +1078,25 @@ bool OpenGLDevice::DiscardPipelineCache()
 
 bool OpenGLDevice::ClosePipelineCache(const std::string& filename, Error* error)
 {
+  const auto close_cache = [this]() {
+#ifdef HAS_POSIX_FILE_LOCK
+    m_pipeline_disk_cache_file_lock.Unlock();
+#endif
+    std::fclose(m_pipeline_disk_cache_file);
+    m_pipeline_disk_cache_file = nullptr;
+  };
+
   if (!m_pipeline_disk_cache_changed)
   {
     VERBOSE_LOG("Not updating pipeline cache because it has not changed.");
-    std::fclose(m_pipeline_disk_cache_file);
-    m_pipeline_disk_cache_file = nullptr;
+    close_cache();
     return true;
   }
 
   // Rewrite footer/index entries.
   if (!FileSystem::FSeek64(m_pipeline_disk_cache_file, m_pipeline_disk_cache_data_end, SEEK_SET, error) != 0)
   {
-    std::fclose(m_pipeline_disk_cache_file);
-    m_pipeline_disk_cache_file = nullptr;
+    close_cache();
     return false;
   }
 
@@ -1018,8 +1117,7 @@ bool OpenGLDevice::ClosePipelineCache(const std::string& filename, Error* error)
     if (std::fwrite(&entry, sizeof(entry), 1, m_pipeline_disk_cache_file) != 1) [[unlikely]]
     {
       Error::SetErrno(error, "fwrite() for entry failed: ", errno);
-      std::fclose(m_pipeline_disk_cache_file);
-      m_pipeline_disk_cache_file = nullptr;
+      close_cache();
       return false;
     }
 
@@ -1030,15 +1128,14 @@ bool OpenGLDevice::ClosePipelineCache(const std::string& filename, Error* error)
   FillFooter(&footer, m_shader_cache.GetVersion());
   footer.num_programs = count;
 
-  if (std::fwrite(&footer, sizeof(footer), 1, m_pipeline_disk_cache_file) != 1) [[unlikely]]
+  if (std::fwrite(&footer, sizeof(footer), 1, m_pipeline_disk_cache_file) != 1 ||
+      std::fflush(m_pipeline_disk_cache_file) != 0) [[unlikely]]
   {
     Error::SetErrno(error, "fwrite() for footer failed: ", errno);
-    std::fclose(m_pipeline_disk_cache_file);
-    m_pipeline_disk_cache_file = nullptr;
+    close_cache();
+    return false;
   }
 
-  if (std::fclose(m_pipeline_disk_cache_file) != 0)
-    Error::SetErrno(error, "fclose() failed: ", errno);
-  m_pipeline_disk_cache_file = nullptr;
+  close_cache();
   return true;
 }

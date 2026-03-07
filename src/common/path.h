@@ -9,6 +9,14 @@
 #include <string_view>
 #include <vector>
 
+#ifdef _WIN32
+#define FS_OSPATH_SEPARATOR_CHARACTER '\\'
+#define FS_OSPATH_SEPARATOR_STR "\\"
+#else
+#define FS_OSPATH_SEPARATOR_CHARACTER '/'
+#define FS_OSPATH_SEPARATOR_STR "/"
+#endif
+
 namespace Path {
 /// Converts any forward slashes to backslashes on Win32.
 std::string ToNativePath(std::string_view path);
@@ -19,6 +27,7 @@ std::string BuildRelativePath(std::string_view filename, std::string_view new_fi
 
 /// Joins path components together, producing a new path.
 std::string Combine(std::string_view base, std::string_view next);
+std::string Combine(std::string_view base, std::string_view subdir, std::string_view next);
 
 /// Removes all .. and . components from a path.
 std::string Canonicalize(std::string_view path);
@@ -27,6 +36,9 @@ void Canonicalize(std::string* path);
 /// Sanitizes a filename for use in a filesystem.
 std::string SanitizeFileName(std::string_view str, bool strip_slashes = true);
 void SanitizeFileName(std::string* str, bool strip_slashes = true);
+
+/// Returns true if the given filename contains any invalid characters.
+bool IsFileNameValid(std::string_view str, bool allow_slashes = false);
 
 /// Mutates the path to remove any MAX_PATH limits (for Windows).
 std::string RemoveLengthLimits(std::string_view str);
@@ -44,9 +56,6 @@ std::string MakeRelative(std::string_view path, std::string_view relative_to);
 
 /// Returns a view of the extension of a filename.
 std::string_view GetExtension(std::string_view path);
-
-/// Removes the extension of a filename.
-std::string_view StripExtension(std::string_view path);
 
 /// Replaces the extension of a filename with another.
 std::string ReplaceExtension(std::string_view path, std::string_view new_extension);

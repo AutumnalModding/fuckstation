@@ -11,7 +11,8 @@ enum : u32
 {
   NUM_DATA_REGS = 32,
   NUM_CONTROL_REGS = 32,
-  NUM_REGS = NUM_DATA_REGS + NUM_CONTROL_REGS
+  NUM_REGS = NUM_DATA_REGS + NUM_CONTROL_REGS,
+  MAX_Z = 65535,
 };
 
 union FLAGS
@@ -57,7 +58,6 @@ union Regs
 
   u32 r32[NUM_DATA_REGS + NUM_CONTROL_REGS];
 
-#pragma pack(push, 1)
   struct
   {
     s16 V0[3];     // 0-1
@@ -123,7 +123,6 @@ union Regs
     u16 pad23;     // 62
     FLAGS FLAG;    // 63
   };
-#pragma pack(pop)
 };
 static_assert(sizeof(Regs) == (sizeof(u32) * NUM_REGS));
 

@@ -11,7 +11,8 @@
 #include "opengl_pipeline.h"
 #include "opengl_texture.h"
 
-#include <cstdio>
+#include "common/file_system.h"
+
 #include <memory>
 #include <string_view>
 #include <tuple>
@@ -36,32 +37,36 @@ public:
     return GetInstance().m_texture_stream_buffer.get();
   }
   ALWAYS_INLINE static bool IsGLES() { return GetInstance().m_gl_context->IsGLES(); }
+  ALWAYS_INLINE static OpenGLContext* GetContext() { return GetInstance().m_gl_context.get(); }
   static void BindUpdateTextureUnit();
   static bool ShouldUsePBOsForDownloads();
   static void SetErrorObject(Error* errptr, std::string_view prefix, GLenum glerr);
 
-  bool HasSurface() const override;
-  void DestroySurface() override;
-
-  bool UpdateWindow() override;
-  void ResizeWindow(s32 new_window_width, s32 new_window_height, float new_window_scale) override;
-
   std::string GetDriverInfo() const override;
 
-  void ExecuteAndWaitForGPUIdle() override;
+  void FlushCommands() override;
+  void WaitForGPUIdle() override;
 
+  std::unique_ptr<GPUSwapChain> CreateSwapChain(const WindowInfo& wi, GPUVSyncMode vsync_mode,
+                                                const ExclusiveFullscreenMode* exclusive_fullscreen_mode,
+                                                std::optional<bool> exclusive_fullscreen_control,
+                                                Error* error) override;
+  bool SwitchToSurfacelessRendering(Error* error) override;
   std::unique_ptr<GPUTexture> CreateTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
-                                            GPUTexture::Type type, GPUTexture::Format format,
-                                            const void* data = nullptr, u32 data_stride = 0) override;
-  std::unique_ptr<GPUSampler> CreateSampler(const GPUSampler::Config& config) override;
-  std::unique_ptr<GPUTextureBuffer> CreateTextureBuffer(GPUTextureBuffer::Format format, u32 size_in_elements) override;
+                                            GPUTexture::Type type, GPUTextureFormat format, GPUTexture::Flags flags,
+                                            const void* data = nullptr, u32 data_stride = 0,
+                                            Error* error = nullptr) override;
+  std::unique_ptr<GPUSampler> CreateSampler(const GPUSampler::Config& config, Error* error = nullptr) override;
+  std::unique_ptr<GPUTextureBuffer> CreateTextureBuffer(GPUTextureBuffer::Format format, u32 size_in_elements,
+                                                        Error* error = nullptr) override;
 
-  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTexture::Format format) override;
-  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTexture::Format format,
-                                                            void* memory, size_t memory_size,
-                                                            u32 memory_stride) override;
+  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTextureFormat format,
+                                                            Error* error = nullptr) override;
+  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTextureFormat format,
+                                                            void* memory, size_t memory_size, u32 memory_stride,
+                                                            Error* error = nullptr) override;
 
-  bool SupportsTextureFormat(GPUTexture::Format format) const override;
+  bool SupportsTextureFormat(GPUTextureFormat format) const override;
   void CopyTextureRegion(GPUTexture* dst, u32 dst_x, u32 dst_y, u32 dst_layer, u32 dst_level, GPUTexture* src,
                          u32 src_x, u32 src_y, u32 src_layer, u32 src_level, u32 width, u32 height) override;
   void ResolveTextureRegion(GPUTexture* dst, u32 dst_x, u32 dst_y, u32 dst_layer, u32 dst_level, GPUTexture* src,
@@ -76,17 +81,19 @@ public:
                                                     std::string_view source, const char* entry_point,
                                                     DynamicHeapArray<u8>* out_binary, Error* error) override;
   std::unique_ptr<GPUPipeline> CreatePipeline(const GPUPipeline::GraphicsConfig& config, Error* error) override;
+  std::unique_ptr<GPUPipeline> CreatePipeline(const GPUPipeline::ComputeConfig& config, Error* error) override;
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   void PushDebugGroup(const char* name) override;
   void PopDebugGroup() override;
   void InsertDebugMessage(const char* msg) override;
+#endif
 
   void MapVertexBuffer(u32 vertex_size, u32 vertex_count, void** map_ptr, u32* map_space,
                        u32* map_base_vertex) override;
   void UnmapVertexBuffer(u32 vertex_size, u32 vertex_count) override;
   void MapIndexBuffer(u32 index_count, DrawIndex** map_ptr, u32* map_space, u32* map_base_index) override;
   void UnmapIndexBuffer(u32 used_index_count) override;
-  void PushUniformBuffer(const void* data, u32 data_size) override;
   void* MapUniformBuffer(u32 size) override;
   void UnmapUniformBuffer(u32 size) override;
   void SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds,
@@ -97,14 +104,19 @@ public:
   void SetViewport(const GSVector4i rc) override;
   void SetScissor(const GSVector4i rc) override;
   void Draw(u32 vertex_count, u32 base_vertex) override;
+  void DrawWithPushConstants(u32 vertex_count, u32 base_vertex, const void* push_constants,
+                             u32 push_constants_size) override;
   void DrawIndexed(u32 index_count, u32 base_index, u32 base_vertex) override;
-  void DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type) override;
+  void DrawIndexedWithPushConstants(u32 index_count, u32 base_index, u32 base_vertex, const void* push_constants,
+                                    u32 push_constants_size) override;
+  void Dispatch(u32 threads_x, u32 threads_y, u32 threads_z, u32 group_size_x, u32 group_size_y,
+                u32 group_size_z) override;
+  void DispatchWithPushConstants(u32 threads_x, u32 threads_y, u32 threads_z, u32 group_size_x, u32 group_size_y,
+                                 u32 group_size_z, const void* push_constants, u32 push_constants_size) override;
 
-  void SetVSyncMode(GPUVSyncMode mode, bool allow_present_throttle) override;
-
-  PresentResult BeginPresent(u32 clear_color) override;
-  void EndPresent(bool explicit_present, u64 present_time) override;
-  void SubmitPresent() override;
+  GPUPresentResult BeginPresent(GPUSwapChain* swap_chain, u32 clear_color) override;
+  void EndPresent(GPUSwapChain* swap_chain, bool explicit_present, u64 present_time) override;
+  void SubmitPresent(GPUSwapChain* swap_chain) override;
 
   bool SetGPUTimingEnabled(bool enabled) override;
   float GetAndResetAccumulatedGPUTime() override;
@@ -131,9 +143,12 @@ public:
   void UnbindSampler(GLuint id);
   void UnbindPipeline(const OpenGLPipeline* pl);
 
+  void RenderBlankFrame();
+
 protected:
-  bool CreateDevice(std::string_view adapter, std::optional<bool> exclusive_fullscreen_control,
-                    FeatureMask disabled_features, Error* error) override;
+  bool CreateDeviceAndMainSwapChain(std::string_view adapter, CreateFlags create_flags, const WindowInfo& wi,
+                                    GPUVSyncMode vsync_mode, const ExclusiveFullscreenMode* exclusive_fullscreen_mode,
+                                    std::optional<bool> exclusive_fullscreen_control, Error* error) override;
   void DestroyDevice() override;
 
   bool OpenPipelineCache(const std::string& path, Error* error) override;
@@ -148,26 +163,26 @@ private:
   static constexpr u32 VERTEX_BUFFER_SIZE = 8 * 1024 * 1024;
   static constexpr u32 INDEX_BUFFER_SIZE = 4 * 1024 * 1024;
   static constexpr u32 UNIFORM_BUFFER_SIZE = 2 * 1024 * 1024;
+  static constexpr u32 PUSH_CONSTANT_BUFFER_SIZE = 1 * 1024 * 1024;
   static constexpr u32 TEXTURE_STREAM_BUFFER_SIZE = 16 * 1024 * 1024;
 
-  bool CheckFeatures(FeatureMask disabled_features);
+  bool CheckFeatures(CreateFlags create_flags);
   bool CreateBuffers();
   void DestroyBuffers();
-
-  void SetSwapInterval();
-  void RenderBlankFrame();
 
   s32 IsRenderTargetBound(const GPUTexture* tex) const;
   static GLuint CreateFramebuffer(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds, u32 flags);
   static void DestroyFramebuffer(GLuint fbo);
 
+  void PushUniformBuffer(const void* data, u32 data_size);
   void UpdateViewport();
   void UpdateScissor();
 
   void CreateTimestampQueries();
   void DestroyTimestampQueries();
   void PopTimestampQuery();
-  void KickTimestampQuery();
+  void StartTimestampQuery();
+  void EndTimestampQuery();
 
   GLuint CreateProgramFromPipelineCache(const OpenGLPipeline::ProgramCacheItem& it,
                                         const GPUPipeline::GraphicsConfig& plconfig);
@@ -185,6 +200,7 @@ private:
   std::unique_ptr<OpenGLStreamBuffer> m_vertex_buffer;
   std::unique_ptr<OpenGLStreamBuffer> m_index_buffer;
   std::unique_ptr<OpenGLStreamBuffer> m_uniform_buffer;
+  std::unique_ptr<OpenGLStreamBuffer> m_push_constant_buffer;
   std::unique_ptr<OpenGLStreamBuffer> m_texture_stream_buffer;
 
   // TODO: pass in file instead of blob for pipeline cache
@@ -224,9 +240,30 @@ private:
   bool m_timestamp_query_started = false;
 
   std::FILE* m_pipeline_disk_cache_file = nullptr;
+#ifdef HAS_POSIX_FILE_LOCK
+  FileSystem::POSIXLock m_pipeline_disk_cache_file_lock;
+#endif
   u32 m_pipeline_disk_cache_data_end = 0;
   bool m_pipeline_disk_cache_changed = false;
 
   bool m_disable_pbo = false;
   bool m_disable_async_download = false;
+  bool m_use_get_texture_sub_image = false;
+};
+
+class OpenGLSwapChain : public GPUSwapChain
+{
+public:
+  OpenGLSwapChain(const WindowInfo& wi, GPUVSyncMode vsync_mode, OpenGLContext::SurfaceHandle surface_handle);
+  ~OpenGLSwapChain() override;
+
+  ALWAYS_INLINE OpenGLContext::SurfaceHandle GetSurfaceHandle() const { return m_surface_handle; }
+
+  bool ResizeBuffers(u32 new_width, u32 new_height, Error* error) override;
+  bool SetVSyncMode(GPUVSyncMode mode, Error* error) override;
+
+  static bool SetSwapInterval(OpenGLContext* ctx, GPUVSyncMode mode, Error* error);
+
+private:
+  OpenGLContext::SurfaceHandle m_surface_handle;
 };

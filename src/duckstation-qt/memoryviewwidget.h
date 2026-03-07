@@ -12,13 +12,17 @@ class MemoryViewWidget : public QAbstractScrollArea
   Q_OBJECT
 
 public:
+  static constexpr size_t INVALID_SELECTED_ADDRESS = ~static_cast<size_t>(0);
+
   using EditCallback = void (*)(size_t offset, size_t bytes);
 
-  MemoryViewWidget(QWidget* parent = nullptr, size_t address_offset = 0, void* data_ptr = nullptr, size_t data_size = 0,
-                   bool data_editable = false, EditCallback edit_callback = nullptr);
+  explicit MemoryViewWidget(QWidget* parent = nullptr, size_t address_offset = 0, void* data_ptr = nullptr,
+                            size_t data_size = 0, bool data_editable = false, EditCallback edit_callback = nullptr);
   ~MemoryViewWidget();
 
   size_t addressOffset() const { return m_address_offset; }
+  size_t selectedAddress() const;
+  size_t topAddress() const;
 
   void setData(size_t address_offset, void* data_ptr, size_t data_size, bool data_editable, EditCallback edit_callback);
   void setHighlightRange(size_t start, size_t end);
@@ -27,23 +31,21 @@ public:
   void scrollToAddress(size_t address);
   void setFont(const QFont& font);
 
-protected:
-  void paintEvent(QPaintEvent* event);
-  void resizeEvent(QResizeEvent* event);
-  void mousePressEvent(QMouseEvent* event);
-  void mouseMoveEvent(QMouseEvent* event);
-  void keyPressEvent(QKeyEvent* event);
-
-public Q_SLOTS:
   void saveCurrentData();
   void forceRefresh();
 
-private Q_SLOTS:
-  void adjustContent();
+Q_SIGNALS:
+  void topAddressChanged(size_t address);
+  void selectedAddressChanged(size_t address);
+
+protected:
+  void paintEvent(QPaintEvent* event) override;
+  void resizeEvent(QResizeEvent* event) override;
+  void mousePressEvent(QMouseEvent* event) override;
+  void mouseMoveEvent(QMouseEvent* event) override;
+  void keyPressEvent(QKeyEvent* event) override;
 
 private:
-  static constexpr size_t INVALID_SELECTED_ADDRESS = ~static_cast<size_t>(0);
-
   int addressWidth() const;
   int hexWidth() const;
   int asciiWidth() const;
@@ -51,13 +53,16 @@ private:
   void updateSelectedByte(const QPoint& pos);
   void setSelection(size_t new_selection, bool new_ascii);
   void expandCurrentDataToInclude(size_t offset);
+  void adjustScrollToInclude(size_t offset);
+  void adjustContent();
+  void notifySelectedAddressChanged();
 
-  void* m_data;
-  size_t m_data_size;
-  size_t m_address_offset;
+  void* m_data = nullptr;
+  size_t m_data_size = 0;
+  size_t m_address_offset = 0;
 
-  size_t m_start_offset;
-  size_t m_end_offset;
+  size_t m_start_offset = 0;
+  size_t m_end_offset = 0;
 
   size_t m_highlight_start = 0;
   size_t m_highlight_end = 0;
@@ -67,12 +72,12 @@ private:
   bool m_selection_was_ascii = false;
   bool m_data_editable = false;
 
-  u32 m_bytes_per_line;
+  u32 m_bytes_per_line = 0;
 
-  int m_char_width;
-  int m_char_height;
+  int m_char_width = 0;
+  int m_char_height = 0;
 
-  int m_rows_visible;
+  int m_rows_visible = 0;
 
   EditCallback m_edit_callback = nullptr;
   std::vector<u8> m_last_data;

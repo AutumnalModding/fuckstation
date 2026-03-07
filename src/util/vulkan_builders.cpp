@@ -106,13 +106,45 @@ const char* Vulkan::VkResultToString(VkResult res)
 
 void Vulkan::LogVulkanResult(const char* func_name, VkResult res, std::string_view msg)
 {
-  Log::FastWrite("VulkanDevice", func_name, Log::Level::Error, "{} (0x{:08X}: {})", msg, static_cast<unsigned>(res),
-                 VkResultToString(res));
+  if (Log::GetLogLevel() < Log::Level::Error)
+    return;
+
+  Log::WriteFuncName(Log::PackCategory(Log::Channel::GPUDevice, Log::Level::Error, Log::Color::Default), func_name,
+                     "{} (0x{:08X}: {})", msg, static_cast<unsigned>(res), VkResultToString(res));
 }
 
 void Vulkan::SetErrorObject(Error* errptr, std::string_view prefix, VkResult res)
 {
   Error::SetStringFmt(errptr, "{} (0x{:08X}: {})", prefix, static_cast<unsigned>(res), VkResultToString(res));
+}
+
+u32 Vulkan::GetMaxMultisamples(VkPhysicalDevice physical_device, const VkPhysicalDeviceProperties& properties)
+{
+  VkImageFormatProperties color_properties = {};
+  vkGetPhysicalDeviceImageFormatProperties(physical_device, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D,
+                                           VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 0,
+                                           &color_properties);
+  VkImageFormatProperties depth_properties = {};
+  vkGetPhysicalDeviceImageFormatProperties(physical_device, VK_FORMAT_D32_SFLOAT, VK_IMAGE_TYPE_2D,
+                                           VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 0,
+                                           &depth_properties);
+  const VkSampleCountFlags combined_properties = properties.limits.framebufferColorSampleCounts &
+                                                 properties.limits.framebufferDepthSampleCounts &
+                                                 color_properties.sampleCounts & depth_properties.sampleCounts;
+  if (combined_properties & VK_SAMPLE_COUNT_64_BIT)
+    return 64;
+  else if (combined_properties & VK_SAMPLE_COUNT_32_BIT)
+    return 32;
+  else if (combined_properties & VK_SAMPLE_COUNT_16_BIT)
+    return 16;
+  else if (combined_properties & VK_SAMPLE_COUNT_8_BIT)
+    return 8;
+  else if (combined_properties & VK_SAMPLE_COUNT_4_BIT)
+    return 4;
+  else if (combined_properties & VK_SAMPLE_COUNT_2_BIT)
+    return 2;
+  else
+    return 1;
 }
 
 Vulkan::DescriptorSetLayoutBuilder::DescriptorSetLayoutBuilder()
@@ -627,14 +659,15 @@ void Vulkan::ComputePipelineBuilder::Clear()
   m_smap_constants = {};
 }
 
-VkPipeline Vulkan::ComputePipelineBuilder::Create(VkDevice device, VkPipelineCache pipeline_cache /*= VK_NULL_HANDLE*/,
-                                                  bool clear /*= true*/)
+VkPipeline Vulkan::ComputePipelineBuilder::Create(VkDevice device, VkPipelineCache pipeline_cache, bool clear,
+                                                  Error* error)
 {
   VkPipeline pipeline;
   VkResult res = vkCreateComputePipelines(device, pipeline_cache, 1, &m_ci, nullptr, &pipeline);
   if (res != VK_SUCCESS)
   {
     LOG_VULKAN_ERROR(res, "vkCreateComputePipelines() failed: ");
+    SetErrorObject(error, "vkCreateComputePipelines() failed: ", res);
     return VK_NULL_HANDLE;
   }
 

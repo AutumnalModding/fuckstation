@@ -1730,7 +1730,7 @@ Unread messages: {}</source>
     </message>
 </context>
 <context>
-    <name>AutoUpdaterDialog</name>
+    <name>AutoUpdaterWindow</name>
     <message>
         <location filename="../autoupdaterdialog.ui" line="17"/>
         <location filename="../autoupdaterdialog.cpp" line="236"/>
@@ -5103,7 +5103,7 @@ This file can be several gigabytes, so be aware of SSD wear.</source>
     </message>
 </context>
 <context>
-    <name>EmuThread</name>
+    <name>CoreThread</name>
     <message>
         <location filename="../qthost.cpp" line="564"/>
         <source>Error</source>
@@ -8066,7 +8066,7 @@ Error was:</source>
     </message>
     <message>
         <location filename="../../core/fullscreen_ui.cpp" line="7190"/>
-        <source>Saved {:%c}</source>
+        <source>Saved {}</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -9617,7 +9617,7 @@ Recursief doorzoeken kost meer tijd, maar zal bestanden in subfolders vinden.</t
     </message>
     <message>
         <location filename="../generalsettingswidget.ui" line="32"/>
-        <source>Behaviour</source>
+        <source>Behavior</source>
         <translation>Gedrag</translation>
     </message>
     <message>

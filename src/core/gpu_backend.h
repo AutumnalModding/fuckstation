@@ -1,94 +1,190 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
-#include "gpu_types.h"
+#include "util/gpu_device.h"
 
-#include "common/heap_array.h"
-#include "common/threading.h"
+#include "common/align.h"
 
-#include <atomic>
-#include <condition_variable>
+#include "video_thread_commands.h"
+
 #include <memory>
-#include <mutex>
 
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable : 4324) // warning C4324: 'GPUBackend': structure was padded due to alignment specifier
-#endif
+class Error;
+class SmallStringBase;
+
+class GPUFramebuffer;
+class GPUPipeline;
+
+struct GPUSettings;
+class StateWrapper;
+
+namespace System {
+struct MemorySaveState;
+}
+
+// DESIGN NOTE: Only static methods should be called on the CPU thread.
+// You specifically don't have a global pointer available for this reason.
 
 class GPUBackend
 {
 public:
+  static VideoThreadCommand* NewClearVRAMCommand();
+  static VideoThreadCommand* NewClearDisplayCommand();
+  static GPUBackendUpdateDisplayCommand* NewUpdateDisplayCommand();
+  static GPUBackendSubmitFrameCommand* NewSubmitFrameCommand();
+  static VideoThreadCommand* NewClearCacheCommand();
+  static VideoThreadCommand* NewBufferSwappedCommand();
+  static GPUBackendReadVRAMCommand* NewReadVRAMCommand();
+  static GPUBackendFillVRAMCommand* NewFillVRAMCommand();
+  static GPUBackendUpdateVRAMCommand* NewUpdateVRAMCommand(u32 num_words);
+  static GPUBackendCopyVRAMCommand* NewCopyVRAMCommand();
+  static GPUBackendSetDrawingAreaCommand* NewSetDrawingAreaCommand();
+  static GPUBackendUpdateCLUTCommand* NewUpdateCLUTCommand();
+  static GPUBackendDrawPolygonCommand* NewDrawPolygonCommand(u32 num_vertices);
+  static GPUBackendDrawPrecisePolygonCommand* NewDrawPrecisePolygonCommand(u32 num_vertices);
+  static GPUBackendDrawRectangleCommand* NewDrawRectangleCommand();
+  static GPUBackendDrawLineCommand* NewDrawLineCommand(u32 num_vertices);
+  static GPUBackendDrawPreciseLineCommand* NewDrawPreciseLineCommand(u32 num_vertices);
+  static void PushCommand(VideoThreadCommand* cmd);
+  static void PushCommandAndWakeThread(VideoThreadCommand* cmd);
+  static void PushCommandAndSync(VideoThreadCommand* cmd, bool spin);
+
+  static bool IsUsingHardwareBackend();
+
+  static Common::unique_aligned_ptr<GPUBackend> CreateHardwareBackend();
+  static Common::unique_aligned_ptr<GPUBackend> CreateSoftwareBackend();
+  static Common::unique_aligned_ptr<GPUBackend> CreateNullBackend();
+
+  static bool RenderScreenshotToBuffer(u32 width, u32 height, bool postfx, bool apply_aspect_ratio, Image* out_image,
+                                       Error* error);
+  static void RenderScreenshotToFile(const std::string_view path, DisplayScreenshotMode mode, u8 quality,
+                                     bool show_osd_message);
+
+  static bool BeginQueueFrame();
+  static void WaitForOneQueuedFrame();
+  static u32 GetQueuedFrameCount();
+
+  static bool AllocateMemorySaveStates(std::span<System::MemorySaveState> states, Error* error);
+
+public:
   GPUBackend();
   virtual ~GPUBackend();
 
-  ALWAYS_INLINE const Threading::Thread* GetThread() const { return m_use_gpu_thread ? &m_gpu_thread : nullptr; }
+  virtual bool Initialize(bool upload_vram, Error* error);
 
-  virtual bool Initialize(bool force_thread);
-  virtual void UpdateSettings();
-  virtual void Reset();
-  virtual void Shutdown();
+  virtual bool UpdateSettings(const GPUSettings& old_settings, Error* error);
+  virtual void UpdatePostProcessingSettings(bool force_reload);
 
-  GPUBackendFillVRAMCommand* NewFillVRAMCommand();
-  GPUBackendUpdateVRAMCommand* NewUpdateVRAMCommand(u32 num_words);
-  GPUBackendCopyVRAMCommand* NewCopyVRAMCommand();
-  GPUBackendSetDrawingAreaCommand* NewSetDrawingAreaCommand();
-  GPUBackendUpdateCLUTCommand* NewUpdateCLUTCommand();
-  GPUBackendDrawPolygonCommand* NewDrawPolygonCommand(u32 num_vertices);
-  GPUBackendDrawRectangleCommand* NewDrawRectangleCommand();
-  GPUBackendDrawLineCommand* NewDrawLineCommand(u32 num_vertices);
+  /// Returns the current resolution scale.
+  virtual u32 GetResolutionScale() const = 0;
 
-  void PushCommand(GPUBackendCommand* cmd);
-  void Sync(bool allow_sleep);
+  // Graphics API state reset/restore - call when drawing the UI etc.
+  // TODO: replace with "invalidate cached state"
+  virtual void RestoreDeviceContext() = 0;
 
-  /// Processes all pending GPU commands.
-  void RunGPULoop();
-
-protected:
-  void* AllocateCommand(GPUBackendCommandType command, u32 size);
-  u32 GetPendingCommandSize() const;
-  void WakeGPUThread();
-  void StartGPUThread();
-  void StopGPUThread();
-
-  virtual void FillVRAM(u32 x, u32 y, u32 width, u32 height, u32 color, GPUBackendCommandParameters params) = 0;
-  virtual void UpdateVRAM(u32 x, u32 y, u32 width, u32 height, const void* data,
-                          GPUBackendCommandParameters params) = 0;
-  virtual void CopyVRAM(u32 src_x, u32 src_y, u32 dst_x, u32 dst_y, u32 width, u32 height,
-                        GPUBackendCommandParameters params) = 0;
-  virtual void DrawPolygon(const GPUBackendDrawPolygonCommand* cmd) = 0;
-  virtual void DrawRectangle(const GPUBackendDrawRectangleCommand* cmd) = 0;
-  virtual void DrawLine(const GPUBackendDrawLineCommand* cmd) = 0;
+  /// Ensures all pending draws are flushed to the host GPU.
   virtual void FlushRender() = 0;
-  virtual void DrawingAreaChanged(const GPUDrawingArea& new_drawing_area, const GSVector4i clamped_drawing_area) = 0;
-  virtual void UpdateCLUT(GPUTexturePaletteReg reg, bool clut_is_8bit) = 0;
 
-  void HandleCommand(const GPUBackendCommand* cmd);
+  /// Main command handler for GPU thread.
+  void HandleCommand(const VideoThreadCommand* cmd);
 
-  Threading::KernelSemaphore m_sync_semaphore;
-  std::atomic_bool m_gpu_thread_sleeping{false};
-  std::atomic_bool m_gpu_loop_done{false};
-  Threading::Thread m_gpu_thread;
-  bool m_use_gpu_thread = false;
+  void GetStatsString(SmallStringBase& str) const;
+  void GetMemoryStatsString(SmallStringBase& str) const;
 
-  std::mutex m_sync_mutex;
-  std::condition_variable m_sync_cpu_thread_cv;
-  std::condition_variable m_wake_gpu_thread_cv;
-  bool m_sync_done = false;
+  void ResetStatistics();
+  void UpdateStatistics(u32 frame_count);
 
-  enum : u32
+  /// Screen-aligned vertex type for various draw types.
+  struct ScreenVertex
   {
-    COMMAND_QUEUE_SIZE = 4 * 1024 * 1024,
-    THRESHOLD_TO_WAKE_GPU = 256
+    float x;
+    float y;
+    float u;
+    float v;
+
+    ALWAYS_INLINE void Set(const GSVector2& xy, const GSVector2& uv)
+    {
+      GSVector4::store<false>(this, GSVector4::xyxy(xy, uv));
+    }
   };
 
-  FixedHeapArray<u8, COMMAND_QUEUE_SIZE> m_command_fifo_data;
-  alignas(HOST_CACHE_LINE_SIZE) std::atomic<u32> m_command_fifo_read_ptr{0};
-  alignas(HOST_CACHE_LINE_SIZE) std::atomic<u32> m_command_fifo_write_ptr{0};
+  static void SetScreenQuadInputLayout(GPUPipeline::GraphicsConfig& config);
+  static GSVector4 GetScreenQuadClipSpaceCoordinates(const GSVector4i bounds, const GSVector2i rt_size);
+
+  static void DrawScreenQuad(const GSVector4i bounds, const GSVector2i rt_size, const GSVector4 uv_bounds,
+                             const void* push_constants, u32 push_constants_size);
+
+protected:
+  enum : u32
+  {
+    DEINTERLACE_BUFFER_COUNT = 4,
+  };
+
+  struct Counters
+  {
+    u32 num_reads;
+    u32 num_writes;
+    u32 num_copies;
+    u32 num_vertices;
+    u32 num_primitives;
+    u32 num_depth_buffer_clears;
+  };
+
+  struct Stats : Counters
+  {
+    size_t host_buffer_streamed;
+    u32 host_num_draws;
+    u32 host_num_barriers;
+    u32 host_num_render_passes;
+    u32 host_num_copies;
+    u32 host_num_downloads;
+    u32 host_num_uploads;
+
+    u8 gpu_busy_pct;
+  };
+
+  virtual void ReadVRAM(u32 x, u32 y, u32 width, u32 height) = 0;
+  virtual void FillVRAM(u32 x, u32 y, u32 width, u32 height, u32 color, bool interlaced_rendering,
+                        u8 interlaced_display_field) = 0;
+  virtual void UpdateVRAM(u32 x, u32 y, u32 width, u32 height, const void* data, bool set_mask, bool check_mask) = 0;
+  virtual void CopyVRAM(u32 src_x, u32 src_y, u32 dst_x, u32 dst_y, u32 width, u32 height, bool set_mask,
+                        bool check_mask) = 0;
+
+  virtual void DrawPolygon(const GPUBackendDrawPolygonCommand* cmd) = 0;
+  virtual void DrawPrecisePolygon(const GPUBackendDrawPrecisePolygonCommand* cmd) = 0;
+  virtual void DrawSprite(const GPUBackendDrawRectangleCommand* cmd) = 0;
+  virtual void DrawLine(const GPUBackendDrawLineCommand* cmd) = 0;
+  virtual void DrawPreciseLine(const GPUBackendDrawPreciseLineCommand* cmd) = 0;
+
+  virtual void DrawingAreaChanged() = 0;
+  virtual void ClearCache() = 0;
+  virtual void OnBufferSwapped() = 0;
+  virtual void ClearVRAM() = 0;
+
+  virtual void UpdateDisplay(const GPUBackendUpdateDisplayCommand* cmd) = 0;
+
+  virtual void LoadState(const GPUBackendLoadStateCommand* cmd) = 0;
+
+  virtual bool AllocateMemorySaveState(System::MemorySaveState& mss, Error* error) = 0;
+  virtual void DoMemoryState(StateWrapper& sw, System::MemorySaveState& mss) = 0;
+
+  void HandleUpdateDisplayCommand(const GPUBackendUpdateDisplayCommand* cmd);
+  void HandleSubmitFrameCommand(const GPUBackendFramePresentationParameters* cmd);
+
+  GSVector4i m_clamped_drawing_area = {};
+
+  static Counters s_counters;
+  static Stats s_stats;
+
+private:
+  static void ReleaseQueuedFrame();
 };
 
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
+namespace Host {
+
+/// Called at the end of the frame, before presentation.
+void FrameDoneOnVideoThread(GPUBackend* gpu_backend, u32 frame_number);
+
+} // namespace Host

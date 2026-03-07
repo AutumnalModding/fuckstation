@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1284</width>
+    <width>1280</width>
     <height>674</height>
    </rect>
   </property>
@@ -20,21 +20,23 @@
    <string>DuckStation Controller Settings</string>
   </property>
   <property name="windowIcon">
-   <iconset resource="resources/duckstation-qt.qrc">
-    <normaloff>:/icons/duck.png</normaloff>:/icons/duck.png</iconset>
+   <iconset theme="controller-digital-line"/>
+  </property>
+  <property name="class" stdset="0">
+   <string>settings-window</string>
   </property>
   <layout class="QGridLayout" name="gridLayout">
    <item row="0" column="0">
     <widget class="QListWidget" name="settingsCategory">
      <property name="sizePolicy">
-      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+      <sizepolicy hsizetype="Minimum" vsizetype="Minimum">
        <horstretch>0</horstretch>
        <verstretch>0</verstretch>
       </sizepolicy>
      </property>
      <property name="minimumSize">
       <size>
-       <width>160</width>
+       <width>165</width>
        <height>0</height>
       </size>
      </property>
@@ -72,7 +74,7 @@
        <item>
         <widget class="QLabel" name="editProfileLabel">
          <property name="text">
-          <string>Editing Profile:</string>
+          <string>Editing Preset:</string>
          </property>
         </widget>
        </item>
@@ -89,7 +91,7 @@
        <item>
         <widget class="QPushButton" name="newProfile">
          <property name="text">
-          <string>New Profile</string>
+          <string>New Preset</string>
          </property>
          <property name="icon">
           <iconset theme="add-line"/>
@@ -99,7 +101,7 @@
        <item>
         <widget class="QPushButton" name="applyProfile">
          <property name="text">
-          <string>Apply Profile</string>
+          <string>Apply Preset</string>
          </property>
          <property name="icon">
           <iconset theme="folder-open-line"/>
@@ -109,7 +111,7 @@
        <item>
         <widget class="QPushButton" name="deleteProfile">
          <property name="text">
-          <string>Delete Profile</string>
+          <string>Delete Preset</string>
          </property>
          <property name="icon">
           <iconset theme="minus-line"/>
@@ -126,22 +128,12 @@
          </property>
         </widget>
        </item>
-       <item>
-        <widget class="QPushButton" name="restoreDefaults">
-         <property name="text">
-          <string>Restore Defaults</string>
-         </property>
-         <property name="icon">
-          <iconset theme="restart-line"/>
-         </property>
-        </widget>
-       </item>
       </layout>
      </item>
      <item>
       <widget class="QDialogButtonBox" name="buttonBox">
        <property name="standardButtons">
-        <set>QDialogButtonBox::StandardButton::Close</set>
+        <set>QDialogButtonBox::StandardButton::Close|QDialogButtonBox::StandardButton::RestoreDefaults</set>
        </property>
       </widget>
      </item>
@@ -149,8 +141,6 @@
    </item>
   </layout>
  </widget>
- <resources>
-  <include location="resources/duckstation-qt.qrc"/>
- </resources>
+ <resources/>
  <connections/>
 </ui>

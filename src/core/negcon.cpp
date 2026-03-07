@@ -6,10 +6,12 @@
 #include "system.h"
 
 #include "util/state_wrapper.h"
+#include "util/translation.h"
 
 #include "common/assert.h"
 #include "common/bitutils.h"
 #include "common/log.h"
+#include "common/settings_interface.h"
 
 #include "IconsPromptFont.h"
 
@@ -136,14 +138,14 @@ void NeGcon::SetBindState(u32 index, float value)
     if (value >= 0.5f)
     {
       if (m_button_state & bit)
-        System::SetRunaheadReplayFlag();
+        System::SetRunaheadReplayFlag(false);
 
       m_button_state &= ~bit;
     }
     else
     {
       if (!(m_button_state & bit))
-        System::SetRunaheadReplayFlag();
+        System::SetRunaheadReplayFlag(false);
 
       m_button_state |= bit;
     }
@@ -261,14 +263,14 @@ std::unique_ptr<NeGcon> NeGcon::Create(u32 index)
 
 static const Controller::ControllerBindingInfo s_binding_info[] = {
 #define BUTTON(name, display_name, icon_name, button, genb)                                                            \
-  {                                                                                                                    \
-    name, display_name, icon_name, static_cast<u32>(button), InputBindingInfo::Type::Button, genb                      \
-  }
+  {name, display_name, icon_name, static_cast<u32>(button), InputBindingInfo::Type::Button, genb}
 #define AXIS(name, display_name, icon_name, halfaxis, genb)                                                            \
-  {                                                                                                                    \
-    name, display_name, icon_name, static_cast<u32>(NeGcon::Button::Count) + static_cast<u32>(halfaxis),               \
-      InputBindingInfo::Type::HalfAxis, genb                                                                           \
-  }
+  {name,                                                                                                               \
+   display_name,                                                                                                       \
+   icon_name,                                                                                                          \
+   static_cast<u32>(NeGcon::Button::Count) + static_cast<u32>(halfaxis),                                               \
+   InputBindingInfo::Type::HalfAxis,                                                                                   \
+   genb}
 
   // clang-format off
   BUTTON("Up", TRANSLATE_NOOP("NeGcon", "D-Pad Up"), ICON_PF_DPAD_UP, NeGcon::Button::Up, GenericInputBinding::DPadUp),
@@ -292,60 +294,44 @@ static const Controller::ControllerBindingInfo s_binding_info[] = {
 
 static const SettingInfo s_settings[] = {
   {SettingInfo::Type::Float, "SteeringDeadzone", TRANSLATE_NOOP("NeGcon", "Steering Axis Deadzone"),
-   TRANSLATE_NOOP("NeGcon", "Sets deadzone for steering axis."), "0.00f", "0.00f", "0.99f", "0.01f", "%.0f%%", nullptr,
-   100.0f},
+   TRANSLATE_NOOP("NeGcon", "Sets deadzone for steering axis."), "0", "0", "0.99", "0.01", "%.0f%%", nullptr, 100.0f},
   {SettingInfo::Type::Float, "SteeringSaturation", TRANSLATE_NOOP("NeGcon", "Steering Axis Saturation"),
-   TRANSLATE_NOOP("NeGcon", "Sets saturation for steering axis."), "1.00f", "0.01f", "1.00f", "0.01f", "%.0f%%",
-   nullptr, 100.0f},
+   TRANSLATE_NOOP("NeGcon", "Sets saturation for steering axis."), "1", "0.01", "1", "0.01", "%.0f%%", nullptr, 100.0f},
   {SettingInfo::Type::Float, "SteeringLinearity", TRANSLATE_NOOP("NeGcon", "Steering Axis Linearity"),
-   TRANSLATE_NOOP("NeGcon", "Sets linearity for steering axis."), "0.00f", "-2.00f", "2.00f", "0.05f", "%.2f", nullptr,
-   1.0f},
+   TRANSLATE_NOOP("NeGcon", "Sets linearity for steering axis."), "0", "-2", "2", "0.05", "%.2f", nullptr, 1.0f},
   {SettingInfo::Type::Float, "SteeringScaling", TRANSLATE_NOOP("NeGcon", "Steering Scaling"),
-   TRANSLATE_NOOP("NeGcon", "Sets scaling for steering axis."), "1.00f", "0.01f", "10.00f", "0.01f", "%.0f%%", nullptr,
-   100.0f},
+   TRANSLATE_NOOP("NeGcon", "Sets scaling for steering axis."), "1", "0.01", "10", "0.01", "%.0f%%", nullptr, 100.0f},
   {SettingInfo::Type::Float, "IDeadzone", TRANSLATE_NOOP("NeGcon", "I Button Deadzone"),
-   TRANSLATE_NOOP("NeGcon", "Sets deadzone for button I."), "0.00f", "0.00f", "0.99f", "0.01f", "%.0f%%", nullptr,
-   100.0f},
+   TRANSLATE_NOOP("NeGcon", "Sets deadzone for button I."), "0", "0", "0.99", "0.01", "%.0f%%", nullptr, 100.0f},
   {SettingInfo::Type::Float, "ISaturation", TRANSLATE_NOOP("NeGcon", "I Button Saturation"),
-   TRANSLATE_NOOP("NeGcon", "Sets saturation for button I."), "1.00f", "0.01f", "1.00f", "0.01f", "%.0f%%", nullptr,
-   100.0f},
+   TRANSLATE_NOOP("NeGcon", "Sets saturation for button I."), "1", "0.01", "1", "0.01", "%.0f%%", nullptr, 100.0f},
   {SettingInfo::Type::Float, "ILinearity", TRANSLATE_NOOP("NeGcon", "I Button Linearity"),
-   TRANSLATE_NOOP("NeGcon", "Sets linearity for button I."), "0.00f", "-2.00f", "2.00f", "0.01f", "%.2f", nullptr,
-   1.0f},
+   TRANSLATE_NOOP("NeGcon", "Sets linearity for button I."), "0", "-2", "2", "0.01", "%.2f", nullptr, 1.0f},
   {SettingInfo::Type::Float, "IScaling", TRANSLATE_NOOP("NeGcon", "I Scaling"),
-   TRANSLATE_NOOP("NeGcon", "Sets scaling for button I."), "1.00f", "0.01f", "10.00f", "0.01f", "%.0f%%", nullptr,
-   100.0f},
+   TRANSLATE_NOOP("NeGcon", "Sets scaling for button I."), "1", "0.01", "10", "0.01", "%.0f%%", nullptr, 100.0f},
   {SettingInfo::Type::Float, "IIDeadzone", TRANSLATE_NOOP("NeGcon", "II Button Deadzone"),
-   TRANSLATE_NOOP("NeGcon", "Sets deadzone for button II."), "0.00f", "0.00f", "0.99f", "0.01f", "%.0f%%", nullptr,
-   100.0f},
+   TRANSLATE_NOOP("NeGcon", "Sets deadzone for button II."), "0", "0", "0.99", "0.01", "%.0f%%", nullptr, 100.0f},
   {SettingInfo::Type::Float, "IISaturation", TRANSLATE_NOOP("NeGcon", "II Button Saturation"),
-   TRANSLATE_NOOP("NeGcon", "Sets saturation for button II."), "1.00f", "0.01f", "1.00f", "0.01f", "%.0f%%", nullptr,
-   100.0f},
+   TRANSLATE_NOOP("NeGcon", "Sets saturation for button II."), "1", "0.01", "1", "0.01", "%.0f%%", nullptr, 100.0f},
   {SettingInfo::Type::Float, "IILinearity", TRANSLATE_NOOP("NeGcon", "II Button Linearity"),
-   TRANSLATE_NOOP("NeGcon", "Sets linearity for button II."), "0.00f", "-2.00f", "2.00f", "0.01f", "%.2f", nullptr,
-   1.0f},
+   TRANSLATE_NOOP("NeGcon", "Sets linearity for button II."), "0", "-2", "2", "0.01", "%.2f", nullptr, 1.0f},
   {SettingInfo::Type::Float, "IIScaling", TRANSLATE_NOOP("NeGcon", "II Scaling"),
-   TRANSLATE_NOOP("NeGcon", "Sets scaling for button II."), "1.00f", "0.01f", "10.00f", "0.01f", "%.0f%%", nullptr,
-   100.0f},
+   TRANSLATE_NOOP("NeGcon", "Sets scaling for button II."), "1", "0.01", "10", "0.01", "%.0f%%", nullptr, 100.0f},
   {SettingInfo::Type::Float, "LDeadzone", TRANSLATE_NOOP("NeGcon", "Left Trigger Deadzone"),
-   TRANSLATE_NOOP("NeGcon", "Sets deadzone for left trigger."), "0.00f", "0.00f", "0.99f", "0.01f", "%.0f%%", nullptr,
-   100.0f},
+   TRANSLATE_NOOP("NeGcon", "Sets deadzone for left trigger."), "0", "0", "0.99", "0.01", "%.0f%%", nullptr, 100.0f},
   {SettingInfo::Type::Float, "LSaturation", TRANSLATE_NOOP("NeGcon", "Left Trigger Saturation"),
-   TRANSLATE_NOOP("NeGcon", "Sets saturation for left trigger."), "1.00f", "0.01f", "1.00f", "0.01f", "%.0f%%", nullptr,
-   100.0f},
+   TRANSLATE_NOOP("NeGcon", "Sets saturation for left trigger."), "1", "0.01", "1", "0.01", "%.0f%%", nullptr, 100.0f},
   {SettingInfo::Type::Float, "LLinearity", TRANSLATE_NOOP("NeGcon", "Left Trigger Linearity"),
-   TRANSLATE_NOOP("NeGcon", "Sets linearity for left trigger."), "0.00f", "-2.00f", "2.00f", "0.01f", "%.2f", nullptr,
-   1.0f},
+   TRANSLATE_NOOP("NeGcon", "Sets linearity for left trigger."), "0", "-2", "2", "0.01", "%.2f", nullptr, 1.0f},
   {SettingInfo::Type::Float, "LScaling", TRANSLATE_NOOP("NeGcon", "Left Trigger Scaling"),
-   TRANSLATE_NOOP("NeGcon", "Sets scaling for left trigger."), "1.00f", "0.01f", "10.00f", "0.01f", "%.0f%%", nullptr,
-   100.0f},
+   TRANSLATE_NOOP("NeGcon", "Sets scaling for left trigger."), "1", "0.01", "10", "0.01", "%.0f%%", nullptr, 100.0f},
 };
 
 const Controller::ControllerInfo NeGcon::INFO = {
-  ControllerType::NeGcon, "NeGcon",   TRANSLATE_NOOP("ControllerType", "NeGcon"),    ICON_PF_GAMEPAD,
-  s_binding_info,         s_settings, Controller::VibrationCapabilities::NoVibration};
+  ControllerType::NeGcon, "NeGcon",       TRANSLATE_NOOP("ControllerType", "NeGcon"),
+  ICON_PF_STEERING_WHEEL, s_binding_info, s_settings};
 
-void NeGcon::LoadSettings(SettingsInterface& si, const char* section, bool initial)
+void NeGcon::LoadSettings(const SettingsInterface& si, const char* section, bool initial)
 {
   Controller::LoadSettings(si, section, initial);
   m_steering_modifier = {

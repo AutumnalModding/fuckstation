@@ -11,7 +11,6 @@ add_library(rcheevos
   include/rc_hash.h
   include/rc_runtime.h
   include/rc_runtime_types.h
-  include/rc_url.h
   include/rc_util.h
   src/rapi/rc_api_common.c
   src/rapi/rc_api_common.h
@@ -41,10 +40,20 @@ add_library(rcheevos
   src/rc_version.h
   src/rhash/md5.c
   src/rhash/md5.h
-  src/rurl/url.c
 )
 
 target_include_directories(rcheevos PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_include_directories(rcheevos INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_compile_definitions(rcheevos PRIVATE "RC_DISABLE_LUA=1" "RCHEEVOS_URL_SSL=1" "RC_NO_THREADS=1")
+target_compile_definitions(rcheevos PRIVATE "RCHEEVOS_URL_SSL=1" "RC_NO_THREADS=1")
 
+# RAIntegration is not supported outside of Win32 and only on x64.
+if(WIN32 AND CPU_ARCH_X64)
+  target_sources(rcheevos PRIVATE
+    src/rc_client_external.c
+    src/rc_client_external.h
+    src/rc_client_external_versions.h
+    src/rc_client_raintegration.c
+    src/rc_client_raintegration_internal.h
+  )
+  target_compile_definitions(rcheevos PUBLIC "RC_CLIENT_SUPPORTS_RAINTEGRATION=1")
+endif()

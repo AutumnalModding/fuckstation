@@ -432,13 +432,13 @@ Token di accesso generato il %2.</translation>
     </message>
     <message>
         <location filename="../../core/achievements.cpp" line="1140"/>
-        <source>Your Score: {}{}</source>
-        <translation>Il tuo Punteggio: {}{}</translation>
+        <source>Your Score: {}</source>
+        <translation>Il tuo Punteggio: {}</translation>
     </message>
     <message>
         <location filename="../../core/achievements.cpp" line="1141"/>
-        <source>Your Value: {}{}</source>
-        <translation>Il tuo Valore: {}{}</translation>
+        <source>Your Value: {}</source>
+        <translation>Il tuo Valore: {}</translation>
     </message>
     <message>
         <location filename="../../core/achievements.cpp" line="1150"/>
@@ -447,25 +447,23 @@ Token di accesso generato il %2.</translation>
     </message>
     <message>
         <location filename="../../core/achievements.cpp" line="1169"/>
-        <source>Your Time: {} (Best: {})</source>
-        <translation>Il tuo Tempo: {} (Migliore: {})</translation>
+        <source>Your Time: {0} (Best: {1})</source>
+        <translation>Il tuo Tempo: {0} (Migliore: {1})</translation>
     </message>
     <message>
         <location filename="../../core/achievements.cpp" line="1170"/>
-        <source>Your Score: {} (Best: {})</source>
-        <translation>Il tuo Punteggio: {} (Migliore: {})</translation>
+        <source>Your Score: {0} (Best: {1})</source>
+        <translation>Il tuo Punteggio: {0} (Migliore: {1})</translation>
     </message>
     <message>
         <location filename="../../core/achievements.cpp" line="1171"/>
-        <source>Your Value: {} (Best: {})</source>
-        <translation>Il tuo Valore: {} (Migliore: {})</translation>
+        <source>Your Value: {0} (Best: {1})</source>
+        <translation>Il tuo Valore: {0} (Migliore: {1})</translation>
     </message>
     <message>
         <location filename="../../core/achievements.cpp" line="1176"/>
-        <source>{}
-Leaderboard Position: {} of {}</source>
-        <translation>{}
-Posizione in Classifica: {} di {}</translation>
+        <source>Leaderboard Position: {0} of {1}</source>
+        <translation>Posizione in Classifica: {0} di {1}</translation>
     </message>
     <message>
         <location filename="../../core/achievements.cpp" line="1306"/>
@@ -1750,7 +1748,7 @@ Messaggi non letti: {}</translation>
     </message>
 </context>
 <context>
-    <name>AutoUpdaterDialog</name>
+    <name>AutoUpdaterWindow</name>
     <message>
         <location filename="../autoupdaterdialog.ui" line="17"/>
         <location filename="../autoupdaterdialog.cpp" line="240"/>
@@ -2126,11 +2124,11 @@ Messaggi non letti: {}</translation>
     </message>
     <message>
         <source>Signed</source>
-        <translation type="vanished">Firmato</translation>
+        <translation type="vanished">Con segno</translation>
     </message>
     <message>
         <source>Unsigned</source>
-        <translation type="vanished">Non firmato</translation>
+        <translation type="vanished">Senza segno</translation>
     </message>
     <message>
         <source>Decimal</source>
@@ -2400,15 +2398,15 @@ Messaggi non letti: {}</translation>
     </message>
     <message>
         <source>Signed Byte</source>
-        <translation type="vanished">Byte Firmato</translation>
+        <translation type="vanished">Byte con segno</translation>
     </message>
     <message>
         <source>Signed Halfword</source>
-        <translation type="vanished">Halfword Firmata</translation>
+        <translation type="vanished">Halfword con segno</translation>
     </message>
     <message>
         <source>Signed Word</source>
-        <translation type="vanished">Word Firmata</translation>
+        <translation type="vanished">Word con segno</translation>
     </message>
 </context>
 <context>
@@ -5436,7 +5434,7 @@ Questo file può pesare anche diversi GB, quindi bisogna tenere conto dell&apos;
     </message>
 </context>
 <context>
-    <name>EmuThread</name>
+    <name>CoreThread</name>
     <message>
         <location filename="../qthost.cpp" line="736"/>
         <location filename="../qthost.cpp" line="750"/>
@@ -8615,8 +8613,8 @@ L&apos;errore è:</translation>
     </message>
     <message>
         <location filename="../../core/fullscreen_ui.cpp" line="7408"/>
-        <source>Saved {:%c}</source>
-        <translation>Salvato {:%c}</translation>
+        <source>Saved {}</source>
+        <translation>Salvato {}</translation>
     </message>
     <message>
         <source>Saves screenshots at internal render resolution and without postprocessing.</source>
@@ -10235,7 +10233,7 @@ Scansionare ricorsivamente richiede più tempo, ma identificherà file anche nel
         <translation type="vanished">FInestra</translation>
     </message>
     <message>
-        <source>Behaviour</source>
+        <source>Behavior</source>
         <translation type="vanished">Comportamento</translation>
     </message>
     <message>
@@ -12215,7 +12213,7 @@ Scansionare ricorsivamente richiede più tempo, ma identificherà file anche nel
     <name>InterfaceSettingsWidget</name>
     <message>
         <location filename="../interfacesettingswidget.ui" line="29"/>
-        <source>Behaviour</source>
+        <source>Behavior</source>
         <translation>Comportamento</translation>
     </message>
     <message>

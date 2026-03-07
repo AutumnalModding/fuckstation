@@ -3,19 +3,14 @@
 
 #pragma once
 
-#include "biossettingswidget.h"
-
 #include "ui_setupwizarddialog.h"
 
-#include "core/bios.h"
-
-#include <QtCore/QList>
 #include <QtCore/QString>
-#include <QtCore/QVector>
 #include <QtWidgets/QDialog>
+#include <QtWidgets/QLabel>
+#include <array>
 #include <string>
 #include <utility>
-#include <vector>
 
 class SetupWizardDialog final : public QDialog
 {
@@ -25,33 +20,6 @@ public:
   SetupWizardDialog();
   ~SetupWizardDialog();
 
-private Q_SLOTS:
-  bool canShowNextPage();
-  void previousPage();
-  void nextPage();
-  void confirmCancel();
-
-  void themeChanged();
-  void languageChanged();
-
-  void refreshBiosList();
-  // void biosListItemChanged(const QTreeWidgetItem* current, const QTreeWidgetItem* previous);
-  // void listRefreshed(const QVector<BIOSInfo>& items);
-
-  void onDirectoryListContextMenuRequested(const QPoint& point);
-  void onAddSearchDirectoryButtonClicked();
-  void onRemoveSearchDirectoryButtonClicked();
-  void onSearchDirectoryListSelectionChanged();
-  void refreshDirectoryList();
-  void resizeDirectoryListColumns();
-
-  void onInputDevicesEnumerated(const std::vector<std::pair<std::string, std::string>>& devices);
-  void onInputDeviceConnected(const std::string& identifier, const std::string& device_name);
-  void onInputDeviceDisconnected(const std::string& identifier);
-
-protected:
-  void resizeEvent(QResizeEvent* event);
-
 private:
   enum Page : u32
   {
@@ -59,29 +27,56 @@ private:
     Page_BIOS,
     Page_GameList,
     Page_Controller,
+    Page_Graphics,
+    Page_Achievements,
     Page_Complete,
     Page_Count,
   };
 
   void setupUi();
-  void setupLanguagePage();
+  void setupLanguagePage(bool initial);
   void setupBIOSPage();
   void setupGameListPage();
   void setupControllerPage(bool initial);
+  void setupGraphicsPage(bool initial);
+  void setupAchievementsPage(bool initial);
   void updateStylesheets();
 
-  void pageChangedTo(int page);
   void updatePageLabels(int prev_page);
   void updatePageButtons();
 
+  bool canShowNextPage();
+  void previousPage();
+  void nextPage();
+  void confirmCancel();
+
+  void languageChanged();
+
+  void refreshBiosList();
+
+  void onDirectoryListContextMenuRequested(const QPoint& point);
+  void onAddSearchDirectoryButtonClicked();
+  void onRemoveSearchDirectoryButtonClicked();
+  void onSearchDirectoryListSelectionChanged();
+  void onSearchDirectoryListItemChanged(QTreeWidgetItem* item, int column);
+  void refreshDirectoryList();
+
+  void doMultipleDeviceAutomaticBinding(u32 port, QLabel* update_label);
+
   void addPathToTable(const std::string& path, bool recursive);
 
+  QString findCurrentDeviceForPort(u32 port) const;
   void openAutomaticMappingMenu(u32 port, QLabel* update_label);
   void doDeviceAutomaticBinding(u32 port, QLabel* update_label, const QString& device);
 
+  void onAchievementsLoginLogoutClicked();
+  void onAchievementsLoginCompleted();
+  void onAchievementsViewProfileClicked();
+  void updateAchievementsEnableState();
+  void updateAchievementsLoginState();
+
+private:
   Ui::SetupWizardDialog m_ui;
 
   std::array<QLabel*, Page_Count> m_page_labels;
-
-  std::vector<std::pair<std::string, std::string>> m_device_list;
 };

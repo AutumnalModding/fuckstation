@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com> and contributors.
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com> and contributors.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
@@ -64,7 +64,6 @@ public:
   static std::unique_ptr<AnalogJoystick> Create(u32 index);
 
   ControllerType GetType() const override;
-  bool InAnalogMode() const override;
 
   void Reset() override;
   bool DoState(StateWrapper& sw, bool apply_input_state) override;
@@ -77,7 +76,7 @@ public:
   void ResetTransferState() override;
   bool Transfer(const u8 data_in, u8* data_out) override;
 
-  void LoadSettings(SettingsInterface& si, const char* section, bool initial) override;
+  void LoadSettings(const SettingsInterface& si, const char* section, bool initial) override;
 
 private:
   enum class TransferState : u8
@@ -92,6 +91,11 @@ private:
     LeftAxisX,
     LeftAxisY
   };
+
+  static constexpr u32 HALFAXIS_BIND_START_INDEX = static_cast<u32>(Button::Count);
+  static constexpr u32 LED_BIND_START_INDEX = HALFAXIS_BIND_START_INDEX + static_cast<u32>(HalfAxis::Count);
+
+  static const Controller::ControllerBindingInfo s_binding_info[];
 
   u16 GetID() const;
   void ToggleAnalogMode();

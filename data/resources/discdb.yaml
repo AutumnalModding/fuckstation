@@ -4750,13 +4750,13 @@ SLUS-00784:
         - size: 204887424
           md5: "0ce86b034427b7c79a85bec2f88c6e0e"
 SLPS-01830:
-  name: "Animetic Story Game 1 - Card Captor Sakura (Japan) (Disc 1)"
+  name: "Animetic Story Game 1 - Cardcaptor Sakura (Japan) (Disc 1)"
   trackData:
     - tracks:
         - size: 477145536
           md5: "93653eb589658a67899394ad52acc3cb"
 SLPS-01831:
-  name: "Animetic Story Game 1 - Card Captor Sakura (Japan) (Disc 2)"
+  name: "Animetic Story Game 1 - Cardcaptor Sakura (Japan) (Disc 2)"
   trackData:
     - tracks:
         - size: 455318976
@@ -14685,13 +14685,13 @@ SLUS-00494:
         - size: 32332944
           md5: "cda4ae739eeceb0541886c6ebaa7b57a"
 SLPS-02561:
-  name: "Card Captor Sakura - Clowcard Magic (Japan)"
+  name: "Cardcaptor Sakura - Clow Card Magic (Japan)"
   trackData:
     - tracks:
         - size: 617938608
           md5: "259802e85fb1fe3b5f39c78033c7efd0"
 SLPS-02560:
-  name: "Card Captor Sakura - Clowcard Magic (Japan) (Genteiban)"
+  name: "Cardcaptor Sakura - Clow Card Magic (Japan) (Genteiban)"
   trackData:
     - tracks:
         - size: 617940960
@@ -80434,6 +80434,13 @@ LSP-180210:
     - tracks:
         - size: 142627632
           md5: "92389d0f95fd92337a3a53831a5dbfd7"
+LSP-90535200:
+  name: "P.K.'s Place 2 - Hoopo at Sea! (USA) (Rev 1)"
+  trackData:
+    - version: Rev 1
+      tracks:
+        - size: 123830448
+          md5: "1b8a72c9b778392ab55b5cb91afd9ce3"
 LSP-180310:
   name: "P.K.'s Place 3 - Carlos at the Races! (USA)"
   trackData:
@@ -117477,7 +117484,7 @@ SLPS-00321:
         - size: 4377072
           md5: "00d4f2b9eba8200785726e7b4d427348"
 SLPS-02886:
-  name: "Tetris with Card Captor Sakura - Eternal Heart (Japan)"
+  name: "Tetris with Cardcaptor Sakura - Eternal Heart (Japan)"
   trackData:
     - tracks:
         - size: 382611600

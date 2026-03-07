@@ -6,7 +6,6 @@
 #include "cpu_core.h"
 #include "cpu_core_private.h"
 #include "cpu_disasm.h"
-#include "cpu_recompiler_types.h"
 #include "host.h"
 #include "settings.h"
 #include "system.h"
@@ -21,7 +20,7 @@
 #include "common/log.h"
 #include "common/memmap.h"
 
-LOG_CHANNEL(CPU::CodeCache);
+LOG_CHANNEL(CodeCache);
 
 // Enable dumping of recompiled block code size statistics.
 // #define DUMP_CODE_SIZE_STATS 1
@@ -30,11 +29,7 @@ LOG_CHANNEL(CPU::CodeCache);
 // #define ENABLE_RECOMPILER_PROFILING 1
 
 #ifdef ENABLE_RECOMPILER
-#include "cpu_recompiler_code_generator.h"
-#endif
-
-#ifdef ENABLE_NEWREC
-#include "cpu_newrec_compiler.h"
+#include "cpu_recompiler.h"
 #endif
 
 #include <map>
@@ -57,10 +52,6 @@ static constexpr u32 RECOMPILE_FRAMES_FOR_INTERPRETER_FALLBACK = 15;
 static constexpr u32 INVALIDATE_COUNT_FOR_MANUAL_PROTECTION = 4;
 static constexpr u32 INVALIDATE_FRAMES_FOR_MANUAL_PROTECTION = 60;
 
-static CodeLUT DecodeCodeLUTPointer(u32 slot, CodeLUT ptr);
-static CodeLUT EncodeCodeLUTPointer(u32 slot, CodeLUT ptr);
-static CodeLUT OffsetCodeLUTPointer(CodeLUT fake_ptr, u32 pc);
-
 static void AllocateLUTs();
 static void DeallocateLUTs();
 static void ResetCodeLUT();
@@ -70,10 +61,11 @@ static void ClearBlocks();
 
 static Block* LookupBlock(u32 pc);
 static Block* CreateBlock(u32 pc, const BlockInstructionList& instructions, const BlockMetadata& metadata);
+static bool HasBlockLUT(u32 pc);
 static bool IsBlockCodeCurrent(const Block* block);
 static bool RevalidateBlock(Block* block);
-PageProtectionMode GetProtectionModeForPC(u32 pc);
-PageProtectionMode GetProtectionModeForBlock(const Block* block);
+static PageProtectionMode GetProtectionModeForPC(u32 pc);
+static PageProtectionMode GetProtectionModeForBlock(const Block* block);
 static bool ReadBlockInstructions(u32 start_pc, BlockInstructionList* instructions, BlockMetadata* metadata);
 static void FillBlockRegInfo(Block* block);
 static void CopyRegInfo(InstructionInfo* dst, const InstructionInfo* src);
@@ -114,7 +106,6 @@ static std::unordered_set<u32> s_fastmem_faulting_pcs;
 
 NORETURN_FUNCTION_POINTER void (*g_enter_recompiler)();
 const void* g_compile_or_revalidate_block;
-const void* g_check_events_and_dispatch;
 const void* g_run_events_and_dispatch;
 const void* g_dispatcher;
 const void* g_interpret_block;
@@ -135,14 +126,15 @@ static constexpr u32 RECOMPILER_CODE_CACHE_SIZE = 48 * 1024 * 1024;
 static constexpr u32 RECOMPILER_FAR_CODE_CACHE_SIZE = 16 * 1024 * 1024;
 #endif
 
-// On Linux ARM32/ARM64, we use a dedicated section in the ELF for storing code.
-// This is because without ASLR, or on certain ASLR offsets, the sbrk() heap ends up immediately following the text/data
-// sections, which means there isn't a large enough gap to fit within range on ARM32.
-#if defined(__linux__) && (defined(CPU_ARCH_ARM32) || defined(CPU_ARCH_ARM64))
+// On Linux ARM32/ARM64, we use a dedicated section in the ELF for storing code. This is because without
+// ASLR, or on certain ASLR offsets, the sbrk() heap ends up immediately following the text/data sections,
+// which means there isn't a large enough gap to fit within range on ARM32. Also enable it for Android,
+// because MAP_FIXED_NOREPLACE may not exist on older kernels.
+#if (defined(__linux__) && (defined(CPU_ARCH_ARM32) || defined(CPU_ARCH_ARM64))) || defined(__ANDROID__)
 #define USE_CODE_BUFFER_SECTION 1
 #ifdef __clang__
 #pragma clang section bss = ".jitstorage"
-__attribute__((aligned(HOST_PAGE_SIZE))) static u8 s_code_buffer_ptr[RECOMPILER_CODE_CACHE_SIZE];
+__attribute__((aligned(MAX_HOST_PAGE_SIZE))) static u8 s_code_buffer_ptr[RECOMPILER_CODE_CACHE_SIZE];
 #pragma clang section bss = ""
 #endif
 #else
@@ -159,21 +151,21 @@ static u8* s_free_far_code_ptr = nullptr;
 static u32 s_far_code_size = 0;
 static u32 s_far_code_used = 0;
 
-#ifdef _DEBUG
+#ifdef DUMP_CODE_SIZE_STATS
 static u32 s_total_instructions_compiled = 0;
 static u32 s_total_host_instructions_emitted = 0;
+static u32 s_total_host_code_used_by_instructions = 0;
 #endif
 } // namespace CPU::CodeCache
 
-bool CPU::CodeCache::IsUsingAnyRecompiler()
+bool CPU::CodeCache::IsUsingRecompiler()
 {
-  return (g_settings.cpu_execution_mode == CPUExecutionMode::Recompiler ||
-          g_settings.cpu_execution_mode == CPUExecutionMode::NewRec);
+  return (g_settings.cpu_execution_mode == CPUExecutionMode::Recompiler);
 }
 
 bool CPU::CodeCache::IsUsingFastmem()
 {
-  return g_settings.cpu_fastmem_mode != CPUFastmemMode::Disabled;
+  return (g_settings.cpu_fastmem_mode != CPUFastmemMode::Disabled);
 }
 
 bool CPU::CodeCache::ProcessStartup(Error* error)
@@ -217,7 +209,7 @@ void CPU::CodeCache::Reset()
 {
   ClearBlocks();
 
-  if (IsUsingAnyRecompiler())
+  if (IsUsingRecompiler())
   {
     ResetCodeBuffer();
     CompileASMFunctions();
@@ -225,9 +217,14 @@ void CPU::CodeCache::Reset()
   }
 }
 
+void CPU::CodeCache::Shutdown()
+{
+  ClearBlocks();
+}
+
 void CPU::CodeCache::Execute()
 {
-  if (IsUsingAnyRecompiler())
+  if (IsUsingRecompiler())
   {
     g_enter_recompiler();
     UnreachableCode();
@@ -252,15 +249,15 @@ static constexpr LUTRangeList GetLUTRanges()
 {
   const LUTRangeList ranges = {{
     {0x00000000, 0x00800000}, // RAM
-    {0x1F000000, 0x1F800000}, // EXP1
+    {0x1F000000, 0x1F060000}, // EXP1
     {0x1FC00000, 0x1FC80000}, // BIOS
 
     {0x80000000, 0x80800000}, // RAM
-    {0x9F000000, 0x9F800000}, // EXP1
+    {0x9F000000, 0x9F060000}, // EXP1
     {0x9FC00000, 0x9FC80000}, // BIOS
 
     {0xA0000000, 0xA0800000}, // RAM
-    {0xBF000000, 0xBF800000}, // EXP1
+    {0xBF000000, 0xBF060000}, // EXP1
     {0xBFC00000, 0xBFC80000}  // BIOS
   }};
   return ranges;
@@ -275,31 +272,6 @@ static constexpr u32 GetLUTSlotCount(bool include_unreachable)
   return tables * LUT_TABLE_SIZE;
 }
 } // namespace CPU::CodeCache
-
-CPU::CodeCache::CodeLUT CPU::CodeCache::DecodeCodeLUTPointer(u32 slot, CodeLUT ptr)
-{
-  if constexpr (sizeof(void*) == 8)
-    return reinterpret_cast<CodeLUT>(reinterpret_cast<u8*>(ptr) + (static_cast<u64>(slot) << 17));
-  else
-    return reinterpret_cast<CodeLUT>(reinterpret_cast<u8*>(ptr) + (slot << 16));
-}
-
-CPU::CodeCache::CodeLUT CPU::CodeCache::EncodeCodeLUTPointer(u32 slot, CodeLUT ptr)
-{
-  if constexpr (sizeof(void*) == 8)
-    return reinterpret_cast<CodeLUT>(reinterpret_cast<u8*>(ptr) - (static_cast<u64>(slot) << 17));
-  else
-    return reinterpret_cast<CodeLUT>(reinterpret_cast<u8*>(ptr) - (slot << 16));
-}
-
-CPU::CodeCache::CodeLUT CPU::CodeCache::OffsetCodeLUTPointer(CodeLUT fake_ptr, u32 pc)
-{
-  u8* fake_byte_ptr = reinterpret_cast<u8*>(fake_ptr);
-  if constexpr (sizeof(void*) == 8)
-    return reinterpret_cast<const void**>(fake_byte_ptr + (static_cast<u64>(pc) << 1));
-  else
-    return reinterpret_cast<const void**>(fake_byte_ptr + pc);
-}
 
 void CPU::CodeCache::AllocateLUTs()
 {
@@ -322,9 +294,11 @@ void CPU::CodeCache::AllocateLUTs()
   // Mark everything as unreachable to begin with.
   for (u32 i = 0; i < LUT_TABLE_COUNT; i++)
   {
-    g_code_lut[i] = EncodeCodeLUTPointer(i, code_table_ptr);
+    g_code_lut[i] = code_table_ptr;
     s_block_lut[i] = nullptr;
   }
+
+  // Exclude unreachable.
   code_table_ptr += LUT_TABLE_SIZE;
 
   // Allocate ranges.
@@ -336,7 +310,7 @@ void CPU::CodeCache::AllocateLUTs()
     {
       const u32 slot = start_slot + i;
 
-      g_code_lut[slot] = EncodeCodeLUTPointer(slot, code_table_ptr);
+      g_code_lut[slot] = code_table_ptr;
       code_table_ptr += LUT_TABLE_SIZE;
 
       s_block_lut[slot] = block_table_ptr;
@@ -356,15 +330,13 @@ void CPU::CodeCache::DeallocateLUTs()
 
 void CPU::CodeCache::ResetCodeLUT()
 {
-  if (!s_lut_code_pointers)
-    return;
-
   // Make the unreachable table jump to the invalid code callback.
   MemsetPtrs(s_lut_code_pointers.get(), g_interpret_block, LUT_TABLE_COUNT);
 
   for (u32 i = 0; i < LUT_TABLE_COUNT; i++)
   {
-    CodeLUT ptr = DecodeCodeLUTPointer(i, g_code_lut[i]);
+    // Don't overwrite anything bound to unreachable.
+    CodeLUT ptr = g_code_lut[i];
     if (ptr == s_lut_code_pointers.get())
       continue;
 
@@ -374,18 +346,10 @@ void CPU::CodeCache::ResetCodeLUT()
 
 void CPU::CodeCache::SetCodeLUT(u32 pc, const void* function)
 {
-  if (!s_lut_code_pointers)
-    return;
-
   const u32 table = pc >> LUT_TABLE_SHIFT;
-  CodeLUT encoded_ptr = g_code_lut[table];
-
-#ifdef _DEBUG
-  const CodeLUT table_ptr = DecodeCodeLUTPointer(table, encoded_ptr);
-  DebugAssert(table_ptr != nullptr && table_ptr != s_lut_code_pointers.get());
-#endif
-
-  *OffsetCodeLUTPointer(encoded_ptr, pc) = function;
+  const u32 idx = (pc & 0xFFFF) >> 2;
+  DebugAssert(g_code_lut[table] != s_lut_code_pointers.get());
+  g_code_lut[table][idx] = function;
 }
 
 CPU::CodeCache::Block* CPU::CodeCache::LookupBlock(u32 pc)
@@ -396,6 +360,12 @@ CPU::CodeCache::Block* CPU::CodeCache::LookupBlock(u32 pc)
 
   const u32 idx = (pc & 0xFFFF) >> 2;
   return s_block_lut[table][idx];
+}
+
+bool CPU::CodeCache::HasBlockLUT(u32 pc)
+{
+  const u32 table = pc >> LUT_TABLE_SHIFT;
+  return (s_block_lut[table] != nullptr);
 }
 
 CPU::CodeCache::Block* CPU::CodeCache::CreateBlock(u32 pc, const BlockInstructionList& instructions,
@@ -495,9 +465,8 @@ CPU::CodeCache::Block* CPU::CodeCache::CreateBlock(u32 pc, const BlockInstructio
     return block;
   }
 
-  // Old rec doesn't use backprop info, don't waste time filling it.
-  if (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec)
-    FillBlockRegInfo(block);
+  // populate backpropogation information for liveness queries
+  FillBlockRegInfo(block);
 
   // add it to the tracking list for its page
   AddBlockToPageList(block);
@@ -614,7 +583,7 @@ void CPU::CodeCache::InvalidateBlocksWithPageIndex(u32 index)
   else if (ppi.invalidate_count > INVALIDATE_COUNT_FOR_MANUAL_PROTECTION)
   {
     DEV_LOG("{} invalidations in {} frames to page {} [0x{:08X} -> 0x{:08X}], switching to manual protection",
-            ppi.invalidate_count, frame_delta, index, (index * HOST_PAGE_SIZE), ((index + 1) * HOST_PAGE_SIZE));
+            ppi.invalidate_count, frame_delta, index, (index << HOST_PAGE_SHIFT), ((index + 1) << HOST_PAGE_SHIFT));
     ppi.mode = PageProtectionMode::ManualCheck;
     new_block_state = BlockState::NeedsRecompile;
   }
@@ -719,7 +688,7 @@ void CPU::CodeCache::ClearBlocks()
 PageFaultHandler::HandlerResult PageFaultHandler::HandlePageFault(void* exception_pc, void* fault_address,
                                                                   bool is_write)
 {
-  if (static_cast<const u8*>(fault_address) >= Bus::g_ram &&
+  if (Bus::g_ram && static_cast<const u8*>(fault_address) >= Bus::g_ram &&
       static_cast<const u8*>(fault_address) < (Bus::g_ram + Bus::RAM_8MB_SIZE))
   {
     // Writing to protected RAM.
@@ -752,11 +721,12 @@ template<PGXPMode pgxp_mode>
   if (g_state.pending_ticks >= g_state.downcount)                                                                      \
     break;
 
-  for (;;)
-  {
+  if (g_state.pending_ticks >= g_state.downcount)
     TimingEvents::RunEvents();
 
-    while (g_state.pending_ticks < g_state.downcount)
+  for (;;)
+  {
+    for (;;)
     {
 #if 0
       LogCurrentState();
@@ -806,9 +776,8 @@ template<PGXPMode pgxp_mode>
       }
       else if (block->HasFlag(BlockFlags::NeedsDynamicFetchTicks))
       {
-        AddPendingTicks(
-          static_cast<TickCount>(block->size * static_cast<u32>(*Bus::GetMemoryAccessTimePtr(
-                                                 block->pc & PHYSICAL_MEMORY_ADDRESS_MASK, MemoryAccessSize::Word))));
+        AddPendingTicks(static_cast<TickCount>(
+          block->size * static_cast<u32>(*Bus::GetMemoryAccessTimePtr(block->pc & KSEG_MASK, MemoryAccessSize::Word))));
       }
       else
       {
@@ -830,6 +799,8 @@ template<PGXPMode pgxp_mode>
       CHECK_DOWNCOUNT();
       continue;
     }
+
+    TimingEvents::RunEvents();
   }
 }
 
@@ -884,8 +855,8 @@ bool CPU::CodeCache::ReadBlockInstructions(u32 start_pc, BlockInstructionList* i
 
   const PageProtectionMode protection = GetProtectionModeForPC(start_pc);
   const bool use_icache = CPU::IsCachedAddress(start_pc);
-  const bool dynamic_fetch_ticks = (!use_icache && Bus::GetMemoryAccessTimePtr(start_pc & PHYSICAL_MEMORY_ADDRESS_MASK,
-                                                                               MemoryAccessSize::Word) != nullptr);
+  const bool dynamic_fetch_ticks =
+    (!use_icache && Bus::GetMemoryAccessTimePtr(VirtualAddressToPhysical(start_pc), MemoryAccessSize::Word) != nullptr);
   u32 pc = start_pc;
   bool is_branch_delay_slot = false;
   bool is_load_delay_slot = false;
@@ -934,13 +905,17 @@ bool CPU::CodeCache::ReadBlockInstructions(u32 start_pc, BlockInstructionList* i
     {
       // Away to the int you go!
       ERROR_LOG("Instruction read failed at PC=0x{:08X}, truncating block.", pc);
+
+      // If the last instruction was a branch, we need the delay slot in the block to compile it.
+      if (is_branch_delay_slot)
+        instructions->pop_back();
+
       break;
     }
 
     InstructionInfo info;
     std::memset(&info, 0, sizeof(info));
 
-    info.pc = pc;
     info.is_branch_delay_slot = is_branch_delay_slot;
     info.is_load_delay_slot = is_load_delay_slot;
     info.is_branch_instruction = IsBranchInstruction(instruction);
@@ -977,18 +952,18 @@ bool CPU::CodeCache::ReadBlockInstructions(u32 start_pc, BlockInstructionList* i
       const BlockInstructionInfoPair& prev = instructions->back();
       if (!prev.second.is_unconditional_branch_instruction || !prev.second.is_direct_branch_instruction)
       {
-        WARNING_LOG("Conditional or indirect branch delay slot at {:08X}, skipping block", info.pc);
+        WARNING_LOG("Conditional or indirect branch delay slot at {:08X}, skipping block", pc);
         return false;
       }
       if (!IsDirectBranchInstruction(instruction))
       {
-        WARNING_LOG("Indirect branch in delay slot at {:08X}, skipping block", info.pc);
+        WARNING_LOG("Indirect branch in delay slot at {:08X}, skipping block", pc);
         return false;
       }
 
       // we _could_ fetch the delay slot from the first branch's target, but it's probably in a different
       // page, and that's an invalidation nightmare. so just fallback to the int, this is very rare anyway.
-      WARNING_LOG("Direct branch in delay slot at {:08X}, skipping block", info.pc);
+      WARNING_LOG("Direct branch in delay slot at {:08X}, skipping block", pc);
       return false;
     }
 
@@ -1019,16 +994,18 @@ bool CPU::CodeCache::ReadBlockInstructions(u32 start_pc, BlockInstructionList* i
 
   instructions->back().second.is_last_instruction = true;
 
-#ifdef _DEBUG
+#if defined(_DEBUG) || defined(_DEVEL)
   SmallString disasm;
+  u32 disasm_pc = start_pc;
   DEBUG_LOG("Block at 0x{:08X}", start_pc);
   DEBUG_LOG(" Uncached fetch ticks: {}", metadata->uncached_fetch_ticks);
   DEBUG_LOG(" ICache line count: {}", metadata->icache_line_count);
   for (const auto& cbi : *instructions)
   {
-    CPU::DisassembleInstruction(&disasm, cbi.second.pc, cbi.first.bits);
+    CPU::DisassembleInstruction(&disasm, disasm_pc, cbi.first.bits);
     DEBUG_LOG("[{} {} 0x{:08X}] {:08X} {}", cbi.second.is_branch_delay_slot ? "BD" : "  ",
-              cbi.second.is_load_delay_slot ? "LD" : "  ", cbi.second.pc, cbi.first.bits, disasm);
+              cbi.second.is_load_delay_slot ? "LD" : "  ", disasm_pc, cbi.first.bits, disasm);
+    disasm_pc += sizeof(Instruction);
   }
 #endif
 
@@ -1305,7 +1282,7 @@ void CPU::CodeCache::FillBlockRegInfo(Block* block)
 void CPU::CodeCache::CompileOrRevalidateBlock(u32 start_pc)
 {
   // TODO: this doesn't currently handle when the cache overflows...
-  DebugAssert(IsUsingAnyRecompiler());
+  DebugAssert(IsUsingRecompiler());
   MemMap::BeginCodeWrite();
 
   Block* block = LookupBlock(start_pc);
@@ -1341,10 +1318,13 @@ void CPU::CodeCache::CompileOrRevalidateBlock(u32 start_pc)
   }
 
   // Ensure we're not going to run out of space while compiling this block.
-  // We could definitely do better here... TODO: far code is no longer needed for newrec
+  // We could definitely do better here...
   const u32 block_size = static_cast<u32>(s_block_instructions.size());
-  if (GetFreeCodeSpace() < (block_size * Recompiler::MAX_NEAR_HOST_BYTES_PER_INSTRUCTION) ||
-      GetFreeFarCodeSpace() < (block_size * Recompiler::MAX_FAR_HOST_BYTES_PER_INSTRUCTION))
+  const u32 free_code_space = GetFreeCodeSpace();
+  const u32 free_far_code_space = GetFreeFarCodeSpace();
+  if (free_code_space < (block_size * Recompiler::MAX_NEAR_HOST_BYTES_PER_INSTRUCTION) ||
+      free_code_space < Recompiler::MIN_CODE_RESERVE_FOR_BLOCK ||
+      free_far_code_space < Recompiler::MIN_CODE_RESERVE_FOR_BLOCK)
   {
     ERROR_LOG("Out of code space while compiling {:08X}. Resetting code cache.", start_pc);
     CodeCache::Reset();
@@ -1397,7 +1377,7 @@ const void* CPU::CodeCache::CreateBlockLink(Block* block, void* code, u32 newpc)
     }
     else
     {
-      dst = g_compile_or_revalidate_block;
+      dst = HasBlockLUT(newpc) ? g_compile_or_revalidate_block : g_interpret_block;
     }
 
     BlockLinkMap::iterator iter = s_block_links.emplace(newpc, code);
@@ -1407,6 +1387,22 @@ const void* CPU::CodeCache::CreateBlockLink(Block* block, void* code, u32 newpc)
 
   DEBUG_LOG("Linking {} with dst pc {:08X} to {}{}", code, newpc, dst,
             (dst == g_compile_or_revalidate_block) ? "[compiler]" : "");
+  return dst;
+}
+
+const void* CPU::CodeCache::CreateSelfBlockLink(Block* block, void* code, const void* block_start)
+{
+  const void* dst = g_dispatcher;
+  if (g_settings.cpu_recompiler_block_linking)
+  {
+    dst = block_start;
+
+    BlockLinkMap::iterator iter = s_block_links.emplace(block->pc, code);
+    DebugAssert(block->num_exit_links < MAX_BLOCK_EXIT_LINKS);
+    block->exit_links[block->num_exit_links++] = iter;
+  }
+
+  DEBUG_LOG("Self linking {} with dst pc {:08X} to {}", code, block->pc, dst);
   return dst;
 }
 
@@ -1434,27 +1430,37 @@ void CPU::CodeCache::UnlinkBlockExits(Block* block)
 
 void CPU::CodeCache::ResetCodeBuffer()
 {
+  if (s_code_used > 0 || s_far_code_used > 0)
+  {
+    MemMap::BeginCodeWrite();
+
+    if (s_code_used > 0)
+    {
+      std::memset(s_code_ptr, 0, s_code_used);
+      MemMap::FlushInstructionCache(s_code_ptr, s_code_used);
+    }
+
+    if (s_far_code_used > 0)
+    {
+      std::memset(s_far_code_ptr, 0, s_far_code_used);
+      MemMap::FlushInstructionCache(s_far_code_ptr, s_far_code_used);
+    }
+
+    MemMap::EndCodeWrite();
+  }
+
   s_code_ptr = static_cast<u8*>(s_code_buffer_ptr);
   s_free_code_ptr = s_code_ptr;
   s_code_size = RECOMPILER_CODE_CACHE_SIZE - RECOMPILER_FAR_CODE_CACHE_SIZE;
   s_code_used = 0;
 
-  // Use half the far code size when using newrec and memory exceptions aren't enabled. It's only used for backpatching.
-  const u32 far_code_size =
-    (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec && !g_settings.cpu_recompiler_memory_exceptions) ?
-      (RECOMPILER_FAR_CODE_CACHE_SIZE / 2) :
-      RECOMPILER_FAR_CODE_CACHE_SIZE;
+  // Use half the far code size when memory exceptions aren't enabled. It's only used for backpatching.
+  const u32 far_code_size = (!g_settings.cpu_recompiler_memory_exceptions) ? (RECOMPILER_FAR_CODE_CACHE_SIZE / 2) :
+                                                                             RECOMPILER_FAR_CODE_CACHE_SIZE;
   s_far_code_size = far_code_size;
   s_far_code_ptr = (far_code_size > 0) ? (static_cast<u8*>(s_code_ptr) + s_code_size) : nullptr;
   s_free_far_code_ptr = s_far_code_ptr;
   s_far_code_used = 0;
-
-  MemMap::BeginCodeWrite();
-
-  std::memset(s_code_ptr, 0, RECOMPILER_CODE_CACHE_SIZE);
-  MemMap::FlushInstructionCache(s_code_ptr, RECOMPILER_CODE_CACHE_SIZE);
-
-  MemMap::EndCodeWrite();
 }
 
 u8* CPU::CodeCache::GetFreeCodePointer()
@@ -1503,18 +1509,15 @@ void CPU::CodeCache::CommitFarCode(u32 length)
 
 void CPU::CodeCache::AlignCode(u32 alignment)
 {
-#if defined(CPU_ARCH_X64)
-  constexpr u8 padding_value = 0xcc; // int3
-#else
-  constexpr u8 padding_value = 0x00;
-#endif
-
   DebugAssert(Common::IsPow2(alignment));
   const u32 num_padding_bytes =
     std::min(static_cast<u32>(Common::AlignUpPow2(reinterpret_cast<uintptr_t>(s_free_code_ptr), alignment) -
                               reinterpret_cast<uintptr_t>(s_free_code_ptr)),
              GetFreeCodeSpace());
-  std::memset(s_free_code_ptr, padding_value, num_padding_bytes);
+
+  if (num_padding_bytes > 0)
+    EmitAlignmentPadding(s_free_code_ptr, num_padding_bytes);
+
   s_free_code_ptr += num_padding_bytes;
   s_code_used += num_padding_bytes;
 }
@@ -1538,9 +1541,10 @@ void CPU::CodeCache::CompileASMFunctions()
 {
   MemMap::BeginCodeWrite();
 
-#ifdef _DEBUG
+#ifdef DUMP_CODE_SIZE_STATS
   s_total_instructions_compiled = 0;
   s_total_host_instructions_emitted = 0;
+  s_total_host_code_used_by_instructions = 0;
 #endif
 
   const u32 asm_size = EmitASMFunctions(GetFreeCodePointer(), GetFreeCodeSpace());
@@ -1561,14 +1565,7 @@ bool CPU::CodeCache::CompileBlock(Block* block)
 
 #ifdef ENABLE_RECOMPILER
   if (g_settings.cpu_execution_mode == CPUExecutionMode::Recompiler)
-  {
-    Recompiler::CodeGenerator codegen;
-    host_code = codegen.CompileBlock(block, &host_code_size, &host_far_code_size);
-  }
-#endif
-#ifdef ENABLE_NEWREC
-  if (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec)
-    host_code = NewRec::g_compiler->CompileBlock(block, &host_code_size, &host_far_code_size);
+    host_code = g_compiler->CompileBlock(block, &host_code_size, &host_far_code_size);
 #endif
 
   block->host_code = host_code;
@@ -1585,14 +1582,18 @@ bool CPU::CodeCache::CompileBlock(Block* block)
   const u32 host_instructions = GetHostInstructionCount(host_code, host_code_size);
   s_total_instructions_compiled += block->size;
   s_total_host_instructions_emitted += host_instructions;
+  s_total_host_code_used_by_instructions += host_code_size;
 
-  DEV_LOG("0x{:08X}: {}/{}b for {}b ({}i), blowup: {:.2f}x, cache: {:.2f}%/{:.2f}%, ipi: {:.2f}/{:.2f}", block->pc,
-          host_code_size, host_far_code_size, block->size * 4, block->size,
-          static_cast<float>(host_code_size) / static_cast<float>(block->size * 4),
-          (static_cast<float>(s_code_used) / static_cast<float>(s_code_size)) * 100.0f,
-          (static_cast<float>(s_far_code_used) / static_cast<float>(s_far_code_size)) * 100.0f,
-          static_cast<float>(host_instructions) / static_cast<float>(block->size),
-          static_cast<float>(s_total_host_instructions_emitted) / static_cast<float>(s_total_instructions_compiled));
+  DEV_LOG(
+    "0x{:08X}: {}/{}b for {}b ({}i), blowup: {:.2f}x, cache: {:.2f}%/{:.2f}%, ipi: {:.2f}/{:.2f}, bpi: {:.2f}/{:.2f}",
+    block->pc, host_code_size, host_far_code_size, block->size * 4, block->size,
+    static_cast<float>(host_code_size) / static_cast<float>(block->size * 4),
+    (static_cast<float>(s_code_used) / static_cast<float>(s_code_size)) * 100.0f,
+    (static_cast<float>(s_far_code_used) / static_cast<float>(s_far_code_size)) * 100.0f,
+    static_cast<float>(host_instructions) / static_cast<float>(block->size),
+    static_cast<float>(s_total_host_instructions_emitted) / static_cast<float>(s_total_instructions_compiled),
+    static_cast<float>(block->host_code_size) / static_cast<float>(block->size),
+    static_cast<float>(s_total_host_code_used_by_instructions) / static_cast<float>(s_total_instructions_compiled));
 #endif
 
 #if 0
@@ -1657,7 +1658,7 @@ PageFaultHandler::HandlerResult CPU::CodeCache::HandleFastmemException(void* exc
 #ifdef ENABLE_MMAP_FASTMEM
   if (g_settings.cpu_fastmem_mode == CPUFastmemMode::MMap)
   {
-    if (static_cast<u8*>(fault_address) < static_cast<u8*>(g_state.fastmem_base) ||
+    if (!g_state.fastmem_base || static_cast<u8*>(fault_address) < static_cast<u8*>(g_state.fastmem_base) ||
         (static_cast<u8*>(fault_address) - static_cast<u8*>(g_state.fastmem_base)) >=
           static_cast<ptrdiff_t>(Bus::FASTMEM_ARENA_SIZE))
     {
@@ -1669,8 +1670,10 @@ PageFaultHandler::HandlerResult CPU::CodeCache::HandleFastmemException(void* exc
 
     // if we're writing to ram, let it go through a few times, and use manual block protection to sort it out
     // TODO: path for manual protection to return back to read-only pages
-    if (is_write && !g_state.cop0_regs.sr.Isc && AddressInRAM(guest_address))
+    if (!g_state.cop0_regs.sr.Isc && GetSegmentForAddress(guest_address) != CPU::Segment::KSEG2 &&
+        AddressInRAM(guest_address))
     {
+      DebugAssert(is_write);
       DEV_LOG("Ignoring fault due to RAM write @ 0x{:08X}", guest_address);
       InvalidateBlocksWithPageIndex(Bus::GetRAMCodePageIndex(guest_address));
       return PageFaultHandler::HandlerResult::ContinueExecution;
@@ -1683,15 +1686,12 @@ PageFaultHandler::HandlerResult CPU::CodeCache::HandleFastmemException(void* exc
     guest_address = std::numeric_limits<PhysicalMemoryAddress>::max();
   }
 
-  DEV_LOG("Page fault handler invoked at PC={} Address={} {}, fastmem offset {:08X}", exception_pc, fault_address,
-          is_write ? "(write)" : "(read)", guest_address);
-
   auto iter = s_fastmem_backpatch_info.find(exception_pc);
   if (iter == s_fastmem_backpatch_info.end())
-  {
-    ERROR_LOG("No backpatch info found for {}", exception_pc);
     return PageFaultHandler::HandlerResult::ExecuteNextHandler;
-  }
+
+  DEV_LOG("Page fault handler invoked at PC={} Address={} {}, fastmem offset {:08X}", exception_pc, fault_address,
+          is_write ? "(write)" : "(read)", guest_address);
 
   LoadstoreBackpatchInfo& info = iter->second;
   DEV_LOG("Backpatching {} at {}[{}] (pc {:08X} addr {:08X}): Bitmask {:08X} Addr {} Data {} Size {} Signed {:02X}",
@@ -1704,20 +1704,17 @@ PageFaultHandler::HandlerResult CPU::CodeCache::HandleFastmemException(void* exc
   BackpatchLoadStore(exception_pc, info);
 
   // queue block for recompilation later
-  if (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec)
+  Block* block = LookupBlock(info.guest_block);
+  if (block)
   {
-    Block* block = LookupBlock(info.guest_block);
-    if (block)
-    {
-      // This is a bit annoying, we have to remove it from the page list if it's a RAM block.
-      DEV_LOG("Queuing block {:08X} for recompilation due to backpatch", block->pc);
-      RemoveBlockFromPageList(block);
-      InvalidateBlock(block, BlockState::NeedsRecompile);
+    // This is a bit annoying, we have to remove it from the page list if it's a RAM block.
+    DEV_LOG("Queuing block {:08X} for recompilation due to backpatch", block->pc);
+    RemoveBlockFromPageList(block);
+    InvalidateBlock(block, BlockState::NeedsRecompile);
 
-      // Need to reset the recompile count, otherwise it'll get trolled into an interpreter fallback.
-      block->compile_frame = System::GetFrameNumber();
-      block->compile_count = 1;
-    }
+    // Need to reset the recompile count, otherwise it'll get trolled into an interpreter fallback.
+    block->compile_frame = System::GetFrameNumber();
+    block->compile_count = 1;
   }
 
   MemMap::EndCodeWrite();
@@ -1737,11 +1734,7 @@ void CPU::CodeCache::BackpatchLoadStore(void* host_pc, const LoadstoreBackpatchI
 {
 #ifdef ENABLE_RECOMPILER
   if (g_settings.cpu_execution_mode == CPUExecutionMode::Recompiler)
-    Recompiler::CodeGenerator::BackpatchLoadStore(host_pc, info);
-#endif
-#ifdef ENABLE_NEWREC
-  if (g_settings.cpu_execution_mode == CPUExecutionMode::NewRec)
-    NewRec::BackpatchLoadStore(host_pc, info);
+    Recompiler::BackpatchLoadStore(host_pc, info);
 #endif
 }
 

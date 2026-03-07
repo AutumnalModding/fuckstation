@@ -8,8 +8,6 @@
 #include "d3d12_texture.h"
 #include "d3d_common.h"
 
-#include "core/host.h"
-
 #include "common/align.h"
 #include "common/assert.h"
 #include "common/bitutils.h"
@@ -27,7 +25,7 @@
 #include <limits>
 #include <mutex>
 
-LOG_CHANNEL(D3D12Device);
+LOG_CHANNEL(GPUDevice);
 
 // Tweakables
 enum : u32
@@ -48,7 +46,6 @@ enum : u32
   FRAGMENT_UNIFORM_BUFFER_SIZE = 8 * 1024 * 1024,
   TEXTURE_BUFFER_SIZE = 64 * 1024 * 1024,
 
-  // UNIFORM_PUSH_CONSTANTS_STAGES = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
   UNIFORM_PUSH_CONSTANTS_SIZE = 128,
 
   MAX_UNIFORM_BUFFER_SIZE = 1024,
@@ -57,19 +54,66 @@ enum : u32
 // We need to synchronize instance creation because of adapter enumeration from the UI thread.
 static std::mutex s_instance_mutex;
 
-static constexpr GPUTexture::Format s_swap_chain_format = GPUTexture::Format::RGBA8;
+static constexpr GPUTextureFormat s_swap_chain_format = GPUTextureFormat::RGBA8;
 
 // We just need to keep this alive, never reference it.
 static DynamicHeapArray<u8> s_pipeline_cache_data;
 
-#ifdef _DEBUG
+#ifdef ENABLE_GPU_OBJECT_NAMES
 #include "WinPixEventRuntime/pix3.h"
 static u32 s_debug_scope_depth = 0;
 #endif
 
+static constexpr const u32 s_mipmap_blit_vs[] = {
+  0x43425844, 0x1790f572, 0x2810683a, 0xdff0fe9d, 0x8f210489, 0x00000001, 0x000002e0, 0x00000005, 0x00000034,
+  0x000000a0, 0x000000d4, 0x0000012c, 0x00000244, 0x46454452, 0x00000064, 0x00000000, 0x00000000, 0x00000000,
+  0x0000003c, 0xfffe0500, 0x00008100, 0x0000003c, 0x31314452, 0x0000003c, 0x00000018, 0x00000020, 0x00000028,
+  0x00000024, 0x0000000c, 0x00000000, 0x7263694d, 0x666f736f, 0x52282074, 0x4c482029, 0x53204c53, 0x65646168,
+  0x6f432072, 0x6c69706d, 0x31207265, 0x00312e30, 0x4e475349, 0x0000002c, 0x00000001, 0x00000008, 0x00000020,
+  0x00000000, 0x00000006, 0x00000001, 0x00000000, 0x00000101, 0x565f5653, 0x65747265, 0x00444978, 0x4e47534f,
+  0x00000050, 0x00000002, 0x00000008, 0x00000038, 0x00000000, 0x00000000, 0x00000003, 0x00000000, 0x00000c03,
+  0x00000041, 0x00000000, 0x00000001, 0x00000003, 0x00000001, 0x0000000f, 0x43584554, 0x44524f4f, 0x5f565300,
+  0x69736f50, 0x6e6f6974, 0xababab00, 0x58454853, 0x00000110, 0x00010050, 0x00000044, 0x0100086a, 0x04000060,
+  0x00101012, 0x00000000, 0x00000006, 0x03000065, 0x00102032, 0x00000000, 0x04000067, 0x001020f2, 0x00000001,
+  0x00000001, 0x02000068, 0x00000001, 0x0b00008c, 0x00100012, 0x00000000, 0x00004001, 0x00000001, 0x00004001,
+  0x00000001, 0x0010100a, 0x00000000, 0x00004001, 0x00000000, 0x07000001, 0x00100042, 0x00000000, 0x0010100a,
+  0x00000000, 0x00004001, 0x00000002, 0x05000056, 0x00100032, 0x00000000, 0x00100086, 0x00000000, 0x05000036,
+  0x00102032, 0x00000000, 0x00100046, 0x00000000, 0x0f000032, 0x00102032, 0x00000001, 0x00100046, 0x00000000,
+  0x00004002, 0x40000000, 0xc0000000, 0x00000000, 0x00000000, 0x00004002, 0xbf800000, 0x3f800000, 0x00000000,
+  0x00000000, 0x08000036, 0x001020c2, 0x00000001, 0x00004002, 0x00000000, 0x00000000, 0x00000000, 0x3f800000,
+  0x0100003e, 0x54415453, 0x00000094, 0x00000007, 0x00000001, 0x00000000, 0x00000003, 0x00000001, 0x00000000,
+  0x00000001, 0x00000001, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+  0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000002, 0x00000000, 0x00000001, 0x00000000, 0x00000000,
+  0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+  0x00000000, 0x00000000, 0x00000000, 0x00000000,
+};
+
+static constexpr const u32 s_mipmap_blit_ps[] = {
+  0x43425844, 0x25500f77, 0x71f24271, 0x5f83f8b8, 0x3f405943, 0x00000001, 0x0000026c, 0x00000005, 0x00000034,
+  0x000000f0, 0x00000124, 0x00000158, 0x000001d0, 0x46454452, 0x000000b4, 0x00000000, 0x00000000, 0x00000002,
+  0x0000003c, 0xffff0500, 0x00008100, 0x0000008b, 0x31314452, 0x0000003c, 0x00000018, 0x00000020, 0x00000028,
+  0x00000024, 0x0000000c, 0x00000000, 0x0000007c, 0x00000003, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+  0x00000001, 0x00000001, 0x00000085, 0x00000002, 0x00000005, 0x00000004, 0xffffffff, 0x00000000, 0x00000001,
+  0x0000000d, 0x706d6173, 0x73735f30, 0x6d617300, 0x4d003070, 0x6f726369, 0x74666f73, 0x29522820, 0x534c4820,
+  0x6853204c, 0x72656461, 0x6d6f4320, 0x656c6970, 0x30312072, 0xab00312e, 0x4e475349, 0x0000002c, 0x00000001,
+  0x00000008, 0x00000020, 0x00000000, 0x00000000, 0x00000003, 0x00000000, 0x00000303, 0x43584554, 0x44524f4f,
+  0xababab00, 0x4e47534f, 0x0000002c, 0x00000001, 0x00000008, 0x00000020, 0x00000000, 0x00000000, 0x00000003,
+  0x00000000, 0x0000000f, 0x545f5653, 0x65677261, 0xabab0074, 0x58454853, 0x00000070, 0x00000050, 0x0000001c,
+  0x0100086a, 0x0300005a, 0x00106000, 0x00000000, 0x04001858, 0x00107000, 0x00000000, 0x00005555, 0x03001062,
+  0x00101032, 0x00000000, 0x03000065, 0x001020f2, 0x00000000, 0x8b000045, 0x800000c2, 0x00155543, 0x001020f2,
+  0x00000000, 0x00101046, 0x00000000, 0x00107e46, 0x00000000, 0x00106000, 0x00000000, 0x0100003e, 0x54415453,
+  0x00000094, 0x00000002, 0x00000000, 0x00000000, 0x00000002, 0x00000000, 0x00000000, 0x00000000, 0x00000001,
+  0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000001, 0x00000000, 0x00000000,
+  0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+  0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+  0x00000000, 0x00000000};
+
 D3D12Device::D3D12Device()
 {
-#ifdef _DEBUG
+  m_render_api = RenderAPI::D3D12;
+  m_features.exclusive_fullscreen = true; // set so the caller can pass a mode to CreateDeviceAndSwapChain()
+
+#ifdef ENABLE_GPU_OBJECT_NAMES
   s_debug_scope_depth = 0;
 #endif
 }
@@ -80,28 +124,10 @@ D3D12Device::~D3D12Device()
   Assert(s_pipeline_cache_data.empty());
 }
 
-D3D12Device::ComPtr<ID3DBlob> D3D12Device::SerializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC* desc, Error* error)
-{
-  ComPtr<ID3DBlob> blob;
-  ComPtr<ID3DBlob> error_blob;
-  const HRESULT hr =
-    D3D12SerializeRootSignature(desc, D3D_ROOT_SIGNATURE_VERSION_1, blob.GetAddressOf(), error_blob.GetAddressOf());
-  if (FAILED(hr)) [[unlikely]]
-  {
-    Error::SetHResult(error, "D3D12SerializeRootSignature() failed: ", hr);
-    if (error_blob)
-      ERROR_LOG(static_cast<const char*>(error_blob->GetBufferPointer()));
-
-    return {};
-  }
-
-  return blob;
-}
-
 D3D12Device::ComPtr<ID3D12RootSignature> D3D12Device::CreateRootSignature(const D3D12_ROOT_SIGNATURE_DESC* desc,
                                                                           Error* error)
 {
-  ComPtr<ID3DBlob> blob = SerializeRootSignature(desc, error);
+  ComPtr<ID3DBlob> blob = D3DCommon::SerializeRootSignature(desc, error);
   if (!blob)
     return {};
 
@@ -117,8 +143,10 @@ D3D12Device::ComPtr<ID3D12RootSignature> D3D12Device::CreateRootSignature(const 
   return rs;
 }
 
-bool D3D12Device::CreateDevice(std::string_view adapter, std::optional<bool> exclusive_fullscreen_control,
-                               FeatureMask disabled_features, Error* error)
+bool D3D12Device::CreateDeviceAndMainSwapChain(std::string_view adapter, CreateFlags create_flags, const WindowInfo& wi,
+                                               GPUVSyncMode vsync_mode,
+                                               const ExclusiveFullscreenMode* exclusive_fullscreen_mode,
+                                               std::optional<bool> exclusive_fullscreen_control, Error* error)
 {
   std::unique_lock lock(s_instance_mutex);
 
@@ -134,10 +162,24 @@ bool D3D12Device::CreateDevice(std::string_view adapter, std::optional<bool> exc
   if (m_debug_device)
   {
     ComPtr<ID3D12Debug> debug12;
-    hr = D3D12GetDebugInterface(IID_PPV_ARGS(debug12.GetAddressOf()));
-    if (SUCCEEDED(hr))
+    if (D3DCommon::GetD3D12DebugInterface(&debug12, nullptr))
     {
+      INFO_LOG("Enabling debug layer.");
       debug12->EnableDebugLayer();
+
+      if (HasCreateFlag(create_flags, GPUDevice::CreateFlags::EnableGPUValidation))
+      {
+        ComPtr<ID3D12Debug1> debug12_1;
+        if (SUCCEEDED(debug12.As(&debug12_1)))
+        {
+          INFO_LOG("Enabling GPU-based validation.");
+          debug12_1->SetEnableGPUBasedValidation(true);
+        }
+        else
+        {
+          ERROR_LOG("GPU-based validation requested but not available.");
+        }
+      }
     }
     else
     {
@@ -150,18 +192,14 @@ bool D3D12Device::CreateDevice(std::string_view adapter, std::optional<bool> exc
   D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_1_0_CORE;
   for (D3D_FEATURE_LEVEL try_feature_level : {D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_11_0})
   {
-    hr = D3D12CreateDevice(m_adapter.Get(), try_feature_level, IID_PPV_ARGS(&m_device));
-    if (SUCCEEDED(hr))
+    if (D3DCommon::CreateD3D12Device(m_adapter.Get(), try_feature_level, &m_device, error))
     {
       feature_level = try_feature_level;
       break;
     }
   }
-  if (FAILED(hr))
-  {
-    Error::SetHResult(error, "Failed to create D3D12 device: ", hr);
+  if (!m_device)
     return false;
-  }
 
   if (!m_adapter)
   {
@@ -195,6 +233,11 @@ bool D3D12Device::CreateDevice(std::string_view adapter, std::optional<bool> exc
       info_queue->PushStorageFilter(&filter);
     }
   }
+
+  GPUDriverType driver_type = GPUDriverType::Unknown;
+  if (std::string adapter_name = D3DCommon::GetAdapterName(m_adapter.Get(), &driver_type); adapter_name.empty())
+    INFO_LOG("D3D Adapter: {}", adapter_name);
+  SetDriverType(driver_type);
 
   const D3D12_COMMAND_QUEUE_DESC queue_desc = {D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
                                                D3D12_COMMAND_QUEUE_FLAG_NONE, 0u};
@@ -233,13 +276,17 @@ bool D3D12Device::CreateDevice(std::string_view adapter, std::optional<bool> exc
     return false;
   }
 
-  SetFeatures(feature_level, disabled_features);
+  SetFeatures(feature_level, create_flags);
 
   if (!CreateCommandLists(error) || !CreateDescriptorHeaps(error))
     return false;
 
-  if (!m_window_info.IsSurfaceless() && !CreateSwapChain(error))
-    return false;
+  if (!wi.IsSurfaceless())
+  {
+    m_main_swap_chain = CreateSwapChain(wi, vsync_mode, exclusive_fullscreen_mode, exclusive_fullscreen_control, error);
+    if (!m_main_swap_chain)
+      return false;
+  }
 
   if (!CreateRootSignatures(error) || !CreateBuffers(error))
     return false;
@@ -256,15 +303,15 @@ void D3D12Device::DestroyDevice()
   if (InRenderPass())
     EndRenderPass();
 
-  WaitForGPUIdle();
+  WaitForAllFences();
+
+  m_main_swap_chain.reset();
 
   DestroyDeferredObjects(m_current_fence_value);
-  DestroySamplers();
   DestroyTimestampQuery();
   DestroyBuffers();
   DestroyDescriptorHeaps();
   DestroyRootSignatures();
-  DestroySwapChain();
   DestroyCommandLists();
 
   m_pipeline_library.Reset();
@@ -406,17 +453,17 @@ bool D3D12Device::CreateCommandLists(Error* error)
     }
   }
 
-  MoveToNextCommandList();
+  BeginCommandList(0);
   return true;
 }
 
-void D3D12Device::MoveToNextCommandList()
+void D3D12Device::BeginCommandList(u32 index)
 {
-  m_current_command_list = (m_current_command_list + 1) % NUM_COMMAND_LISTS;
+  m_current_command_list = index;
   m_current_fence_value++;
 
   // We may have to wait if this command list hasn't finished on the GPU.
-  CommandList& res = m_command_lists[m_current_command_list];
+  CommandList& res = m_command_lists[index];
   WaitForFence(res.fence_counter);
   res.fence_counter = m_current_fence_value;
   res.init_list_used = false;
@@ -456,7 +503,7 @@ void D3D12Device::MoveToNextCommandList()
   if (m_gpu_timing_enabled)
   {
     res.command_lists[1]->EndQuery(m_timestamp_query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
-                                   m_current_command_list * NUM_TIMESTAMP_QUERIES_PER_CMDLIST);
+                                   index * NUM_TIMESTAMP_QUERIES_PER_CMDLIST);
   }
 
   ID3D12DescriptorHeap* heaps[2] = {res.descriptor_allocator.GetDescriptorHeap(),
@@ -514,9 +561,11 @@ bool D3D12Device::CreateDescriptorHeaps(Error* error)
   m_device->CreateUnorderedAccessView(nullptr, nullptr, &null_uav_desc, m_null_uav_descriptor.cpu_handle);
 
   // Same for samplers.
-  m_point_sampler = GetSampler(GPUSampler::GetNearestConfig());
+  GPUSampler* default_sampler = GetSampler(GPUSampler::GetNearestConfig(), error);
+  if (!default_sampler) [[unlikely]]
+    return false;
   for (u32 i = 0; i < MAX_TEXTURE_SAMPLERS; i++)
-    m_current_samplers[i] = m_point_sampler;
+    m_current_samplers[i] = static_cast<D3D12Sampler*>(default_sampler)->GetDescriptor();
   return true;
 }
 
@@ -609,10 +658,28 @@ void D3D12Device::SubmitCommandList(bool wait_for_completion)
     return;
   }
 
-  MoveToNextCommandList();
-
+  // Wait before if the next command buffer has not already been waited for.
+  // Waiting afterwards ends up slightly faster because we can do the resets and such before blocking on the
+  // fence wait, but only if the next buffer is definitely not in use. Otherwise we'll do 2 fence waits.
+  const u32 next_command_list_index = (m_current_command_list + 1) % NUM_COMMAND_LISTS;
   if (wait_for_completion)
-    WaitForFence(res.fence_counter);
+  {
+    const u64 fence_counter = res.fence_counter;
+    if (m_completed_fence_value >= m_command_lists[next_command_list_index].fence_counter)
+    {
+      BeginCommandList(next_command_list_index);
+      WaitForFence(fence_counter);
+    }
+    else
+    {
+      WaitForFence(fence_counter);
+      BeginCommandList(next_command_list_index);
+    }
+  }
+  else
+  {
+    BeginCommandList(next_command_list_index);
+  }
 }
 
 void D3D12Device::SubmitCommandList(bool wait_for_completion, const std::string_view reason)
@@ -656,7 +723,7 @@ void D3D12Device::WaitForFence(u64 fence)
   DestroyDeferredObjects(m_completed_fence_value);
 }
 
-void D3D12Device::WaitForGPUIdle()
+void D3D12Device::WaitForAllFences()
 {
   u32 index = (m_current_command_list + 1) % NUM_COMMAND_LISTS;
   for (u32 i = 0; i < (NUM_COMMAND_LISTS - 1); i++)
@@ -666,7 +733,16 @@ void D3D12Device::WaitForGPUIdle()
   }
 }
 
-void D3D12Device::ExecuteAndWaitForGPUIdle()
+void D3D12Device::FlushCommands()
+{
+  if (InRenderPass())
+    EndRenderPass();
+
+  SubmitCommandList(false);
+  TrimTexturePool();
+}
+
+void D3D12Device::WaitForGPUIdle()
 {
   if (InRenderPass())
     EndRenderPass();
@@ -790,54 +866,53 @@ void D3D12Device::DestroyDeferredObjects(u64 fence_value)
   }
 }
 
-bool D3D12Device::HasSurface() const
+D3D12SwapChain::D3D12SwapChain(const WindowInfo& wi, GPUVSyncMode vsync_mode,
+                               const GPUDevice::ExclusiveFullscreenMode* fullscreen_mode)
+  : GPUSwapChain(wi, vsync_mode)
 {
-  return static_cast<bool>(m_swap_chain);
+  if (fullscreen_mode)
+    InitializeExclusiveFullscreenMode(fullscreen_mode);
 }
 
-u32 D3D12Device::GetSwapChainBufferCount() const
+D3D12SwapChain::~D3D12SwapChain()
 {
-  // With vsync off, we only need two buffers. Same for blocking vsync.
-  // With triple buffering, we need three.
-  return (m_vsync_mode == GPUVSyncMode::Mailbox) ? 3 : 2;
+  DestroyRTVs();
+  DestroySwapChain();
 }
 
-bool D3D12Device::CreateSwapChain(Error* error)
+bool D3D12SwapChain::InitializeExclusiveFullscreenMode(const GPUDevice::ExclusiveFullscreenMode* mode)
 {
-  if (m_window_info.type != WindowInfo::Type::Win32)
-  {
-    Error::SetStringView(error, "D3D12 expects a Win32 window.");
-    return false;
-  }
-
   const D3DCommon::DXGIFormatMapping& fm = D3DCommon::GetFormatMapping(s_swap_chain_format);
 
   const HWND window_hwnd = reinterpret_cast<HWND>(m_window_info.window_handle);
   RECT client_rc{};
   GetClientRect(window_hwnd, &client_rc);
 
-  DXGI_MODE_DESC fullscreen_mode = {};
-  ComPtr<IDXGIOutput> fullscreen_output;
-  if (Host::IsFullscreen())
-  {
-    u32 fullscreen_width, fullscreen_height;
-    float fullscreen_refresh_rate;
-    m_is_exclusive_fullscreen =
-      GetRequestedExclusiveFullscreenMode(&fullscreen_width, &fullscreen_height, &fullscreen_refresh_rate) &&
-      D3DCommon::GetRequestedExclusiveFullscreenModeDesc(m_dxgi_factory.Get(), client_rc, fullscreen_width,
-                                                         fullscreen_height, fullscreen_refresh_rate, fm.resource_format,
-                                                         &fullscreen_mode, fullscreen_output.GetAddressOf());
+  m_fullscreen_mode = D3DCommon::GetRequestedExclusiveFullscreenModeDesc(
+    D3D12Device::GetInstance().GetAdapter(), client_rc, mode, fm.resource_format, m_fullscreen_output.GetAddressOf());
+  return m_fullscreen_mode.has_value();
+}
 
-    // Using mailbox-style no-allow-tearing causes tearing in exclusive fullscreen.
-    if (m_vsync_mode == GPUVSyncMode::Mailbox && m_is_exclusive_fullscreen)
-    {
-      WARNING_LOG("Using FIFO instead of Mailbox vsync due to exclusive fullscreen.");
-      m_vsync_mode = GPUVSyncMode::FIFO;
-    }
-  }
-  else
+u32 D3D12SwapChain::GetNewBufferCount(GPUVSyncMode vsync_mode)
+{
+  // With vsync off, we only need two buffers. Same for blocking vsync.
+  // With triple buffering, we need three.
+  return (vsync_mode == GPUVSyncMode::Mailbox) ? 3 : 2;
+}
+
+bool D3D12SwapChain::CreateSwapChain(D3D12Device& dev, Error* error)
+{
+  const D3DCommon::DXGIFormatMapping& fm = D3DCommon::GetFormatMapping(s_swap_chain_format);
+
+  const HWND window_hwnd = reinterpret_cast<HWND>(m_window_info.window_handle);
+  RECT client_rc{};
+  GetClientRect(window_hwnd, &client_rc);
+
+  // Using mailbox-style no-allow-tearing causes tearing in exclusive fullscreen.
+  if (IsExclusiveFullscreen() && m_vsync_mode == GPUVSyncMode::Mailbox)
   {
-    m_is_exclusive_fullscreen = false;
+    WARNING_LOG("Using FIFO instead of Mailbox vsync due to exclusive fullscreen.");
+    m_vsync_mode = GPUVSyncMode::FIFO;
   }
 
   DXGI_SWAP_CHAIN_DESC1 swap_chain_desc = {};
@@ -845,45 +920,44 @@ bool D3D12Device::CreateSwapChain(Error* error)
   swap_chain_desc.Height = static_cast<u32>(client_rc.bottom - client_rc.top);
   swap_chain_desc.Format = fm.resource_format;
   swap_chain_desc.SampleDesc.Count = 1;
-  swap_chain_desc.BufferCount = GetSwapChainBufferCount();
+  swap_chain_desc.BufferCount = GetNewBufferCount(m_vsync_mode);
   swap_chain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
   swap_chain_desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
-  m_using_allow_tearing = (m_allow_tearing_supported && !m_is_exclusive_fullscreen);
-  if (m_using_allow_tearing)
-    swap_chain_desc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
-
   HRESULT hr = S_OK;
 
-  if (m_is_exclusive_fullscreen)
+  if (IsExclusiveFullscreen())
   {
     DXGI_SWAP_CHAIN_DESC1 fs_sd_desc = swap_chain_desc;
     DXGI_SWAP_CHAIN_FULLSCREEN_DESC fs_desc = {};
 
     fs_sd_desc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
-    fs_sd_desc.Width = fullscreen_mode.Width;
-    fs_sd_desc.Height = fullscreen_mode.Height;
-    fs_desc.RefreshRate = fullscreen_mode.RefreshRate;
-    fs_desc.ScanlineOrdering = fullscreen_mode.ScanlineOrdering;
-    fs_desc.Scaling = fullscreen_mode.Scaling;
+    fs_sd_desc.Width = m_fullscreen_mode->Width;
+    fs_sd_desc.Height = m_fullscreen_mode->Height;
+    fs_desc.RefreshRate = m_fullscreen_mode->RefreshRate;
+    fs_desc.ScanlineOrdering = m_fullscreen_mode->ScanlineOrdering;
+    fs_desc.Scaling = m_fullscreen_mode->Scaling;
     fs_desc.Windowed = FALSE;
 
     VERBOSE_LOG("Creating a {}x{} exclusive fullscreen swap chain", fs_sd_desc.Width, fs_sd_desc.Height);
-    hr = m_dxgi_factory->CreateSwapChainForHwnd(m_command_queue.Get(), window_hwnd, &fs_sd_desc, &fs_desc,
-                                                fullscreen_output.Get(), m_swap_chain.ReleaseAndGetAddressOf());
+    hr = dev.GetDXGIFactory()->CreateSwapChainForHwnd(dev.GetCommandQueue(), window_hwnd, &fs_sd_desc, &fs_desc,
+                                                      m_fullscreen_output.Get(), m_swap_chain.ReleaseAndGetAddressOf());
     if (FAILED(hr))
     {
       WARNING_LOG("Failed to create fullscreen swap chain, trying windowed.");
-      m_is_exclusive_fullscreen = false;
-      m_using_allow_tearing = m_allow_tearing_supported;
+      m_fullscreen_output.Reset();
+      m_fullscreen_mode.reset();
     }
   }
 
-  if (!m_is_exclusive_fullscreen)
+  if (!IsExclusiveFullscreen())
   {
     VERBOSE_LOG("Creating a {}x{} windowed swap chain", swap_chain_desc.Width, swap_chain_desc.Height);
-    hr = m_dxgi_factory->CreateSwapChainForHwnd(m_command_queue.Get(), window_hwnd, &swap_chain_desc, nullptr, nullptr,
-                                                m_swap_chain.ReleaseAndGetAddressOf());
+    m_using_allow_tearing = D3DCommon::SupportsAllowTearing(dev.GetDXGIFactory());
+    if (m_using_allow_tearing)
+      swap_chain_desc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+    hr = dev.GetDXGIFactory()->CreateSwapChainForHwnd(dev.GetCommandQueue(), window_hwnd, &swap_chain_desc, nullptr,
+                                                      nullptr, m_swap_chain.ReleaseAndGetAddressOf());
     if (FAILED(hr))
     {
       Error::SetHResult(error, "CreateSwapChainForHwnd() failed: ", hr);
@@ -891,22 +965,14 @@ bool D3D12Device::CreateSwapChain(Error* error)
     }
   }
 
-  hr = m_dxgi_factory->MakeWindowAssociation(window_hwnd, DXGI_MWA_NO_WINDOW_CHANGES);
+  hr = dev.GetDXGIFactory()->MakeWindowAssociation(window_hwnd, DXGI_MWA_NO_WINDOW_CHANGES);
   if (FAILED(hr))
     WARNING_LOG("MakeWindowAssociation() to disable ALT+ENTER failed");
 
-  if (!CreateSwapChainRTV(error))
-  {
-    DestroySwapChain();
-    return false;
-  }
-
-  // Render a frame as soon as possible to clear out whatever was previously being displayed.
-  RenderBlankFrame();
   return true;
 }
 
-bool D3D12Device::CreateSwapChainRTV(Error* error)
+bool D3D12SwapChain::CreateRTV(D3D12Device& dev, Error* error)
 {
   DXGI_SWAP_CHAIN_DESC swap_chain_desc;
   HRESULT hr = m_swap_chain->GetDesc(&swap_chain_desc);
@@ -925,67 +991,67 @@ bool D3D12Device::CreateSwapChainRTV(Error* error)
     if (FAILED(hr))
     {
       Error::SetHResult(error, "GetBuffer for RTV failed: ", hr);
-      DestroySwapChainRTVs();
+      DestroyRTVs();
       return false;
     }
 
     D3D12::SetObjectName(backbuffer.Get(), TinyString::from_format("Swap Chain Buffer #{}", i));
 
     D3D12DescriptorHandle rtv;
-    if (!m_rtv_heap_manager.Allocate(&rtv))
+    if (!dev.GetRTVHeapManager().Allocate(&rtv))
     {
       Error::SetStringView(error, "Failed to allocate RTV handle.");
-      DestroySwapChainRTVs();
+      DestroyRTVs();
       return false;
     }
 
-    m_device->CreateRenderTargetView(backbuffer.Get(), &rtv_desc, rtv);
+    dev.GetDevice()->CreateRenderTargetView(backbuffer.Get(), &rtv_desc, rtv);
     m_swap_chain_buffers.emplace_back(std::move(backbuffer), rtv);
   }
 
-  m_window_info.surface_width = swap_chain_desc.BufferDesc.Width;
-  m_window_info.surface_height = swap_chain_desc.BufferDesc.Height;
+  m_window_info.surface_width = static_cast<u16>(swap_chain_desc.BufferDesc.Width);
+  m_window_info.surface_height = static_cast<u16>(swap_chain_desc.BufferDesc.Height);
   m_window_info.surface_format = s_swap_chain_format;
   VERBOSE_LOG("Swap chain buffer size: {}x{}", m_window_info.surface_width, m_window_info.surface_height);
 
-  if (m_window_info.type == WindowInfo::Type::Win32)
+  BOOL fullscreen = FALSE;
+  DXGI_SWAP_CHAIN_DESC desc;
+  if (SUCCEEDED(m_swap_chain->GetFullscreenState(&fullscreen, nullptr)) && fullscreen &&
+      SUCCEEDED(m_swap_chain->GetDesc(&desc)))
   {
-    BOOL fullscreen = FALSE;
-    DXGI_SWAP_CHAIN_DESC desc;
-    if (SUCCEEDED(m_swap_chain->GetFullscreenState(&fullscreen, nullptr)) && fullscreen &&
-        SUCCEEDED(m_swap_chain->GetDesc(&desc)))
-    {
-      m_window_info.surface_refresh_rate = static_cast<float>(desc.BufferDesc.RefreshRate.Numerator) /
-                                           static_cast<float>(desc.BufferDesc.RefreshRate.Denominator);
-    }
+    m_window_info.surface_refresh_rate = static_cast<float>(desc.BufferDesc.RefreshRate.Numerator) /
+                                         static_cast<float>(desc.BufferDesc.RefreshRate.Denominator);
   }
 
   m_current_swap_chain_buffer = 0;
   return true;
 }
 
-void D3D12Device::DestroySwapChainRTVs()
+void D3D12SwapChain::DestroyRTVs()
 {
+  if (m_swap_chain_buffers.empty())
+    return;
+
+  D3D12Device& dev = D3D12Device::GetInstance();
+
   // Runtime gets cranky if we don't submit the current buffer...
-  if (InRenderPass())
-    EndRenderPass();
-  SubmitCommandList(true);
+  if (dev.InRenderPass())
+    dev.EndRenderPass();
+  dev.SubmitCommandList(true);
 
   for (auto it = m_swap_chain_buffers.rbegin(); it != m_swap_chain_buffers.rend(); ++it)
   {
-    m_rtv_heap_manager.Free(it->second.index);
+    dev.GetRTVHeapManager().Free(it->second.index);
     it->first.Reset();
   }
   m_swap_chain_buffers.clear();
   m_current_swap_chain_buffer = 0;
 }
 
-void D3D12Device::DestroySwapChain()
+void D3D12SwapChain::DestroySwapChain()
 {
   if (!m_swap_chain)
     return;
-
-  DestroySwapChainRTVs();
 
   // switch out of fullscreen before destroying
   BOOL is_fullscreen;
@@ -993,83 +1059,98 @@ void D3D12Device::DestroySwapChain()
     m_swap_chain->SetFullscreenState(FALSE, nullptr);
 
   m_swap_chain.Reset();
-  m_is_exclusive_fullscreen = false;
 }
 
-void D3D12Device::RenderBlankFrame()
+bool D3D12SwapChain::SetVSyncMode(GPUVSyncMode mode, Error* error)
 {
-  if (InRenderPass())
-    EndRenderPass();
+  // Using mailbox-style no-allow-tearing causes tearing in exclusive fullscreen.
+  if (mode == GPUVSyncMode::Mailbox && IsExclusiveFullscreen())
+  {
+    WARNING_LOG("Using FIFO instead of Mailbox vsync due to exclusive fullscreen.");
+    mode = GPUVSyncMode::FIFO;
+  }
 
-  auto& swap_chain_buf = m_swap_chain_buffers[m_current_swap_chain_buffer];
-  ID3D12GraphicsCommandList4* cmdlist = GetCommandList();
-  m_current_swap_chain_buffer = ((m_current_swap_chain_buffer + 1) % static_cast<u32>(m_swap_chain_buffers.size()));
-  D3D12Texture::TransitionSubresourceToState(cmdlist, swap_chain_buf.first.Get(), 0, D3D12_RESOURCE_STATE_COMMON,
-                                             D3D12_RESOURCE_STATE_RENDER_TARGET);
-  cmdlist->ClearRenderTargetView(swap_chain_buf.second, GSVector4::cxpr(0.0f, 0.0f, 0.0f, 1.0f).F32, 0, nullptr);
-  D3D12Texture::TransitionSubresourceToState(cmdlist, swap_chain_buf.first.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET,
-                                             D3D12_RESOURCE_STATE_PRESENT);
-  SubmitCommandList(false);
-  m_swap_chain->Present(0, m_using_allow_tearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
-}
-
-bool D3D12Device::UpdateWindow()
-{
-  WaitForGPUIdle();
-  DestroySwapChain();
-
-  if (!AcquireWindow(false))
-    return false;
-
-  if (m_window_info.IsSurfaceless())
+  if (m_vsync_mode == mode)
     return true;
 
-  Error error;
-  if (!CreateSwapChain(&error))
-  {
-    ERROR_LOG("Failed to create swap chain on updated window: {}", error.GetDescription());
-    return false;
-  }
+  const u32 old_buffer_count = GetNewBufferCount(m_vsync_mode);
+  const u32 new_buffer_count = GetNewBufferCount(mode);
+  m_vsync_mode = mode;
+  if (old_buffer_count == new_buffer_count)
+    return true;
 
-  RenderBlankFrame();
-  return true;
+  // Buffer count change => needs recreation.
+  DestroyRTVs();
+  DestroySwapChain();
+
+  D3D12Device& dev = D3D12Device::GetInstance();
+  return CreateSwapChain(dev, error) && CreateRTV(dev, error);
 }
 
-void D3D12Device::ResizeWindow(s32 new_window_width, s32 new_window_height, float new_window_scale)
+bool D3D12SwapChain::IsExclusiveFullscreen() const
 {
-  if (!m_swap_chain)
-    return;
+  return m_fullscreen_mode.has_value();
+}
 
-  m_window_info.surface_scale = new_window_scale;
+bool D3D12SwapChain::ResizeBuffers(u32 new_width, u32 new_height, Error* error)
+{
+  if (m_window_info.surface_width == new_width && m_window_info.surface_height == new_height)
+    return true;
 
-  if (m_window_info.surface_width == static_cast<u32>(new_window_width) &&
-      m_window_info.surface_height == static_cast<u32>(new_window_height))
-  {
-    return;
-  }
-
-  DestroySwapChainRTVs();
+  DestroyRTVs();
 
   HRESULT hr = m_swap_chain->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN,
                                            m_using_allow_tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
   if (FAILED(hr))
     ERROR_LOG("ResizeBuffers() failed: 0x{:08X}", static_cast<unsigned>(hr));
 
-  Error error;
-  if (!CreateSwapChainRTV(&error))
-  {
-    ERROR_LOG("Failed to recreate swap chain RTV after resize", error.GetDescription());
-    Panic("Failed to recreate swap chain RTV after resize");
-  }
+  return CreateRTV(D3D12Device::GetInstance(), error);
 }
 
-void D3D12Device::DestroySurface()
+std::unique_ptr<GPUSwapChain> D3D12Device::CreateSwapChain(const WindowInfo& wi, GPUVSyncMode vsync_mode,
+                                                           const ExclusiveFullscreenMode* exclusive_fullscreen_mode,
+                                                           std::optional<bool> exclusive_fullscreen_control,
+                                                           Error* error)
 {
-  DestroySwapChainRTVs();
-  DestroySwapChain();
+  std::unique_ptr<D3D12SwapChain> ret;
+  if (wi.type != WindowInfoType::Win32)
+  {
+    Error::SetStringView(error, "Cannot create a swap chain on non-win32 window.");
+    return ret;
+  }
+
+  ret = std::make_unique<D3D12SwapChain>(wi, vsync_mode, exclusive_fullscreen_mode);
+  if (ret->CreateSwapChain(*this, error) && ret->CreateRTV(*this, error))
+  {
+    // Render a frame as soon as possible to clear out whatever was previously being displayed.
+    RenderBlankFrame(ret.get());
+  }
+  else
+  {
+    ret.reset();
+  }
+
+  return ret;
 }
 
-bool D3D12Device::SupportsTextureFormat(GPUTexture::Format format) const
+void D3D12Device::RenderBlankFrame(D3D12SwapChain* swap_chain)
+{
+  if (InRenderPass())
+    EndRenderPass();
+
+  const D3D12SwapChain::BufferPair& swap_chain_buf = swap_chain->GetCurrentBuffer();
+  ID3D12GraphicsCommandList4* cmdlist = GetCommandList();
+  D3D12Texture::TransitionSubresourceToState(cmdlist, swap_chain_buf.first.Get(), 0, D3D12_RESOURCE_STATE_COMMON,
+                                             D3D12_RESOURCE_STATE_RENDER_TARGET);
+  cmdlist->ClearRenderTargetView(swap_chain_buf.second, GSVector4::cxpr(0.0f, 0.0f, 0.0f, 1.0f).F32, 0, nullptr);
+  D3D12Texture::TransitionSubresourceToState(cmdlist, swap_chain_buf.first.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET,
+                                             D3D12_RESOURCE_STATE_PRESENT);
+  SubmitCommandList(false);
+  swap_chain->GetSwapChain()->Present(0, swap_chain->IsUsingAllowTearing() ? DXGI_PRESENT_ALLOW_TEARING : 0);
+  swap_chain->AdvanceBuffer();
+}
+
+bool D3D12Device::SupportsTextureFormat(GPUTextureFormat format) const
 {
   constexpr u32 required = D3D12_FORMAT_SUPPORT1_TEXTURE2D | D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE;
 
@@ -1105,79 +1186,77 @@ std::string D3D12Device::GetDriverInfo() const
   return ret;
 }
 
-void D3D12Device::SetVSyncMode(GPUVSyncMode mode, bool allow_present_throttle)
+GPUPresentResult D3D12Device::BeginPresent(GPUSwapChain* swap_chain, u32 clear_color)
 {
-  m_allow_present_throttle = allow_present_throttle;
-
-  // Using mailbox-style no-allow-tearing causes tearing in exclusive fullscreen.
-  if (mode == GPUVSyncMode::Mailbox && m_is_exclusive_fullscreen)
-  {
-    WARNING_LOG("Using FIFO instead of Mailbox vsync due to exclusive fullscreen.");
-    mode = GPUVSyncMode::FIFO;
-  }
-
-  if (m_vsync_mode == mode)
-    return;
-
-  const u32 old_buffer_count = GetSwapChainBufferCount();
-  m_vsync_mode = mode;
-  if (!m_swap_chain)
-    return;
-
-  if (GetSwapChainBufferCount() != old_buffer_count)
-  {
-    DestroySwapChain();
-
-    Error error;
-    if (!CreateSwapChain(&error))
-    {
-      ERROR_LOG("Failed to recreate swap chain after vsync change: {}", error.GetDescription());
-      Panic("Failed to recreate swap chain after vsync change.");
-    }
-  }
-}
-
-GPUDevice::PresentResult D3D12Device::BeginPresent(u32 clear_color)
-{
+  D3D12SwapChain* const SC = static_cast<D3D12SwapChain*>(swap_chain);
   if (InRenderPass())
     EndRenderPass();
 
   if (m_device_was_lost) [[unlikely]]
-    return PresentResult::DeviceLost;
-
-  // If we're running surfaceless, kick the command buffer so we don't run out of descriptors.
-  if (!m_swap_chain)
-  {
-    SubmitCommandList(false);
-    TrimTexturePool();
-    return PresentResult::SkipPresent;
-  }
+    return GPUPresentResult::DeviceLost;
 
   // TODO: Check if the device was lost.
 
   // Check if we lost exclusive fullscreen. If so, notify the host, so it can switch to windowed mode.
   // This might get called repeatedly if it takes a while to switch back, that's the host's problem.
   BOOL is_fullscreen;
-  if (m_is_exclusive_fullscreen &&
-      (FAILED(m_swap_chain->GetFullscreenState(&is_fullscreen, nullptr)) || !is_fullscreen))
+  if (SC->IsExclusiveFullscreen() &&
+      (FAILED(SC->GetSwapChain()->GetFullscreenState(&is_fullscreen, nullptr)) || !is_fullscreen))
   {
-    Host::RunOnCPUThread([]() { Host::SetFullscreen(false); });
+    FlushCommands();
     TrimTexturePool();
-    return PresentResult::SkipPresent;
+    return GPUPresentResult::ExclusiveFullscreenLost;
   }
 
-  BeginSwapChainRenderPass(clear_color);
-  return PresentResult::OK;
+  m_current_swap_chain = SC;
+
+  const D3D12SwapChain::BufferPair& swap_chain_buf = SC->GetCurrentBuffer();
+  ID3D12GraphicsCommandList4* const cmdlist = GetCommandList();
+
+  D3D12Texture::TransitionSubresourceToState(cmdlist, swap_chain_buf.first.Get(), 0, D3D12_RESOURCE_STATE_COMMON,
+                                             D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+  // All textures should be in shader read only optimal already, but just in case..
+  const u32 num_textures = GetActiveTexturesForLayout(m_current_pipeline_layout);
+  for (u32 i = 0; i < num_textures; i++)
+  {
+    if (m_current_textures[i])
+      m_current_textures[i]->TransitionToState(cmdlist, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+  }
+
+  D3D12_RENDER_PASS_RENDER_TARGET_DESC rt_desc = {swap_chain_buf.second,
+                                                  {D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR, {}},
+                                                  {D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE, {}}};
+  GSVector4::store<false>(rt_desc.BeginningAccess.Clear.ClearValue.Color, GSVector4::unorm8(clear_color));
+  cmdlist->BeginRenderPass(1, &rt_desc, nullptr, D3D12_RENDER_PASS_FLAG_NONE);
+
+  std::memset(m_current_render_targets.data(), 0, sizeof(m_current_render_targets));
+  m_num_current_render_targets = 0;
+  m_dirty_flags =
+    (m_dirty_flags & ~DIRTY_FLAG_RT_UAVS) | ((IsUsingROVRootSignature()) ? DIRTY_FLAG_PIPELINE_LAYOUT : 0);
+  m_current_render_pass_flags = GPUPipeline::NoRenderPassFlags;
+  m_current_depth_target = nullptr;
+  m_in_render_pass = true;
+  s_stats.num_render_passes++;
+
+  // Clear pipeline, it's likely incompatible.
+  m_current_pipeline = nullptr;
+
+  return GPUPresentResult::OK;
 }
 
-void D3D12Device::EndPresent(bool explicit_present, u64 present_time)
+void D3D12Device::EndPresent(GPUSwapChain* swap_chain, bool explicit_present, u64 present_time)
 {
+  D3D12SwapChain* const SC = static_cast<D3D12SwapChain*>(swap_chain);
   DebugAssert(present_time == 0);
   DebugAssert(InRenderPass() && m_num_current_render_targets == 0 && !m_current_depth_target);
   EndRenderPass();
 
-  const auto& swap_chain_buf = m_swap_chain_buffers[m_current_swap_chain_buffer];
-  m_current_swap_chain_buffer = ((m_current_swap_chain_buffer + 1) % static_cast<u32>(m_swap_chain_buffers.size()));
+  DebugAssert(SC == m_current_swap_chain);
+  m_current_swap_chain = nullptr;
+
+  const D3D12SwapChain::BufferPair& swap_chain_buf = SC->GetCurrentBuffer();
+  SC->AdvanceBuffer();
 
   ID3D12GraphicsCommandList* cmdlist = GetCommandList();
   D3D12Texture::TransitionSubresourceToState(cmdlist, swap_chain_buf.first.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -1187,21 +1266,23 @@ void D3D12Device::EndPresent(bool explicit_present, u64 present_time)
   TrimTexturePool();
 
   if (!explicit_present)
-    SubmitPresent();
+    SubmitPresent(swap_chain);
 }
 
-void D3D12Device::SubmitPresent()
+void D3D12Device::SubmitPresent(GPUSwapChain* swap_chain)
 {
-  DebugAssert(m_swap_chain);
+  D3D12SwapChain* const SC = static_cast<D3D12SwapChain*>(swap_chain);
   if (m_device_was_lost) [[unlikely]]
     return;
 
-  const UINT sync_interval = static_cast<UINT>(m_vsync_mode == GPUVSyncMode::FIFO);
-  const UINT flags = (m_vsync_mode == GPUVSyncMode::Disabled && m_using_allow_tearing) ? DXGI_PRESENT_ALLOW_TEARING : 0;
-  m_swap_chain->Present(sync_interval, flags);
+  const UINT sync_interval = static_cast<UINT>(SC->GetVSyncMode() == GPUVSyncMode::FIFO);
+  const UINT flags =
+    (SC->GetVSyncMode() == GPUVSyncMode::Disabled && SC->IsUsingAllowTearing()) ? DXGI_PRESENT_ALLOW_TEARING : 0;
+  SC->GetSwapChain()->Present(sync_interval, flags);
 }
 
-#ifdef _DEBUG
+#ifdef ENABLE_GPU_OBJECT_NAMES
+
 static UINT64 Palette(float phase, const std::array<float, 3>& a, const std::array<float, 3>& b,
                       const std::array<float, 3>& c, const std::array<float, 3>& d)
 {
@@ -1214,44 +1295,38 @@ static UINT64 Palette(float phase, const std::array<float, 3>& a, const std::arr
                    static_cast<BYTE>(std::clamp(result[1] * 255.0f, 0.0f, 255.0f)),
                    static_cast<BYTE>(std::clamp(result[2] * 255.0f, 0.0f, 255.0f)));
 }
-#endif
 
 void D3D12Device::PushDebugGroup(const char* name)
 {
-#ifdef _DEBUG
   if (!m_debug_device)
     return;
 
   const UINT64 color = Palette(static_cast<float>(++s_debug_scope_depth), {0.5f, 0.5f, 0.5f}, {0.5f, 0.5f, 0.5f},
                                {1.0f, 1.0f, 0.5f}, {0.8f, 0.90f, 0.30f});
   PIXBeginEvent(GetCommandList(), color, "%s", name);
-#endif
 }
 
 void D3D12Device::PopDebugGroup()
 {
-#ifdef _DEBUG
   if (!m_debug_device)
     return;
 
   s_debug_scope_depth = (s_debug_scope_depth == 0) ? 0 : (s_debug_scope_depth - 1u);
   PIXEndEvent(GetCommandList());
-#endif
 }
 
 void D3D12Device::InsertDebugMessage(const char* msg)
 {
-#ifdef _DEBUG
   if (!m_debug_device)
     return;
 
   PIXSetMarker(GetCommandList(), PIX_COLOR(0, 0, 0), "%s", msg);
-#endif
 }
 
-void D3D12Device::SetFeatures(D3D_FEATURE_LEVEL feature_level, FeatureMask disabled_features)
+#endif
+
+void D3D12Device::SetFeatures(D3D_FEATURE_LEVEL feature_level, CreateFlags create_flags)
 {
-  m_render_api = RenderAPI::D3D12;
   m_render_api_version = D3DCommon::GetRenderAPIVersionForFeatureLevel(feature_level);
   m_max_texture_size = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
   m_max_multisamples = 1;
@@ -1263,22 +1338,25 @@ void D3D12Device::SetFeatures(D3D_FEATURE_LEVEL feature_level, FeatureMask disab
     if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &fd, sizeof(fd))) &&
         fd.NumQualityLevels > 0)
     {
-      m_max_multisamples = multisamples;
+      m_max_multisamples = static_cast<u16>(multisamples);
     }
   }
 
-  m_features.dual_source_blend = !(disabled_features & FEATURE_MASK_DUAL_SOURCE_BLEND);
+  m_features.dual_source_blend = !HasCreateFlag(create_flags, CreateFlags::DisableDualSourceBlend);
   m_features.framebuffer_fetch = false;
   m_features.per_sample_shading = true;
   m_features.noperspective_interpolation = true;
   m_features.texture_copy_to_self =
-    /*!(disabled_features & FEATURE_MASK_TEXTURE_COPY_TO_SELF)*/ false; // TODO: Support with Enhanced Barriers
-  m_features.supports_texture_buffers = !(disabled_features & FEATURE_MASK_TEXTURE_BUFFERS);
+    /*!HasCreateFlag(create_flags, CreateFlag::DisableTextureCopyToSelf)*/ false; // TODO: Support with Enhanced
+                                                                                  // Barriers
+  m_features.texture_buffers = !HasCreateFlag(create_flags, CreateFlags::DisableTextureBuffers);
   m_features.texture_buffers_emulated_with_ssbo = false;
   m_features.feedback_loops = false;
-  m_features.geometry_shaders = !(disabled_features & FEATURE_MASK_GEOMETRY_SHADERS);
+  m_features.geometry_shaders = !HasCreateFlag(create_flags, CreateFlags::DisableGeometryShaders);
+  m_features.compute_shaders = !HasCreateFlag(create_flags, CreateFlags::DisableComputeShaders);
   m_features.partial_msaa_resolve = true;
   m_features.memory_import = false;
+  m_features.exclusive_fullscreen = true;
   m_features.explicit_present = true;
   m_features.timed_present = false;
   m_features.gpu_timing = true;
@@ -1286,19 +1364,21 @@ void D3D12Device::SetFeatures(D3D_FEATURE_LEVEL feature_level, FeatureMask disab
   m_features.pipeline_cache = true;
   m_features.prefer_unused_textures = true;
 
-  BOOL allow_tearing_supported = false;
-  HRESULT hr = m_dxgi_factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow_tearing_supported,
-                                                   sizeof(allow_tearing_supported));
-  m_allow_tearing_supported = (SUCCEEDED(hr) && allow_tearing_supported == TRUE);
-
   m_features.raster_order_views = false;
-  if (!(disabled_features & FEATURE_MASK_RASTER_ORDER_VIEWS))
+  if (!HasCreateFlag(create_flags, CreateFlags::DisableRasterOrderViews))
   {
     D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
     m_features.raster_order_views =
       SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options))) &&
       options.ROVsSupported;
   }
+
+  m_features.dxt_textures =
+    (!HasCreateFlag(create_flags, CreateFlags::DisableCompressedTextures) &&
+     (SupportsTextureFormat(GPUTextureFormat::BC1) && SupportsTextureFormat(GPUTextureFormat::BC2) &&
+      SupportsTextureFormat(GPUTextureFormat::BC3)));
+  m_features.bptc_textures = (!HasCreateFlag(create_flags, CreateFlags::DisableCompressedTextures) &&
+                              SupportsTextureFormat(GPUTextureFormat::BC7));
 }
 
 void D3D12Device::CopyTextureRegion(GPUTexture* dst, u32 dst_x, u32 dst_y, u32 dst_layer, u32 dst_level,
@@ -1528,7 +1608,8 @@ void D3D12Device::UnmapIndexBuffer(u32 used_index_count)
   m_index_buffer.CommitMemory(upload_size);
 }
 
-void D3D12Device::PushUniformBuffer(const void* data, u32 data_size)
+void D3D12Device::PushUniformBuffer(ID3D12GraphicsCommandList4* const cmdlist, bool compute, const void* data,
+                                    u32 data_size)
 {
   static constexpr std::array<u8, static_cast<u8>(GPUPipeline::Layout::MaxCount)> push_parameters = {
     0, // SingleTextureAndUBO
@@ -1536,20 +1617,19 @@ void D3D12Device::PushUniformBuffer(const void* data, u32 data_size)
     1, // SingleTextureBufferAndPushConstants
     0, // MultiTextureAndUBO
     2, // MultiTextureAndPushConstants
+    3, // MultiTextureAndUBOAndPushConstants
+    0, // ComputeMultiTextureAndUBO
+    2, // ComputeSingleTextureAndPushConstants
   };
-
-  DebugAssert(data_size < UNIFORM_PUSH_CONSTANTS_SIZE);
-  if (m_dirty_flags & DIRTY_FLAG_PIPELINE_LAYOUT)
-  {
-    m_dirty_flags &= ~DIRTY_FLAG_PIPELINE_LAYOUT;
-    UpdateRootSignature();
-  }
 
   s_stats.buffer_streamed += data_size;
 
   const u32 push_param =
     push_parameters[static_cast<u8>(m_current_pipeline_layout)] + BoolToUInt8(IsUsingROVRootSignature());
-  GetCommandList()->SetGraphicsRoot32BitConstants(push_param, data_size / 4u, data, 0);
+  if (!compute)
+    cmdlist->SetGraphicsRoot32BitConstants(push_param, data_size / 4u, data, 0);
+  else
+    cmdlist->SetComputeRoot32BitConstants(push_param, data_size / 4u, data, 0);
 }
 
 void* D3D12Device::MapUniformBuffer(u32 size)
@@ -1612,7 +1692,7 @@ bool D3D12Device::CreateRootSignatures(Error* error)
         rsb.AddDescriptorTable(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 0, MAX_IMAGE_RENDER_TARGETS,
                                D3D12_SHADER_VISIBILITY_PIXEL);
       }
-      rsb.Add32BitConstants(0, UNIFORM_PUSH_CONSTANTS_SIZE / sizeof(u32), D3D12_SHADER_VISIBILITY_ALL);
+      rsb.Add32BitConstants(1, UNIFORM_PUSH_CONSTANTS_SIZE / sizeof(u32), D3D12_SHADER_VISIBILITY_ALL);
       if (!(rs = rsb.Create(error, true)))
         return false;
       D3D12::SetObjectName(rs.Get(), "Single Texture Pipeline Layout");
@@ -1628,7 +1708,7 @@ bool D3D12Device::CreateRootSignatures(Error* error)
         rsb.AddDescriptorTable(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 0, MAX_IMAGE_RENDER_TARGETS,
                                D3D12_SHADER_VISIBILITY_PIXEL);
       }
-      rsb.Add32BitConstants(0, UNIFORM_PUSH_CONSTANTS_SIZE / sizeof(u32), D3D12_SHADER_VISIBILITY_ALL);
+      rsb.Add32BitConstants(1, UNIFORM_PUSH_CONSTANTS_SIZE / sizeof(u32), D3D12_SHADER_VISIBILITY_ALL);
       if (!(rs = rsb.Create(error, true)))
         return false;
       D3D12::SetObjectName(rs.Get(), "Single Texture Buffer + UBO Pipeline Layout");
@@ -1664,11 +1744,64 @@ bool D3D12Device::CreateRootSignatures(Error* error)
         rsb.AddDescriptorTable(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 0, MAX_IMAGE_RENDER_TARGETS,
                                D3D12_SHADER_VISIBILITY_PIXEL);
       }
-      rsb.Add32BitConstants(0, UNIFORM_PUSH_CONSTANTS_SIZE / sizeof(u32), D3D12_SHADER_VISIBILITY_ALL);
+      rsb.Add32BitConstants(1, UNIFORM_PUSH_CONSTANTS_SIZE / sizeof(u32), D3D12_SHADER_VISIBILITY_ALL);
       if (!(rs = rsb.Create(error, true)))
         return false;
-      D3D12::SetObjectName(rs.Get(), "Multi Texture Pipeline Layout");
+      D3D12::SetObjectName(rs.Get(), "Multi Texture + Push Constant Pipeline Layout");
     }
+
+    {
+      auto& rs = m_root_signatures[rov][static_cast<u8>(GPUPipeline::Layout::MultiTextureAndUBOAndPushConstants)];
+
+      rsb.SetInputAssemblerFlag();
+      rsb.AddDescriptorTable(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 0, MAX_TEXTURE_SAMPLERS, D3D12_SHADER_VISIBILITY_PIXEL);
+      rsb.AddDescriptorTable(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 0, MAX_TEXTURE_SAMPLERS,
+                             D3D12_SHADER_VISIBILITY_PIXEL);
+      rsb.AddCBVParameter(0, D3D12_SHADER_VISIBILITY_ALL);
+      if (rov)
+      {
+        rsb.AddDescriptorTable(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 0, MAX_IMAGE_RENDER_TARGETS,
+                               D3D12_SHADER_VISIBILITY_PIXEL);
+      }
+      rsb.Add32BitConstants(1, UNIFORM_PUSH_CONSTANTS_SIZE / sizeof(u32), D3D12_SHADER_VISIBILITY_ALL);
+      if (!(rs = rsb.Create(error, true)))
+        return false;
+      D3D12::SetObjectName(rs.Get(), "Multi Texture + UBO + Push Constant Pipeline Layout");
+    }
+  }
+
+  {
+    auto& rs = m_root_signatures[0][static_cast<u8>(GPUPipeline::Layout::ComputeMultiTextureAndUBO)];
+
+    rsb.AddDescriptorTable(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 0, MAX_TEXTURE_SAMPLERS, D3D12_SHADER_VISIBILITY_ALL);
+    rsb.AddDescriptorTable(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 0, MAX_TEXTURE_SAMPLERS, D3D12_SHADER_VISIBILITY_ALL);
+    rsb.AddDescriptorTable(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 0, MAX_IMAGE_RENDER_TARGETS, D3D12_SHADER_VISIBILITY_ALL);
+    rsb.AddCBVParameter(0, D3D12_SHADER_VISIBILITY_ALL);
+    if (!(rs = rsb.Create(error, true)))
+      return false;
+    D3D12::SetObjectName(rs.Get(), "Compute Multi Texture + UBO Pipeline Layout");
+  }
+
+  {
+    auto& rs = m_root_signatures[0][static_cast<u8>(GPUPipeline::Layout::ComputeMultiTextureAndPushConstants)];
+
+    rsb.AddDescriptorTable(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 0, MAX_TEXTURE_SAMPLERS, D3D12_SHADER_VISIBILITY_ALL);
+    rsb.AddDescriptorTable(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 0, MAX_TEXTURE_SAMPLERS, D3D12_SHADER_VISIBILITY_ALL);
+    rsb.AddDescriptorTable(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 0, MAX_IMAGE_RENDER_TARGETS, D3D12_SHADER_VISIBILITY_ALL);
+    rsb.Add32BitConstants(0, UNIFORM_PUSH_CONSTANTS_SIZE / sizeof(u32), D3D12_SHADER_VISIBILITY_ALL);
+    if (!(rs = rsb.Create(error, true)))
+      return false;
+    D3D12::SetObjectName(rs.Get(), "Compute Multi Texture Pipeline Layout");
+  }
+
+  {
+    auto& rs = m_mipmap_render_root_signature;
+    rsb.AddDescriptorTable(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 0, 1, D3D12_SHADER_VISIBILITY_PIXEL);
+    rsb.AddStaticSampler(0, D3D12Sampler::GetD3DSamplerDesc(GPUSampler::GetLinearConfig()),
+                         D3D12_SHADER_VISIBILITY_PIXEL);
+    if (!(rs = rsb.Create(error, true)))
+      return false;
+    D3D12::SetObjectName(rs.Get(), "Render Mipmap Pipeline Layout");
   }
 
   return true;
@@ -1676,6 +1809,9 @@ bool D3D12Device::CreateRootSignatures(Error* error)
 
 void D3D12Device::DestroyRootSignatures()
 {
+  for (ComPtr<ID3D12PipelineState>& it : m_mipmap_render_pipelines)
+    it.Reset();
+  m_mipmap_render_root_signature.Reset();
   m_root_signatures.enumerate([](auto& it) { it.Reset(); });
 }
 
@@ -1690,9 +1826,6 @@ void D3D12Device::SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTextu
     (m_num_current_render_targets != num_rts || m_current_depth_target != ds || m_current_render_pass_flags != flags);
   bool needs_ds_clear = (ds && ds->IsClearedOrInvalidated());
   bool needs_rt_clear = false;
-
-  if (InRenderPass())
-    EndRenderPass();
 
   m_current_depth_target = static_cast<D3D12Texture*>(ds);
   for (u32 i = 0; i < num_rts; i++)
@@ -1791,9 +1924,10 @@ void D3D12Device::BeginRenderPass()
       for (u32 i = 0; i < m_num_current_render_targets; i++)
       {
         D3D12Texture* const rt = m_current_render_targets[i];
-        rt->TransitionToState(cmdlist, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         rt->SetUseFenceValue(GetCurrentFenceValue());
         rt->CommitClear(cmdlist);
+        rt->TransitionToState(cmdlist, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        rt->SetState(GPUTexture::State::Dirty);
       }
     }
     if (m_current_depth_target)
@@ -1801,11 +1935,10 @@ void D3D12Device::BeginRenderPass()
       D3D12Texture* const ds = m_current_depth_target;
       ds->TransitionToState(cmdlist, D3D12_RESOURCE_STATE_DEPTH_WRITE);
       ds->SetUseFenceValue(GetCurrentFenceValue());
-      ds_desc_p = &ds_desc;
       ds_desc.cpuDescriptor = ds->GetWriteDescriptor();
       ds_desc.DepthEndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE;
-      ds_desc.StencilBeginningAccess = {};
-      ds_desc.StencilEndingAccess = {};
+      ds_desc.StencilBeginningAccess = {D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_NO_ACCESS, {}};
+      ds_desc.StencilEndingAccess = {D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_NO_ACCESS, {}};
 
       switch (ds->GetState())
       {
@@ -1841,7 +1974,7 @@ void D3D12Device::BeginRenderPass()
   else
   {
     // Re-rendering to swap chain.
-    const auto& swap_chain_buf = m_swap_chain_buffers[m_current_swap_chain_buffer];
+    const auto& swap_chain_buf = m_current_swap_chain->GetCurrentBuffer();
     rt_desc[0] = {swap_chain_buf.second,
                   {D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_PRESERVE, {}},
                   {D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE, {}}};
@@ -1867,43 +2000,6 @@ void D3D12Device::BeginRenderPass()
   // If this is a new command buffer, bind the pipeline and such.
   if (m_dirty_flags & DIRTY_FLAG_INITIAL)
     SetInitialPipelineState();
-}
-
-void D3D12Device::BeginSwapChainRenderPass(u32 clear_color)
-{
-  DebugAssert(!InRenderPass());
-
-  ID3D12GraphicsCommandList4* const cmdlist = GetCommandList();
-  const auto& swap_chain_buf = m_swap_chain_buffers[m_current_swap_chain_buffer];
-
-  D3D12Texture::TransitionSubresourceToState(cmdlist, swap_chain_buf.first.Get(), 0, D3D12_RESOURCE_STATE_COMMON,
-                                             D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-  // All textures should be in shader read only optimal already, but just in case..
-  const u32 num_textures = GetActiveTexturesForLayout(m_current_pipeline_layout);
-  for (u32 i = 0; i < num_textures; i++)
-  {
-    if (m_current_textures[i])
-      m_current_textures[i]->TransitionToState(cmdlist, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-  }
-
-  D3D12_RENDER_PASS_RENDER_TARGET_DESC rt_desc = {swap_chain_buf.second,
-                                                  {D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR, {}},
-                                                  {D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE, {}}};
-  GSVector4::store<false>(rt_desc.BeginningAccess.Clear.ClearValue.Color, GSVector4::rgba32(clear_color));
-  cmdlist->BeginRenderPass(1, &rt_desc, nullptr, D3D12_RENDER_PASS_FLAG_NONE);
-
-  std::memset(m_current_render_targets.data(), 0, sizeof(m_current_render_targets));
-  m_num_current_render_targets = 0;
-  m_dirty_flags =
-    (m_dirty_flags & ~DIRTY_FLAG_RT_UAVS) | ((IsUsingROVRootSignature()) ? DIRTY_FLAG_PIPELINE_LAYOUT : 0);
-  m_current_render_pass_flags = GPUPipeline::NoRenderPassFlags;
-  m_current_depth_target = nullptr;
-  m_in_render_pass = true;
-  s_stats.num_render_passes++;
-
-  // Clear pipeline, it's likely incompatible.
-  m_current_pipeline = nullptr;
 }
 
 bool D3D12Device::InRenderPass()
@@ -1991,13 +2087,9 @@ bool D3D12Device::IsRenderTargetBound(const GPUTexture* tex) const
 
 void D3D12Device::InvalidateCachedState()
 {
+  DebugAssert(!m_in_render_pass);
   m_dirty_flags = ALL_DIRTY_STATE &
                   ((m_current_render_pass_flags & GPUPipeline::BindRenderTargetsAsImages) ? ~0u : ~DIRTY_FLAG_RT_UAVS);
-  m_in_render_pass = false;
-  m_current_pipeline = nullptr;
-  m_current_vertex_stride = 0;
-  m_current_blend_constant = 0;
-  m_current_topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 }
 
 void D3D12Device::SetInitialPipelineState()
@@ -2072,7 +2164,7 @@ void D3D12Device::SetTextureSampler(u32 slot, GPUTexture* texture, GPUSampler* s
   }
 
   const D3D12DescriptorHandle& handle =
-    sampler ? static_cast<D3D12Sampler*>(sampler)->GetDescriptor() : m_point_sampler;
+    static_cast<D3D12Sampler*>(sampler ? sampler : m_nearest_sampler)->GetDescriptor();
   if (m_current_samplers[slot] != handle)
   {
     m_current_samplers[slot] = handle;
@@ -2102,7 +2194,7 @@ void D3D12Device::UnbindTexture(D3D12Texture* tex)
     }
   }
 
-  if (tex->IsRenderTarget() || tex->IsRWTexture())
+  if (tex->IsRenderTarget() || tex->HasFlag(GPUTexture::Flags::AllowBindAsImage))
   {
     for (u32 i = 0; i < m_num_current_render_targets; i++)
     {
@@ -2134,6 +2226,146 @@ void D3D12Device::UnbindTextureBuffer(D3D12TextureBuffer* buf)
 
   if (m_current_pipeline_layout == GPUPipeline::Layout::SingleTextureBufferAndPushConstants)
     m_dirty_flags |= DIRTY_FLAG_TEXTURES;
+}
+
+void D3D12Device::RenderTextureMipmap(D3D12Texture* texture, u32 dst_level, u32 dst_width, u32 dst_height,
+                                      u32 src_level, u32 src_width, u32 src_height)
+{
+  ComPtr<ID3D12PipelineState>& pipeline = m_mipmap_render_pipelines[static_cast<size_t>(texture->GetFormat())];
+  if (!pipeline)
+  {
+    D3D12::GraphicsPipelineBuilder gpb;
+    gpb.SetRootSignature(m_mipmap_render_root_signature.Get());
+    gpb.SetPrimitiveTopologyType(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
+    gpb.SetRenderTarget(0, texture->GetDXGIFormat());
+    gpb.SetVertexShader(s_mipmap_blit_vs, sizeof(s_mipmap_blit_vs));
+    gpb.SetPixelShader(s_mipmap_blit_ps, sizeof(s_mipmap_blit_ps));
+    gpb.SetRasterizationState(D3D12_FILL_MODE_SOLID, D3D12_CULL_MODE_NONE, false);
+    gpb.SetDepthState(false, false, D3D12_COMPARISON_FUNC_ALWAYS);
+    gpb.SetBlendState(0, false, D3D12_BLEND_ZERO, D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD, D3D12_BLEND_ZERO,
+                      D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD, D3D12_COLOR_WRITE_ENABLE_ALL);
+
+    const std::wstring name = StringUtil::UTF8StringToWideString(
+      TinyString::from_format("MipmapRender-{}", GPUTexture::GetFormatName(texture->GetFormat())));
+    Error error;
+    if (m_pipeline_library)
+    {
+      HRESULT hr =
+        m_pipeline_library->LoadGraphicsPipeline(name.c_str(), gpb.GetDesc(), IID_PPV_ARGS(pipeline.GetAddressOf()));
+      if (FAILED(hr))
+      {
+        // E_INVALIDARG = not found.
+        if (hr != E_INVALIDARG)
+          ERROR_LOG("LoadGraphicsPipeline() failed with HRESULT {:08X}", static_cast<unsigned>(hr));
+
+        // Need to create it normally.
+        pipeline = gpb.Create(m_device.Get(), &error, false);
+
+        // Store if it wasn't an OOM or something else.
+        if (pipeline && hr == E_INVALIDARG)
+        {
+          hr = m_pipeline_library->StorePipeline(name.c_str(), pipeline.Get());
+          if (FAILED(hr))
+            ERROR_LOG("StorePipeline() failed with HRESULT {:08X}", static_cast<unsigned>(hr));
+        }
+      }
+    }
+    else
+    {
+      pipeline = gpb.Create(m_device.Get(), &error, false);
+    }
+    if (!pipeline)
+    {
+      ERROR_LOG("Failed to compile mipmap render pipeline for {}: {}", GPUTexture::GetFormatName(texture->GetFormat()),
+                error.GetDescription());
+      return;
+    }
+  }
+
+  if (InRenderPass())
+    EndRenderPass();
+
+  // we need a temporary SRV and RTV for each mip level
+  // Safe to use the init buffer after exec, because everything will be done with the texture.
+  D3D12DescriptorHandle rtv_handle;
+  while (!GetRTVHeapManager().Allocate(&rtv_handle))
+  {
+    SubmitCommandList(false, "Allocate RTV for RenderTextureMipmap()");
+    if (m_device_was_lost)
+      return;
+  }
+
+  D3D12DescriptorHandle srv_handle;
+  while (!m_command_lists[m_current_command_list].descriptor_allocator.Allocate(1, &srv_handle))
+  {
+    SubmitCommandList(false, "Allocate SRV/sampler for RenderTextureMipmap()");
+    if (m_device_was_lost)
+      return;
+  }
+
+  // Setup views. This will be a partial view for the SRV.
+  const D3D12_RENDER_TARGET_VIEW_DESC rtv_desc = {.Format = texture->GetDXGIFormat(),
+                                                  .ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D,
+                                                  .Texture2D = {.MipSlice = dst_level, .PlaneSlice = 0}};
+  m_device->CreateRenderTargetView(texture->GetResource(), &rtv_desc, rtv_handle);
+
+  const D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {
+    .Format = texture->GetDXGIFormat(),
+    .ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D,
+    .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+    .Texture2D = {.MostDetailedMip = src_level, .MipLevels = 1, .PlaneSlice = 0, .ResourceMinLODClamp = 0.0f}};
+  m_device->CreateShaderResourceView(texture->GetResource(), &srv_desc, srv_handle);
+
+  // *now* we don't have to worry about running out of anything.
+  ID3D12GraphicsCommandList4* cmdlist = GetCommandList();
+  if (texture->GetResourceState() != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+  {
+    texture->TransitionSubresourceToState(cmdlist, src_level, texture->GetResourceState(),
+                                          D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+  }
+  if (texture->GetResourceState() != D3D12_RESOURCE_STATE_RENDER_TARGET)
+  {
+    texture->TransitionSubresourceToState(cmdlist, dst_level, texture->GetResourceState(),
+                                          D3D12_RESOURCE_STATE_RENDER_TARGET);
+  }
+
+  const D3D12_RENDER_PASS_RENDER_TARGET_DESC rt_desc = {
+    .cpuDescriptor = rtv_handle,
+    .BeginningAccess = {.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_DISCARD, .Clear = {}},
+    .EndingAccess = {.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE, .Resolve = {}}};
+  cmdlist->BeginRenderPass(1, &rt_desc, nullptr, D3D12_RENDER_PASS_FLAG_NONE);
+
+  const D3D12_VIEWPORT vp = {0.0f, 0.0f, static_cast<float>(dst_width), static_cast<float>(dst_height), 0.0f, 1.0f};
+  cmdlist->RSSetViewports(1, &vp);
+
+  const D3D12_RECT scissor = {0, 0, static_cast<LONG>(dst_width), static_cast<LONG>(dst_height)};
+  cmdlist->RSSetScissorRects(1, &scissor);
+
+  cmdlist->SetPipelineState(pipeline.Get());
+  cmdlist->SetGraphicsRootSignature(m_mipmap_render_root_signature.Get());
+  cmdlist->SetGraphicsRootDescriptorTable(0, srv_handle);
+  cmdlist->DrawInstanced(3, 1, 0, 0);
+
+  cmdlist->EndRenderPass();
+
+  if (texture->GetResourceState() != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+  {
+    texture->TransitionSubresourceToState(cmdlist, src_level, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                                          texture->GetResourceState());
+  }
+  if (texture->GetResourceState() != D3D12_RESOURCE_STATE_RENDER_TARGET)
+  {
+    texture->TransitionSubresourceToState(cmdlist, dst_level, D3D12_RESOURCE_STATE_RENDER_TARGET,
+                                          texture->GetResourceState());
+  }
+
+  // Must destroy after current cmdlist.
+  DeferDescriptorDestruction(m_rtv_heap_manager, &rtv_handle);
+
+  // Restore for next normal draw.
+  SetViewport(GetCommandList());
+  SetScissor(GetCommandList());
+  m_dirty_flags |= LAYOUT_DEPENDENT_DIRTY_STATE;
 }
 
 void D3D12Device::SetViewport(const GSVector4i rc)
@@ -2195,15 +2427,88 @@ void D3D12Device::PreDrawCheck()
     BeginRenderPass();
 }
 
+void D3D12Device::PreDispatchCheck()
+{
+  if (InRenderPass())
+    EndRenderPass();
+
+  // Transition images.
+  ID3D12GraphicsCommandList4* cmdlist = GetCommandList();
+
+  // All textures should be in shader read only optimal already, but just in case..
+  const u32 num_textures = GetActiveTexturesForLayout(m_current_pipeline_layout);
+  for (u32 i = 0; i < num_textures; i++)
+  {
+    if (m_current_textures[i])
+      m_current_textures[i]->TransitionToState(cmdlist, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+  }
+
+  if (m_num_current_render_targets > 0 && (m_current_render_pass_flags & GPUPipeline::BindRenderTargetsAsImages))
+  {
+    // Still need to clear the RTs.
+    for (u32 i = 0; i < m_num_current_render_targets; i++)
+    {
+      D3D12Texture* const rt = m_current_render_targets[i];
+      rt->SetUseFenceValue(GetCurrentFenceValue());
+      rt->TransitionToState(cmdlist, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+      rt->CommitClear(cmdlist);
+      rt->SetState(GPUTexture::State::Dirty);
+    }
+  }
+
+  // If this is a new command buffer, bind the pipeline and such.
+  if (m_dirty_flags & DIRTY_FLAG_INITIAL)
+    SetInitialPipelineState();
+
+  // TODO: Flushing cmdbuffer because of descriptor OOM will lose push constants.
+  DebugAssert(!(m_dirty_flags & DIRTY_FLAG_INITIAL));
+  const u32 dirty = std::exchange(m_dirty_flags, 0);
+  if (dirty != 0)
+  {
+    if (dirty & DIRTY_FLAG_PIPELINE_LAYOUT)
+    {
+      UpdateRootSignature();
+      if (!UpdateRootParameters(dirty))
+      {
+        SubmitCommandList(false, "out of descriptors");
+        PreDispatchCheck();
+        return;
+      }
+    }
+    else if (dirty & (DIRTY_FLAG_CONSTANT_BUFFER | DIRTY_FLAG_TEXTURES | DIRTY_FLAG_SAMPLERS | DIRTY_FLAG_RT_UAVS))
+    {
+      if (!UpdateRootParameters(dirty))
+      {
+        SubmitCommandList(false, "out of descriptors");
+        PreDispatchCheck();
+        return;
+      }
+    }
+  }
+}
+
 bool D3D12Device::IsUsingROVRootSignature() const
 {
   return ((m_current_render_pass_flags & GPUPipeline::BindRenderTargetsAsImages) != 0);
 }
 
+bool D3D12Device::IsUsingComputeRootSignature() const
+{
+  return IsComputeLayout(m_current_pipeline_layout);
+}
+
 void D3D12Device::UpdateRootSignature()
 {
-  GetCommandList()->SetGraphicsRootSignature(
-    m_root_signatures[BoolToUInt8(IsUsingROVRootSignature())][static_cast<u8>(m_current_pipeline_layout)].Get());
+  ID3D12GraphicsCommandList4* cmdlist = GetCommandList();
+  if (!IsUsingComputeRootSignature())
+  {
+    cmdlist->SetGraphicsRootSignature(
+      m_root_signatures[BoolToUInt8(IsUsingROVRootSignature())][static_cast<u8>(m_current_pipeline_layout)].Get());
+  }
+  else
+  {
+    cmdlist->SetComputeRootSignature(m_root_signatures[0][static_cast<u8>(m_current_pipeline_layout)].Get());
+  }
 }
 
 template<GPUPipeline::Layout layout>
@@ -2211,10 +2516,18 @@ bool D3D12Device::UpdateParametersForLayout(u32 dirty)
 {
   ID3D12GraphicsCommandList4* cmdlist = GetCommandList();
 
-  if constexpr (layout == GPUPipeline::Layout::SingleTextureAndUBO || layout == GPUPipeline::Layout::MultiTextureAndUBO)
+  if constexpr (layout == GPUPipeline::Layout::SingleTextureAndUBO ||
+                layout == GPUPipeline::Layout::MultiTextureAndUBO ||
+                layout == GPUPipeline::Layout::MultiTextureAndUBOAndPushConstants ||
+                layout == GPUPipeline::Layout::ComputeMultiTextureAndUBO)
   {
     if (dirty & DIRTY_FLAG_CONSTANT_BUFFER)
-      cmdlist->SetGraphicsRootConstantBufferView(2, m_uniform_buffer.GetGPUPointer() + m_uniform_buffer_position);
+    {
+      if constexpr (!IsComputeLayout(layout))
+        cmdlist->SetGraphicsRootConstantBufferView(2, m_uniform_buffer.GetGPUPointer() + m_uniform_buffer_position);
+      else
+        cmdlist->SetComputeRootConstantBufferView(3, m_uniform_buffer.GetGPUPointer() + m_uniform_buffer_position);
+    }
   }
 
   constexpr u32 num_textures = GetActiveTexturesForLayout(layout);
@@ -2244,7 +2557,10 @@ bool D3D12Device::UpdateParametersForLayout(u32 dirty)
                                 D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     }
 
-    cmdlist->SetGraphicsRootDescriptorTable(0, gpu_handle);
+    if constexpr (!IsComputeLayout(layout))
+      cmdlist->SetGraphicsRootDescriptorTable(0, gpu_handle);
+    else
+      cmdlist->SetComputeRootDescriptorTable(0, gpu_handle);
   }
 
   if (dirty & DIRTY_FLAG_SAMPLERS && num_textures > 0)
@@ -2262,7 +2578,10 @@ bool D3D12Device::UpdateParametersForLayout(u32 dirty)
         return false;
     }
 
-    cmdlist->SetGraphicsRootDescriptorTable(1, gpu_handle);
+    if constexpr (!IsComputeLayout(layout))
+      cmdlist->SetGraphicsRootDescriptorTable(1, gpu_handle);
+    else
+      cmdlist->SetComputeRootDescriptorTable(1, gpu_handle);
   }
 
   if (dirty & DIRTY_FLAG_TEXTURES && layout == GPUPipeline::Layout::SingleTextureBufferAndPushConstants)
@@ -2293,18 +2612,25 @@ bool D3D12Device::UpdateParametersForLayout(u32 dirty)
     for (u32 i = 0; i < MAX_IMAGE_RENDER_TARGETS; i++)
     {
       src_handles[i] =
-        m_current_render_targets[i] ? m_current_render_targets[i]->GetSRVDescriptor() : m_null_srv_descriptor;
+        m_current_render_targets[i] ? m_current_render_targets[i]->GetUAVDescriptor() : m_null_uav_descriptor;
       src_sizes[i] = 1;
     }
     m_device->CopyDescriptors(1, &gpu_handle.cpu_handle, &dst_size, MAX_IMAGE_RENDER_TARGETS, src_handles, src_sizes,
                               D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     constexpr u32 rov_param =
-      (layout == GPUPipeline::Layout::SingleTextureBufferAndPushConstants) ?
-        1 :
-        ((layout == GPUPipeline::Layout::SingleTextureAndUBO || layout == GPUPipeline::Layout::MultiTextureAndUBO) ? 3 :
-                                                                                                                     2);
-    cmdlist->SetGraphicsRootDescriptorTable(rov_param, gpu_handle);
+      IsComputeLayout(layout) ?
+        2 :
+        ((layout == GPUPipeline::Layout::SingleTextureBufferAndPushConstants) ?
+           1 :
+           ((layout == GPUPipeline::Layout::SingleTextureAndUBO || layout == GPUPipeline::Layout::MultiTextureAndUBO ||
+             layout == GPUPipeline::Layout::MultiTextureAndUBOAndPushConstants) ?
+              3 :
+              2));
+    if constexpr (!IsComputeLayout(layout))
+      cmdlist->SetGraphicsRootDescriptorTable(rov_param, gpu_handle);
+    else
+      cmdlist->SetComputeRootDescriptorTable(rov_param, gpu_handle);
   }
 
   return true;
@@ -2329,6 +2655,15 @@ bool D3D12Device::UpdateRootParameters(u32 dirty)
     case GPUPipeline::Layout::MultiTextureAndPushConstants:
       return UpdateParametersForLayout<GPUPipeline::Layout::MultiTextureAndPushConstants>(dirty);
 
+    case GPUPipeline::Layout::MultiTextureAndUBOAndPushConstants:
+      return UpdateParametersForLayout<GPUPipeline::Layout::MultiTextureAndUBOAndPushConstants>(dirty);
+
+    case GPUPipeline::Layout::ComputeMultiTextureAndUBO:
+      return UpdateParametersForLayout<GPUPipeline::Layout::ComputeMultiTextureAndUBO>(dirty);
+
+    case GPUPipeline::Layout::ComputeMultiTextureAndPushConstants:
+      return UpdateParametersForLayout<GPUPipeline::Layout::ComputeMultiTextureAndPushConstants>(dirty);
+
     default:
       UnreachableCode();
   }
@@ -2341,6 +2676,17 @@ void D3D12Device::Draw(u32 vertex_count, u32 base_vertex)
   GetCommandList()->DrawInstanced(vertex_count, 1, base_vertex, 0);
 }
 
+void D3D12Device::DrawWithPushConstants(u32 vertex_count, u32 base_vertex, const void* push_constants,
+                                        u32 push_constants_size)
+{
+  PreDrawCheck();
+  s_stats.num_draws++;
+
+  ID3D12GraphicsCommandList4* const cmdlist = GetCommandList();
+  PushUniformBuffer(cmdlist, false, push_constants, push_constants_size);
+  cmdlist->DrawInstanced(vertex_count, 1, base_vertex, 0);
+}
+
 void D3D12Device::DrawIndexed(u32 index_count, u32 base_index, u32 base_vertex)
 {
   PreDrawCheck();
@@ -2348,7 +2694,41 @@ void D3D12Device::DrawIndexed(u32 index_count, u32 base_index, u32 base_vertex)
   GetCommandList()->DrawIndexedInstanced(index_count, 1, base_index, base_vertex, 0);
 }
 
-void D3D12Device::DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type)
+void D3D12Device::DrawIndexedWithPushConstants(u32 index_count, u32 base_index, u32 base_vertex,
+                                               const void* push_constants, u32 push_constants_size)
 {
-  Panic("Barriers are not supported");
+  PreDrawCheck();
+  s_stats.num_draws++;
+
+  ID3D12GraphicsCommandList4* const cmdlist = GetCommandList();
+  PushUniformBuffer(cmdlist, false, push_constants, push_constants_size);
+  cmdlist->DrawIndexedInstanced(index_count, 1, base_index, base_vertex, 0);
+}
+
+void D3D12Device::Dispatch(u32 threads_x, u32 threads_y, u32 threads_z, u32 group_size_x, u32 group_size_y,
+                           u32 group_size_z)
+{
+  PreDispatchCheck();
+  s_stats.num_draws++;
+
+  const u32 groups_x = threads_x / group_size_x;
+  const u32 groups_y = threads_y / group_size_y;
+  const u32 groups_z = threads_z / group_size_z;
+  GetCommandList()->Dispatch(groups_x, groups_y, groups_z);
+}
+
+void D3D12Device::DispatchWithPushConstants(u32 threads_x, u32 threads_y, u32 threads_z, u32 group_size_x,
+                                            u32 group_size_y, u32 group_size_z, const void* push_constants,
+                                            u32 push_constants_size)
+{
+  PreDispatchCheck();
+  s_stats.num_draws++;
+
+  ID3D12GraphicsCommandList4* const cmdlist = GetCommandList();
+  PushUniformBuffer(cmdlist, true, push_constants, push_constants_size);
+
+  const u32 groups_x = threads_x / group_size_x;
+  const u32 groups_y = threads_y / group_size_y;
+  const u32 groups_z = threads_z / group_size_z;
+  cmdlist->Dispatch(groups_x, groups_y, groups_z);
 }

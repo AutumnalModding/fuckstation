@@ -9,8 +9,6 @@
 #include <cstdio>
 #include <limits>
 
-LOG_CHANNEL(ProgressCallback);
-
 static ProgressCallback s_nullProgressCallbacks;
 ProgressCallback* ProgressCallback::NullProgressCallback = &s_nullProgressCallbacks;
 
@@ -102,38 +100,29 @@ void ProgressCallback::IncrementProgressValue()
   SetProgressValue((m_progress_value - m_base_progress_value) + 1);
 }
 
-void ProgressCallback::DisplayError(const std::string_view message)
+ProgressCallbackWithPrompt::~ProgressCallbackWithPrompt() = default;
+
+void ProgressCallbackWithPrompt::AlertPrompt(PromptIcon icon, std::string_view message)
 {
-  ERROR_LOG(message);
 }
 
-void ProgressCallback::DisplayWarning(const std::string_view message)
+bool ProgressCallbackWithPrompt::ConfirmPrompt(PromptIcon icon, std::string_view message,
+                                               std::string_view yes_text /*= {}*/, std::string_view no_text /*= {}*/)
 {
-  WARNING_LOG(message);
-}
-
-void ProgressCallback::DisplayInformation(const std::string_view message)
-{
-  INFO_LOG(message);
-}
-
-void ProgressCallback::DisplayDebugMessage(const std::string_view message)
-{
-  DEV_LOG(message);
-}
-
-void ProgressCallback::ModalError(const std::string_view message)
-{
-  ERROR_LOG(message);
-}
-
-bool ProgressCallback::ModalConfirmation(const std::string_view message)
-{
-  INFO_LOG(message);
   return false;
 }
 
-void ProgressCallback::ModalInformation(const std::string_view message)
+void ProgressCallbackWithPrompt::AppendMessage(std::string_view message)
 {
-  INFO_LOG(message);
+  Log::Write(Log::PackCategory(Log::Channel::Host, Log::Level::Info, Log::Color::StrongOrange), message);
+}
+
+void ProgressCallbackWithPrompt::SetAutoClose(bool enabled)
+{
+}
+
+void ProgressCallbackWithPrompt::SetStatusTextAndAppendMessage(std::string_view message)
+{
+  SetStatusText(message);
+  AppendMessage(message);
 }

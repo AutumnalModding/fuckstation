@@ -3,14 +3,20 @@ add_executable(updater
   updater.h
 )
 
+target_include_directories(updater PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(updater PRIVATE common minizip ZLIB::ZLIB)
 
 if(WIN32)
   target_sources(updater PRIVATE
+    resource.h
+    updater.manifest
     updater.rc
+    updater_progress_callback.h
     win32_main.cpp
     win32_progress_callback.cpp
     win32_progress_callback.h
+    win32_window_util.cpp
+    win32_window_util.h
     ../duckstation-qt/vcruntimecheck.cpp
   )
   target_link_libraries(updater PRIVATE "Comctl32.lib")
@@ -22,6 +28,7 @@ if(APPLE)
     cocoa_main.mm
     cocoa_progress_callback.mm
     cocoa_progress_callback.h
+    updater_progress_callback.h
   )
   target_sources(updater PRIVATE ${MAC_SOURCES})
   set_source_files_properties(${MAC_SOURCES} PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)

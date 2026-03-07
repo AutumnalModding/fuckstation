@@ -4,7 +4,7 @@
 #pragma once
 
 #include "gpu_device.h"
-#include "vulkan_loader.h"
+#include "vulkan_headers.h"
 
 #include "common/small_string.h"
 #include "common/string_util.h"
@@ -14,7 +14,7 @@
 
 class Error;
 
-#if defined(_DEBUG) && !defined(CPU_ARCH_ARM32) && !defined(CPU_ARCH_X86)
+#if (defined(_DEBUG) || defined(_DEVEL)) && !defined(CPU_ARCH_ARM32) && !defined(CPU_ARCH_X86)
 #define ENABLE_VULKAN_DEBUG_OBJECTS 1
 #endif
 
@@ -27,6 +27,8 @@ void AddPointerToChain(void* head, const void* ptr);
 const char* VkResultToString(VkResult res);
 void LogVulkanResult(const char* func_name, VkResult res, std::string_view msg);
 void SetErrorObject(Error* errptr, std::string_view prefix, VkResult res);
+
+u32 GetMaxMultisamples(VkPhysicalDevice physical_device, const VkPhysicalDeviceProperties& properties);
 
 class DescriptorSetLayoutBuilder
 {
@@ -197,7 +199,7 @@ public:
 
   void Clear();
 
-  VkPipeline Create(VkDevice device, VkPipelineCache pipeline_cache = VK_NULL_HANDLE, bool clear = true);
+  VkPipeline Create(VkDevice device, VkPipelineCache pipeline_cache, bool clear, Error* error);
 
   void SetShader(VkShaderModule module, const char* entry_point);
 
@@ -394,7 +396,7 @@ struct VkObjectTypeMap;
 #endif
 
 template<typename T>
-static inline void SetObjectName(VkDevice device, T object_handle, const std::string_view name)
+inline void SetObjectName(VkDevice device, T object_handle, const std::string_view name)
 {
 #ifdef ENABLE_VULKAN_DEBUG_OBJECTS
   if (!vkSetDebugUtilsObjectNameEXT)

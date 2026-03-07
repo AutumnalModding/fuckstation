@@ -1,8 +1,7 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "cd_image.h"
-#include "cd_subchannel_replacement.h"
 
 #include "common/align.h"
 #include "common/assert.h"
@@ -13,6 +12,8 @@
 #include "common/heap_array.h"
 #include "common/log.h"
 #include "common/path.h"
+#include "common/progress_callback.h"
+#include "common/small_string.h"
 #include "common/string_util.h"
 
 #include "fmt/format.h"
@@ -27,7 +28,7 @@
 #include <mutex>
 #include <optional>
 
-LOG_CHANNEL(CDImageCHD);
+LOG_CHANNEL(CDImage);
 
 namespace {
 
@@ -65,8 +66,8 @@ public:
   bool Open(const char* filename, Error* error);
 
   bool ReadSubChannelQ(SubChannelQ* subq, const Index& index, LBA lba_in_index) override;
-  bool HasNonStandardSubchannel() const override;
-  PrecacheResult Precache(ProgressCallback* progress) override;
+  bool HasSubchannelData() const override;
+  PrecacheResult Precache(ProgressCallback* progress, Error* error) override;
   bool IsPrecached() const override;
   s64 GetSizeOnDisk() const override;
 
@@ -90,8 +91,6 @@ private:
   DynamicHeapArray<u8, 16> m_hunk_buffer;
   u32 m_current_hunk_index = static_cast<u32>(-1);
   bool m_precached = false;
-
-  CDSubChannelReplacement m_sbi;
 };
 } // namespace
 
@@ -415,16 +414,11 @@ bool CDImageCHD::Open(const char* filename, Error* error)
   m_lba_count = disc_lba;
   AddLeadOutIndex();
 
-  m_sbi.LoadFromImagePath(filename);
-
   return Seek(1, Position{0, 0, 0});
 }
 
 bool CDImageCHD::ReadSubChannelQ(SubChannelQ* subq, const Index& index, LBA lba_in_index)
 {
-  if (m_sbi.GetReplacementSubChannelQ(index.start_lba_on_disc + lba_in_index, subq))
-    return true;
-
   if (index.submode == CDImage::SubchannelMode::None)
     return CDImage::ReadSubChannelQ(subq, index, lba_in_index);
 
@@ -446,27 +440,34 @@ bool CDImageCHD::ReadSubChannelQ(SubChannelQ* subq, const Index& index, LBA lba_
   return true;
 }
 
-bool CDImageCHD::HasNonStandardSubchannel() const
+bool CDImageCHD::HasSubchannelData() const
 {
   // Just look at the first track for in-CHD subq.
-  return (m_sbi.GetReplacementSectorCount() > 0 || m_tracks.front().submode != CDImage::SubchannelMode::None);
+  return (m_tracks.front().submode != CDImage::SubchannelMode::None);
 }
 
-CDImage::PrecacheResult CDImageCHD::Precache(ProgressCallback* progress)
+CDImage::PrecacheResult CDImageCHD::Precache(ProgressCallback* progress, Error* error)
 {
   if (m_precached)
     return CDImage::PrecacheResult::Success;
 
-  progress->SetStatusText(fmt::format("Precaching {}...", FileSystem::GetDisplayNameFromPath(m_filename)).c_str());
+  progress->SetTitle("Precaching CHD...");
   progress->SetProgressRange(100);
 
   auto callback = [](size_t pos, size_t total, void* param) {
-    const u32 percent = static_cast<u32>((pos * 100) / total);
-    static_cast<ProgressCallback*>(param)->SetProgressValue(std::min<u32>(percent, 100));
+    constexpr size_t one_mb = 1048576;
+    const u32 total_mb = static_cast<u32>((total + (one_mb - 1)) / one_mb);
+    const u32 pos_mb = static_cast<u32>((pos + (one_mb - 1)) / one_mb);
+    static_cast<ProgressCallback*>(param)->SetProgressRange(total_mb);
+    static_cast<ProgressCallback*>(param)->SetProgressValue(pos_mb);
+    static_cast<ProgressCallback*>(param)->SetStatusText(TinyString::from_format("{}MB of {}MB", pos_mb, total_mb));
   };
 
-  if (chd_precache_progress(m_chd, callback, progress) != CHDERR_NONE)
+  if (const chd_error err = chd_precache_progress(m_chd, callback, progress); err != CHDERR_NONE)
+  {
+    Error::SetStringFmt(error, "chd_precache_progress() failed: {}", chd_error_string(err));
     return CDImage::PrecacheResult::ReadError;
+  }
 
   m_precached = true;
   return CDImage::PrecacheResult::Success;
@@ -540,10 +541,10 @@ s64 CDImageCHD::GetSizeOnDisk() const
   return static_cast<s64>(chd_get_compressed_size(m_chd));
 }
 
-std::unique_ptr<CDImage> CDImage::OpenCHDImage(const char* filename, Error* error)
+std::unique_ptr<CDImage> CDImage::OpenCHDImage(const char* path, Error* error)
 {
   std::unique_ptr<CDImageCHD> image = std::make_unique<CDImageCHD>();
-  if (!image->Open(filename, error))
+  if (!image->Open(path, error))
     return {};
 
   return image;

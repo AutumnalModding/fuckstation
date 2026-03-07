@@ -11,6 +11,15 @@
 #include <memory>
 #include <string>
 
+#define MAKE_PROGRESS_CALLBACK_FORWARDER(from, to)                                                                     \
+  template<typename... T>                                                                                              \
+  void from(fmt::format_string<T...> fmt, T&&... args)                                                                 \
+  {                                                                                                                    \
+    TinyString str;                                                                                                    \
+    fmt::vformat_to(std::back_inserter(str), fmt, fmt::make_format_args(args...));                                     \
+    to(str.view());                                                                                                    \
+  }
+
 class ProgressCallback
 {
 public:
@@ -30,34 +39,7 @@ public:
   virtual void SetProgressValue(u32 value);
   virtual void IncrementProgressValue();
 
-  virtual void DisplayError(const std::string_view message);
-  virtual void DisplayWarning(const std::string_view message);
-  virtual void DisplayInformation(const std::string_view message);
-  virtual void DisplayDebugMessage(const std::string_view message);
-
-  virtual void ModalError(const std::string_view message);
-  virtual bool ModalConfirmation(const std::string_view message);
-  virtual void ModalInformation(const std::string_view message);
-
-#define MAKE_PROGRESS_CALLBACK_FORWARDER(from, to)                                                                     \
-  template<typename... T>                                                                                              \
-  void from(fmt::format_string<T...> fmt, T&&... args)                                                                 \
-  {                                                                                                                    \
-    TinyString str;                                                                                                    \
-    fmt::vformat_to(std::back_inserter(str), fmt, fmt::make_format_args(args...));                                     \
-    to(str.view());                                                                                                    \
-  }
-
   MAKE_PROGRESS_CALLBACK_FORWARDER(FormatStatusText, SetStatusText);
-  MAKE_PROGRESS_CALLBACK_FORWARDER(FormatError, DisplayError);
-  MAKE_PROGRESS_CALLBACK_FORWARDER(FormatWarning, DisplayWarning);
-  MAKE_PROGRESS_CALLBACK_FORWARDER(FormatInformation, DisplayInformation);
-  MAKE_PROGRESS_CALLBACK_FORWARDER(FormatDebugMessage, DisplayDebugMessage);
-  MAKE_PROGRESS_CALLBACK_FORWARDER(FormatModalError, ModalError);
-  MAKE_PROGRESS_CALLBACK_FORWARDER(FormatModalConfirmation, ModalConfirmation);
-  MAKE_PROGRESS_CALLBACK_FORWARDER(FormatModalInformation, ModalInformation);
-
-#undef MAKE_PROGRESS_CALLBACK_FORWARDER
 
 protected:
   struct State
@@ -70,16 +52,46 @@ protected:
     bool cancellable;
   };
 
-  bool m_cancellable = false;
-  bool m_cancelled = false;
   std::string m_status_text;
   u32 m_progress_range = 1;
   u32 m_progress_value = 0;
 
   u32 m_base_progress_value = 0;
 
+  bool m_cancellable = false;
+  bool m_cancelled = false;
+
   std::unique_ptr<State> m_saved_state;
 
 public:
   static ProgressCallback* NullProgressCallback;
 };
+
+class ProgressCallbackWithPrompt : public ProgressCallback
+{
+public:
+  virtual ~ProgressCallbackWithPrompt() override;
+
+  enum class PromptIcon
+  {
+    Error,
+    Warning,
+    Question,
+    Information,
+  };
+
+  virtual void AlertPrompt(PromptIcon icon, std::string_view message);
+  virtual bool ConfirmPrompt(PromptIcon icon, std::string_view message, std::string_view yes_text = {},
+                             std::string_view no_text = {});
+
+  virtual void AppendMessage(std::string_view message);
+
+  virtual void SetAutoClose(bool enabled);
+
+  void SetStatusTextAndAppendMessage(std::string_view message);
+
+  MAKE_PROGRESS_CALLBACK_FORWARDER(AppendFormatMessage, AppendMessage);
+  MAKE_PROGRESS_CALLBACK_FORWARDER(FormatStatusTextAndAppendMessage, SetStatusTextAndAppendMessage);
+};
+
+#undef MAKE_PROGRESS_CALLBACK_FORWARDER

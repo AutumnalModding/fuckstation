@@ -1,22 +1,23 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "playstation_mouse.h"
 #include "gpu.h"
-#include "host.h"
 #include "system.h"
 
 #include "util/state_wrapper.h"
+#include "util/translation.h"
 
 #include "common/assert.h"
 #include "common/log.h"
+#include "common/settings_interface.h"
 
 #include "IconsPromptFont.h"
 
 #include <array>
 #include <cmath>
 
-LOG_CHANNEL(PlayStationMouse);
+LOG_CHANNEL(Controller);
 
 static constexpr std::array<u8, static_cast<size_t>(PlayStationMouse::Binding::ButtonCount)> s_button_indices = {
   {11, 10}};
@@ -155,22 +156,20 @@ bool PlayStationMouse::Transfer(const u8 data_in, u8* data_out)
 
     case TransferState::DeltaX:
     {
-      const float delta_x =
-        std::clamp(std::floor(m_delta_x * m_sensitivity_x), static_cast<float>(std::numeric_limits<s8>::min()),
-                   static_cast<float>(std::numeric_limits<s8>::max()));
+      const float delta_x = std::floor(m_delta_x * m_sensitivity_x);
       m_delta_x -= delta_x / m_sensitivity_x;
-      *data_out = static_cast<s8>(delta_x);
+      *data_out = static_cast<s8>(std::clamp(delta_x, static_cast<float>(std::numeric_limits<s8>::min()),
+                                             static_cast<float>(std::numeric_limits<s8>::max())));
       m_transfer_state = TransferState::DeltaY;
       return true;
     }
 
     case TransferState::DeltaY:
     {
-      const float delta_y =
-        std::clamp(std::floor(m_delta_y * m_sensitivity_y), static_cast<float>(std::numeric_limits<s8>::min()),
-                   static_cast<float>(std::numeric_limits<s8>::max()));
+      const float delta_y = std::floor(m_delta_y * m_sensitivity_y);
       m_delta_y -= delta_y / m_sensitivity_x;
-      *data_out = static_cast<s8>(delta_y);
+      *data_out = static_cast<s8>(std::clamp(delta_y, static_cast<float>(std::numeric_limits<s8>::min()),
+                                             static_cast<float>(std::numeric_limits<s8>::max())));
       m_transfer_state = TransferState::Idle;
       return false;
     }
@@ -182,7 +181,7 @@ bool PlayStationMouse::Transfer(const u8 data_in, u8* data_out)
   }
 }
 
-void PlayStationMouse::LoadSettings(SettingsInterface& si, const char* section, bool initial)
+void PlayStationMouse::LoadSettings(const SettingsInterface& si, const char* section, bool initial)
 {
   Controller::LoadSettings(si, section, initial);
 
@@ -197,12 +196,10 @@ std::unique_ptr<PlayStationMouse> PlayStationMouse::Create(u32 index)
 
 static const Controller::ControllerBindingInfo s_binding_info[] = {
 #define BUTTON(name, display_name, icon_name, button, genb)                                                            \
-  {                                                                                                                    \
-    name, display_name, icon_name, static_cast<u32>(button), InputBindingInfo::Type::Button, genb                      \
-  }
+  {name, display_name, icon_name, static_cast<u32>(button), InputBindingInfo::Type::Button, genb}
 
   // clang-format off
-  { "Pointer", TRANSLATE_NOOP("PlaystationMouse", "Pointer"), ICON_PF_MOUSE_ANY, static_cast<u32>(PlayStationMouse::Binding::PointerX), InputBindingInfo::Type::Pointer, GenericInputBinding::Unknown },
+  { "Pointer", TRANSLATE_NOOP("PlaystationMouse", "Pointer"), ICON_PF_MOUSE_ANY, static_cast<u32>(PlayStationMouse::Binding::PointerX), InputBindingInfo::Type::RelativePointer, GenericInputBinding::Unknown },
   BUTTON("Left", TRANSLATE_NOOP("PlayStationMouse", "Left Button"), ICON_PF_MOUSE_BUTTON_1, PlayStationMouse::Binding::Left, GenericInputBinding::Cross),
   BUTTON("Right", TRANSLATE_NOOP("PlayStationMouse", "Right Button"), ICON_PF_MOUSE_BUTTON_2, PlayStationMouse::Binding::Right, GenericInputBinding::Circle),
 // clang-format on
@@ -211,11 +208,11 @@ static const Controller::ControllerBindingInfo s_binding_info[] = {
 };
 static const SettingInfo s_settings[] = {
   {SettingInfo::Type::Float, "SensitivityX", TRANSLATE_NOOP("PlayStationMouse", "Horizontal Sensitivity"),
-   TRANSLATE_NOOP("PlayStationMouse", "Adjusts the correspondance between physical and virtual mouse movement."), "1.0",
-   "0.01", "2.0", "0.01", "%.0f", nullptr, 100.0f},
+   TRANSLATE_NOOP("PlayStationMouse", "Adjusts the correspondance between physical and virtual mouse movement."), "1",
+   "0.01", "2", "0.01", "%.0f", nullptr, 100.0f},
   {SettingInfo::Type::Float, "SensitivityY", TRANSLATE_NOOP("PlayStationMouse", "Vertical Sensitivity"),
-   TRANSLATE_NOOP("PlayStationMouse", "Adjusts the correspondance between physical and virtual mouse movement."), "1.0",
-   "0.01", "2.0", "0.01", "%.0f", nullptr, 100.0f},
+   TRANSLATE_NOOP("PlayStationMouse", "Adjusts the correspondance between physical and virtual mouse movement."), "1",
+   "0.01", "2", "0.01", "%.0f", nullptr, 100.0f},
 };
 
 const Controller::ControllerInfo PlayStationMouse::INFO = {ControllerType::PlayStationMouse,
@@ -223,5 +220,4 @@ const Controller::ControllerInfo PlayStationMouse::INFO = {ControllerType::PlayS
                                                            TRANSLATE_NOOP("ControllerType", "Mouse"),
                                                            ICON_PF_MOUSE,
                                                            s_binding_info,
-                                                           s_settings,
-                                                           Controller::VibrationCapabilities::NoVibration};
+                                                           s_settings};

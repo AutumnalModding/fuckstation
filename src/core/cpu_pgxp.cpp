@@ -8,10 +8,13 @@
 #include "cpu_pgxp.h"
 #include "bus.h"
 #include "cpu_core.h"
+#include "cpu_core_private.h"
 #include "cpu_disasm.h"
+#include "gpu_helpers.h"
 #include "settings.h"
 
 #include "util/gpu_device.h"
+#include "util/state_wrapper.h"
 
 #include "common/assert.h"
 #include "common/log.h"
@@ -19,7 +22,7 @@
 #include <climits>
 #include <cmath>
 
-LOG_CHANNEL(CPU::PGXP);
+LOG_CHANNEL(CPU);
 
 // #define LOG_VALUES 1
 // #define LOG_LOOKUPS 1
@@ -33,8 +36,8 @@ enum : u32
   VERTEX_CACHE_WIDTH = 2048,
   VERTEX_CACHE_HEIGHT = 2048,
   VERTEX_CACHE_SIZE = VERTEX_CACHE_WIDTH * VERTEX_CACHE_HEIGHT,
-  PGXP_MEM_SIZE = (static_cast<u32>(Bus::RAM_8MB_SIZE) + static_cast<u32>(CPU::SCRATCHPAD_SIZE)) / 4,
-  PGXP_MEM_SCRATCH_OFFSET = Bus::RAM_8MB_SIZE / 4,
+  PGXP_SCRATCH_VALUE_COUNT = (CPU::SCRATCHPAD_SIZE / 4u),
+  PGXP_MEM_RAM_OFFSET = PGXP_SCRATCH_VALUE_COUNT,
 };
 
 enum : u32
@@ -58,6 +61,10 @@ enum : u32
 #define SET_LOWORD(val, loword) ((static_cast<u32>(val) & 0xFFFF0000u) | static_cast<u32>(static_cast<u16>(loword)))
 #define SET_HIWORD(val, hiword) ((static_cast<u32>(val) & 0x0000FFFFu) | (static_cast<u32>(hiword) << 16))
 
+#define PGXP_GTE_REGISTER(field) g_state.pgxp_gte[offsetof(GTE::Regs, field) / sizeof(u32)]
+
+static size_t GetMemoryValueCount();
+
 static double f16Sign(double val);
 static double f16Unsign(double val);
 static double f16Overflow(double val);
@@ -74,10 +81,7 @@ static PGXPValue& ValidateAndGetRtValue(Instruction instr, u32 rtVal);
 static PGXPValue& ValidateAndGetRsValue(Instruction instr, u32 rsVal);
 static void SetRtValue(Instruction instr, const PGXPValue& val);
 static void SetRtValue(Instruction instr, const PGXPValue& val, u32 rtVal);
-static PGXPValue& GetSXY0();
-static PGXPValue& GetSXY1();
-static PGXPValue& GetSXY2();
-static PGXPValue& PushSXY();
+static void PushScreenXYFIFO();
 
 static PGXPValue* GetPtr(u32 addr);
 static const PGXPValue& ValidateAndLoadMem(u32 addr, u32 value);
@@ -126,15 +130,26 @@ static std::FILE* s_log;
 #endif
 } // namespace CPU::PGXP
 
+size_t CPU::PGXP::GetMemoryValueCount()
+{
+  return (PGXP_SCRATCH_VALUE_COUNT + (Bus::g_ram_size / 4u));
+}
+
 void CPU::PGXP::Initialize()
 {
+  // Just in case due to memory layout...
+  static_assert(&PGXP_GTE_REGISTER(SXY0) == &g_state.pgxp_gte[12]);
+  static_assert(&PGXP_GTE_REGISTER(SXY1) == &g_state.pgxp_gte[13]);
+  static_assert(&PGXP_GTE_REGISTER(SXY2) == &g_state.pgxp_gte[14]);
+  static_assert(&PGXP_GTE_REGISTER(SXYP) == &g_state.pgxp_gte[15]);
+
   std::memset(g_state.pgxp_gpr, 0, sizeof(g_state.pgxp_gpr));
   std::memset(g_state.pgxp_cop0, 0, sizeof(g_state.pgxp_cop0));
   std::memset(g_state.pgxp_gte, 0, sizeof(g_state.pgxp_gte));
 
   if (!s_mem)
   {
-    s_mem = static_cast<PGXPValue*>(std::calloc(PGXP_MEM_SIZE, sizeof(PGXPValue)));
+    s_mem = static_cast<PGXPValue*>(std::calloc(GetMemoryValueCount(), sizeof(PGXPValue)));
     if (!s_mem)
       Panic("Failed to allocate PGXP memory");
   }
@@ -160,7 +175,7 @@ void CPU::PGXP::Reset()
   std::memset(g_state.pgxp_gte, 0, sizeof(g_state.pgxp_gte));
 
   if (s_mem)
-    std::memset(s_mem, 0, sizeof(PGXPValue) * PGXP_MEM_SIZE);
+    std::memset(s_mem, 0, sizeof(PGXPValue) * GetMemoryValueCount());
 
   if (g_settings.gpu_pgxp_vertex_cache && s_vertex_cache)
     std::memset(s_vertex_cache, 0, sizeof(PGXPValue) * VERTEX_CACHE_SIZE);
@@ -182,6 +197,41 @@ void CPU::PGXP::Shutdown()
   std::memset(g_state.pgxp_gte, 0, sizeof(g_state.pgxp_gte));
   std::memset(g_state.pgxp_gpr, 0, sizeof(g_state.pgxp_gpr));
   std::memset(g_state.pgxp_cop0, 0, sizeof(g_state.pgxp_cop0));
+}
+
+bool CPU::PGXP::ShouldSavePGXPState()
+{
+  // Only save PGXP state for runahead, not rewind.
+  // The performance impact is too great, and the glitches are much less noticeable with rewind.
+  return (g_settings.gpu_pgxp_enable && g_settings.IsRunaheadEnabled());
+}
+
+size_t CPU::PGXP::GetStateSize(bool enable_8mb_memory)
+{
+  static constexpr u32 value_count_2mb = (PGXP_SCRATCH_VALUE_COUNT + (Bus::RAM_2MB_SIZE / 4u));
+  static constexpr u32 value_count_8mb = (PGXP_SCRATCH_VALUE_COUNT + (Bus::RAM_8MB_SIZE / 4u));
+  const size_t base_size = sizeof(g_state.pgxp_gpr) + sizeof(g_state.pgxp_cop0) + sizeof(g_state.pgxp_gte) +
+                           (sizeof(PGXPValue) * (enable_8mb_memory ? value_count_8mb : value_count_2mb));
+  const size_t vertex_cache_size = sizeof(PGXPValue) * VERTEX_CACHE_SIZE;
+  return base_size + (g_settings.gpu_pgxp_vertex_cache ? vertex_cache_size : 0);
+}
+
+void CPU::PGXP::DoState(StateWrapper& sw)
+{
+  if (!ShouldSavePGXPState())
+  {
+    // Value checks will fail and fall back to imprecise geometry when using rewind.
+    return;
+  }
+
+  sw.DoBytes(g_state.pgxp_gpr, sizeof(g_state.pgxp_gpr));
+  sw.DoBytes(g_state.pgxp_cop0, sizeof(g_state.pgxp_cop0));
+  sw.DoBytes(g_state.pgxp_gte, sizeof(g_state.pgxp_gte));
+
+  sw.DoBytes(s_mem, sizeof(PGXPValue) * GetMemoryValueCount());
+
+  if (s_vertex_cache)
+    sw.DoBytes(s_vertex_cache, sizeof(PGXPValue) * VERTEX_CACHE_SIZE);
 }
 
 ALWAYS_INLINE_RELEASE double CPU::PGXP::f16Sign(double val)
@@ -236,26 +286,11 @@ ALWAYS_INLINE void CPU::PGXP::SetRtValue(Instruction instr, const PGXPValue& val
   prtVal.value = rtVal;
 }
 
-ALWAYS_INLINE CPU::PGXPValue& CPU::PGXP::GetSXY0()
+ALWAYS_INLINE void CPU::PGXP::PushScreenXYFIFO()
 {
-  return g_state.pgxp_gte[12];
-}
-
-ALWAYS_INLINE CPU::PGXPValue& CPU::PGXP::GetSXY1()
-{
-  return g_state.pgxp_gte[13];
-}
-
-ALWAYS_INLINE CPU::PGXPValue& CPU::PGXP::GetSXY2()
-{
-  return g_state.pgxp_gte[14];
-}
-
-ALWAYS_INLINE CPU::PGXPValue& CPU::PGXP::PushSXY()
-{
-  g_state.pgxp_gte[12] = g_state.pgxp_gte[13];
-  g_state.pgxp_gte[13] = g_state.pgxp_gte[14];
-  return g_state.pgxp_gte[14];
+  PGXP_GTE_REGISTER(SXY0) = PGXP_GTE_REGISTER(SXY1); // SXY0 = SXY1
+  PGXP_GTE_REGISTER(SXY1) = PGXP_GTE_REGISTER(SXY2); // SXY1 = SXY2
+  PGXP_GTE_REGISTER(SXY2) = PGXP_GTE_REGISTER(SXYP); // SXY2 = SXYP
 }
 
 ALWAYS_INLINE_RELEASE CPU::PGXPValue* CPU::PGXP::GetPtr(u32 addr)
@@ -267,11 +302,12 @@ ALWAYS_INLINE_RELEASE CPU::PGXPValue* CPU::PGXP::GetPtr(u32 addr)
 #endif
 
   if ((addr & SCRATCHPAD_ADDR_MASK) == SCRATCHPAD_ADDR)
-    return &s_mem[PGXP_MEM_SCRATCH_OFFSET + ((addr & SCRATCHPAD_OFFSET_MASK) >> 2)];
+    return &s_mem[((addr & SCRATCHPAD_OFFSET_MASK) >> 2)];
 
-  const u32 paddr = (addr & PHYSICAL_MEMORY_ADDRESS_MASK);
+  // Don't worry about >512MB here for performance reasons.
+  const u32 paddr = (addr & KSEG_MASK);
   if (paddr < Bus::RAM_MIRROR_END)
-    return &s_mem[(paddr & Bus::g_ram_mask) >> 2];
+    return &s_mem[PGXP_MEM_RAM_OFFSET + ((paddr & Bus::g_ram_mask) >> 2)];
   else
     return nullptr;
 }
@@ -335,7 +371,8 @@ ALWAYS_INLINE_RELEASE void CPU::PGXP::WriteMem(u32 addr, const PGXPValue& value)
     return;
 
   *pMem = value;
-  pMem->flags |= VALID_LOWZ | VALID_HIGHZ;
+  pMem->flags =
+    (value.flags & ~(VALID_LOWZ | VALID_HIGHZ)) | ((value.flags & VALID_Z) ? (VALID_LOWZ | VALID_HIGHZ) : 0);
 }
 
 ALWAYS_INLINE_RELEASE void CPU::PGXP::WriteMem16(u32 addr, const PGXPValue& value)
@@ -455,24 +492,25 @@ void CPU::PGXP::LogValueStr(SmallStringBase& str, const char* name, u32 rval, co
 
 void CPU::PGXP::GTE_RTPS(float x, float y, float z, u32 value)
 {
-  PGXPValue& pvalue = PushSXY();
-  pvalue.x = x;
-  pvalue.y = y;
-  pvalue.z = z;
-  pvalue.value = value;
-  pvalue.flags = VALID_ALL;
+  PGXPValue& SXYP = PGXP_GTE_REGISTER(SXYP);
+  SXYP.x = x;
+  SXYP.y = y;
+  SXYP.z = z;
+  SXYP.value = value;
+  SXYP.flags = VALID_ALL;
+  PushScreenXYFIFO();
 
   if (g_settings.gpu_pgxp_vertex_cache)
-    CacheVertex(value, pvalue);
+    CacheVertex(value, SXYP);
 }
 
 bool CPU::PGXP::GTE_HasPreciseVertices(u32 sxy0, u32 sxy1, u32 sxy2)
 {
-  PGXPValue& SXY0 = GetSXY0();
+  PGXPValue& SXY0 = PGXP_GTE_REGISTER(SXY0);
   SXY0.Validate(sxy0);
-  PGXPValue& SXY1 = GetSXY1();
+  PGXPValue& SXY1 = PGXP_GTE_REGISTER(SXY1);
   SXY1.Validate(sxy1);
-  PGXPValue& SXY2 = GetSXY2();
+  PGXPValue& SXY2 = PGXP_GTE_REGISTER(SXY2);
   SXY2.Validate(sxy2);
 
   // Don't use accurate clipping for game-constructed values, which don't have a valid Z.
@@ -481,9 +519,9 @@ bool CPU::PGXP::GTE_HasPreciseVertices(u32 sxy0, u32 sxy1, u32 sxy2)
 
 float CPU::PGXP::GTE_NCLIP()
 {
-  const PGXPValue& SXY0 = GetSXY0();
-  const PGXPValue& SXY1 = GetSXY1();
-  const PGXPValue& SXY2 = GetSXY2();
+  const PGXPValue& SXY0 = PGXP_GTE_REGISTER(SXY0);
+  const PGXPValue& SXY1 = PGXP_GTE_REGISTER(SXY1);
+  const PGXPValue& SXY2 = PGXP_GTE_REGISTER(SXY2);
   float nclip = ((SXY0.x * SXY1.y) + (SXY1.x * SXY2.y) + (SXY2.x * SXY0.y) - (SXY0.x * SXY2.y) - (SXY1.x * SXY0.y) -
                  (SXY2.x * SXY1.y));
 
@@ -502,8 +540,8 @@ ALWAYS_INLINE_RELEASE void CPU::PGXP::CPU_MTC2(u32 reg, const PGXPValue& value, 
     case 15:
     {
       // push FIFO
-      PGXPValue& SXY2 = PushSXY();
-      SXY2 = value;
+      PGXP_GTE_REGISTER(SXYP) = value;
+      PushScreenXYFIFO();
       return;
     }
 
@@ -586,9 +624,12 @@ ALWAYS_INLINE_RELEASE CPU::PGXPValue* CPU::PGXP::GetCachedVertex(u32 value)
 
 ALWAYS_INLINE_RELEASE float CPU::PGXP::TruncateVertexPosition(float p)
 {
+  // Truncates positions to 11 bits before drawing.
+  // Matches GPU command parsing, where the upper 5 bits are dropped.
+  // Necessary for Jet Moto and Racingroovy VS.
   const s32 int_part = static_cast<s32>(p);
   const float int_part_f = static_cast<float>(int_part);
-  return static_cast<float>(static_cast<s16>(int_part << 5) >> 5) + (p - int_part_f);
+  return static_cast<float>(TruncateGPUVertexPosition(int_part)) + (p - int_part_f);
 }
 
 ALWAYS_INLINE_RELEASE bool CPU::PGXP::IsWithinTolerance(float precise_x, float precise_y, int int_x, int int_y)
@@ -605,12 +646,11 @@ bool CPU::PGXP::GetPreciseVertex(u32 addr, u32 value, int x, int y, int xOffs, i
                                  float* out_w)
 {
   const PGXPValue* vert = GetPtr(addr);
-  if (vert && ((vert->flags & VALID_XY) == VALID_XY) && (vert->value == value))
+  if (vert && (vert->flags & VALID_XY) == VALID_XY && vert->value == value)
   {
-    // There is a value here with valid X and Y coordinates
     *out_x = TruncateVertexPosition(vert->x) + static_cast<float>(xOffs);
     *out_y = TruncateVertexPosition(vert->y) + static_cast<float>(yOffs);
-    *out_w = vert->z / 32768.0f;
+    *out_w = vert->z / static_cast<float>(GTE::MAX_Z);
 
 #ifdef LOG_LOOKUPS
     GL_INS_FMT("0x{:08X} {},{} => {},{} ({},{},{}) ({},{})", addr, x, y, *out_x, *out_y,
@@ -632,10 +672,20 @@ bool CPU::PGXP::GetPreciseVertex(u32 addr, u32 value, int x, int y, int xOffs, i
     {
       *out_x = TruncateVertexPosition(vert->x) + static_cast<float>(xOffs);
       *out_y = TruncateVertexPosition(vert->y) + static_cast<float>(yOffs);
-      *out_w = vert->z / 32768.0f;
+      *out_w = vert->z / static_cast<float>(GTE::MAX_Z);
+
+#ifdef LOG_LOOKUPS
+      GL_INS_FMT("0x{:08X} {},{} => VERTEX_CACHE{{{},{} ({},{},{}) ({},{})}}", addr, x, y, *out_x, *out_y,
+                 TruncateVertexPosition(vert->x), TruncateVertexPosition(vert->y), vert->z, std::abs(*out_x - x),
+                 std::abs(*out_y - y));
+#endif
 
       if (IsWithinTolerance(*out_x, *out_y, x, y))
+      {
+        // This is only really used for Syphon Filter 3, and including Z tends to make things worse.
+        // At least it can get rid of the jitter, but not the warping.
         return false;
+      }
     }
   }
 
@@ -643,6 +693,10 @@ bool CPU::PGXP::GetPreciseVertex(u32 addr, u32 value, int x, int y, int xOffs, i
   *out_x = static_cast<float>(x);
   *out_y = static_cast<float>(y);
   *out_w = 1.0f;
+
+#ifdef LOG_LOOKUPS
+  GL_INS_FMT("0x{:08X} {},{} => MISS", addr, x, y);
+#endif
   return false;
 }
 
@@ -692,6 +746,239 @@ void CPU::PGXP::CPU_SW(Instruction instr, u32 addr, u32 rtVal)
   LOG_VALUES_STORE(instr.r.rt.GetValue(), rtVal, addr);
   PGXPValue& prtVal = ValidateAndGetRtValue(instr, rtVal);
   WriteMem(addr, prtVal);
+}
+
+void CPU::PGXP::CPU_LWx(Instruction instr, u32 addr, u32 rtVal)
+{
+  const u32 aligned_addr = addr & ~3u;
+  PGXPValue* pmemVal = GetPtr(aligned_addr);
+  u32 memVal;
+  if (!pmemVal)
+    return;
+  if (!CPU::SafeReadMemoryWord(aligned_addr, &memVal)) [[unlikely]]
+    return;
+  pmemVal->Validate(memVal);
+  LOG_VALUES_LOAD(addr, memVal);
+
+  PGXPValue& prtVal = ValidateAndGetRtValue(instr, rtVal);
+
+  const u32 byte_shift = addr & 3u;
+
+  if (instr.op == InstructionOp::lwl)
+  {
+    const u32 bit_shift = (byte_shift * 8);
+    const u32 mixed_value = (rtVal & (UINT32_C(0x00FFFFFF) >> bit_shift)) | (memVal << (24 - bit_shift));
+
+    switch (byte_shift)
+    {
+      case 0:
+      {
+        // only writing the upper half of Y, can't do much about that..
+        prtVal.y = static_cast<float>(static_cast<s16>(mixed_value >> 16));
+        prtVal.value = mixed_value;
+        prtVal.flags = (prtVal.flags & ~VALID_Y);
+      }
+      break;
+
+      case 1:
+      {
+        prtVal.y = pmemVal->x;
+        prtVal.z = (pmemVal->flags & VALID_LOWZ) ? pmemVal->z : prtVal.z;
+        prtVal.value = mixed_value;
+        prtVal.flags =
+          (prtVal.flags & ~VALID_Y) | ((pmemVal->flags & VALID_X) << 1) | ((pmemVal->flags & VALID_LOWZ) ? VALID_Z : 0);
+      }
+      break;
+
+      case 2:
+      {
+        // making a dog's breakfast of both X and Y
+        prtVal.x = static_cast<float>(static_cast<s16>(mixed_value));
+        prtVal.y = static_cast<float>(static_cast<s16>(mixed_value >> 16));
+        prtVal.value = mixed_value;
+        prtVal.flags &= ~(VALID_X | VALID_Y | VALID_Z);
+      }
+      break;
+
+      case 3:
+      {
+        // effectively the same as a normal load.
+        prtVal = *pmemVal;
+        prtVal.value = mixed_value;
+      }
+      break;
+
+        DefaultCaseIsUnreachable();
+    }
+  }
+  else
+  {
+    const u32 bit_shift = (byte_shift * 8);
+    const u32 mixed_value = (rtVal & (UINT32_C(0xFFFFFF00) << (24 - bit_shift))) | (memVal >> bit_shift);
+
+    switch (byte_shift)
+    {
+      case 0:
+      {
+        // effectively the same as a normal load.
+        prtVal = *pmemVal;
+        prtVal.value = mixed_value;
+      }
+      break;
+
+      case 1:
+      {
+        // making a dog's breakfast of both X and Y
+        prtVal.x = static_cast<float>(static_cast<s16>(mixed_value));
+        prtVal.y = static_cast<float>(static_cast<s16>(mixed_value >> 16));
+        prtVal.value = mixed_value;
+        prtVal.flags &= ~(VALID_X | VALID_Y | VALID_Z);
+      }
+      break;
+
+      case 2:
+      {
+        prtVal.x = pmemVal->y;
+        prtVal.z = (pmemVal->flags & VALID_HIGHZ) ? pmemVal->z : prtVal.z;
+        prtVal.value = mixed_value;
+        prtVal.flags = (prtVal.flags & ~VALID_X) | ((pmemVal->flags & VALID_Y) >> 1) |
+                       ((pmemVal->flags & VALID_HIGHZ) ? VALID_Z : 0);
+      }
+      break;
+
+      case 3:
+      {
+        // only writing the lower half of X, can't do much about that..
+        prtVal.x = static_cast<float>(static_cast<s16>(mixed_value));
+        prtVal.value = mixed_value;
+        prtVal.flags = (prtVal.flags & ~VALID_X);
+      }
+      break;
+
+        DefaultCaseIsUnreachable();
+    }
+  }
+}
+
+void CPU::PGXP::CPU_SWx(Instruction instr, u32 addr, u32 rtVal)
+{
+  LOG_VALUES_STORE(instr.r.rt.GetValue(), rtVal, addr);
+
+  const u32 aligned_addr = addr & ~3u;
+  PGXPValue* pmemVal = GetPtr(aligned_addr);
+  u32 memVal;
+  if (!pmemVal)
+    return;
+  if (!CPU::SafeReadMemoryWord(aligned_addr, &memVal)) [[unlikely]]
+    return;
+  pmemVal->Validate(memVal);
+
+  PGXPValue& prtVal = ValidateAndGetRtValue(instr, rtVal);
+
+  const u32 byte_shift = addr & 3u;
+
+  if (instr.op == InstructionOp::swl)
+  {
+    const u32 bit_shift = (byte_shift * 8);
+    const u32 mixed_value = (memVal & (UINT32_C(0xFFFFFF00) << bit_shift)) | (rtVal >> (24 - bit_shift));
+
+    switch (byte_shift)
+    {
+      case 0:
+      {
+        // only writing the lower half of X, can't do much about that..
+        pmemVal->x = static_cast<float>(static_cast<s16>(mixed_value));
+        pmemVal->value = mixed_value;
+        pmemVal->flags =
+          (pmemVal->flags & ~(VALID_X | VALID_Z | VALID_LOWZ)) | ((pmemVal->flags & VALID_HIGHZ) ? VALID_Z : 0);
+      }
+      break;
+
+      case 1:
+      {
+        pmemVal->x = prtVal.y;
+        pmemVal->z = (prtVal.flags & VALID_Z) ? prtVal.z : pmemVal->z;
+        pmemVal->value = mixed_value;
+        pmemVal->flags = (pmemVal->flags & ~(VALID_X | VALID_Z | VALID_LOWZ)) | ((prtVal.flags & VALID_Y) >> 1) |
+                         ((prtVal.flags & VALID_Z) ? (VALID_Z | VALID_LOWZ) : 0) |
+                         ((pmemVal->flags & VALID_HIGHZ) ? VALID_Z : 0);
+      }
+      break;
+
+      case 2:
+      {
+        // making a dog's breakfast of both X and Y
+        pmemVal->x = static_cast<float>(static_cast<s16>(mixed_value));
+        pmemVal->y = static_cast<float>(static_cast<s16>(mixed_value >> 16));
+        pmemVal->value = mixed_value;
+        pmemVal->flags &= ~(VALID_X | VALID_Y | VALID_Z | VALID_LOWZ | VALID_HIGHZ);
+      }
+      break;
+
+      case 3:
+      {
+        // effectively the same as a normal store.
+        *pmemVal = prtVal;
+        pmemVal->value = mixed_value;
+        pmemVal->flags =
+          (prtVal.flags & ~(VALID_LOWZ | VALID_HIGHZ)) | ((prtVal.flags & VALID_Z) ? (VALID_LOWZ | VALID_HIGHZ) : 0);
+      }
+      break;
+
+        DefaultCaseIsUnreachable();
+    }
+  }
+  else
+  {
+    const u32 bit_shift = (byte_shift * 8);
+    const u32 mixed_value = (memVal & (UINT32_C(0x00FFFFFF) >> (24 - bit_shift))) | (rtVal << bit_shift);
+
+    switch (byte_shift)
+    {
+      case 0:
+      {
+        // effectively the same as a normal store.
+        *pmemVal = prtVal;
+        pmemVal->value = mixed_value;
+        pmemVal->flags =
+          (prtVal.flags & ~(VALID_LOWZ | VALID_HIGHZ)) | ((prtVal.flags & VALID_Z) ? (VALID_LOWZ | VALID_HIGHZ) : 0);
+      }
+      break;
+
+      case 1:
+      {
+        // making a dog's breakfast of both X and Y
+        pmemVal->x = static_cast<float>(static_cast<s16>(mixed_value));
+        pmemVal->y = static_cast<float>(static_cast<s16>(mixed_value >> 16));
+        pmemVal->value = mixed_value;
+        pmemVal->flags &= ~(VALID_X | VALID_Y | VALID_LOWZ | VALID_HIGHZ);
+      }
+      break;
+
+      case 2:
+      {
+        pmemVal->y = prtVal.x;
+        pmemVal->z = (prtVal.flags & VALID_Z) ? prtVal.z : pmemVal->z;
+        pmemVal->value = mixed_value;
+        pmemVal->flags = (pmemVal->flags & ~(VALID_X | VALID_Z | VALID_HIGHZ)) | ((prtVal.flags & VALID_X) << 1) |
+                         ((prtVal.flags & VALID_Z) ? (VALID_Z | VALID_HIGHZ) : 0) |
+                         ((pmemVal->flags & VALID_LOWZ) ? VALID_Z : 0);
+      }
+      break;
+
+      case 3:
+      {
+        // only writing the upper half of Y, can't do much about that..
+        pmemVal->y = static_cast<float>(static_cast<s16>(mixed_value));
+        pmemVal->value = mixed_value;
+        pmemVal->flags =
+          (pmemVal->flags & ~(VALID_X | VALID_Z | VALID_HIGHZ)) | ((pmemVal->flags & VALID_LOWZ) ? VALID_Z : 0);
+      }
+      break;
+
+        DefaultCaseIsUnreachable();
+    }
+  }
 }
 
 void CPU::PGXP::CPU_MOVE_Packed(u32 rd_and_rs, u32 rsVal)

@@ -4,13 +4,11 @@
 #pragma once
 
 #include "common/fifo_queue.h"
-#include "common/heap_array.h"
 #include "common/types.h"
 
 #include <cstring>
-#include <deque>
-#include <string>
 #include <span>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -34,7 +32,10 @@ public:
   ALWAYS_INLINE bool IsReading() const { return (m_mode == Mode::Read); }
   ALWAYS_INLINE bool IsWriting() const { return (m_mode == Mode::Write); }
   ALWAYS_INLINE u32 GetVersion() const { return m_version; }
+  ALWAYS_INLINE const u8* GetData() const { return m_data; }
+  ALWAYS_INLINE size_t GetDataSize() const { return m_size; }
   ALWAYS_INLINE size_t GetPosition() const { return m_pos; }
+  ALWAYS_INLINE void SetPosition(size_t pos) { m_pos = pos; }
 
   /// Overload for integral or floating-point types. Writes bytes as-is.
   template<typename T, std::enable_if_t<std::is_integral_v<T> || std::is_floating_point_v<T>, int> = 0>
@@ -114,12 +115,6 @@ public:
     DoArray(data->data(), data->size());
   }
 
-  template<typename T, size_t N>
-  void Do(FixedHeapArray<T, N>* data)
-  {
-    DoArray(data->data(), data->size());
-  }
-
   template<typename T>
   void Do(std::vector<T>* data)
   {
@@ -128,28 +123,6 @@ public:
     if (m_mode == Mode::Read)
       data->resize(length);
     DoArray(data->data(), data->size());
-  }
-
-  template<typename T>
-  void Do(std::deque<T>* data)
-  {
-    u32 length = static_cast<u32>(data->size());
-    Do(&length);
-    if (m_mode == Mode::Read)
-    {
-      data->clear();
-      for (u32 i = 0; i < length; i++)
-      {
-        T value;
-        Do(&value);
-        data->push_back(value);
-      }
-    }
-    else
-    {
-      for (u32 i = 0; i < length; i++)
-        Do(&data[i]);
-    }
   }
 
   template<typename T, u32 CAPACITY>
@@ -177,6 +150,7 @@ public:
   }
 
   bool DoMarker(const char* marker);
+  bool DoMarkerEx(const char* marker, u32 version_introduced);
 
   template<typename T>
   void DoEx(T* data, u32 version_introduced, T default_value)
@@ -188,6 +162,13 @@ public:
     }
 
     Do(data);
+  }
+
+  template<typename T>
+  T DoValue(T&& value)
+  {
+    Do(&value);
+    return value;
   }
 
   void SkipBytes(size_t count)
@@ -202,6 +183,9 @@ public:
     if (!m_error) [[likely]]
       m_pos += count;
   }
+
+  // spans don't copy immediately
+  std::span<u8> GetDeferredBytes(size_t size);
 
 private:
   bool ReadData(void* buf, size_t size);

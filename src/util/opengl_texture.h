@@ -21,18 +21,22 @@ public:
   ~OpenGLTexture();
 
   static bool UseTextureStorage(bool multisampled);
-  static const std::tuple<GLenum, GLenum, GLenum>& GetPixelFormatMapping(Format format, bool gles);
+  static const std::tuple<GLenum, GLenum, GLenum>& GetPixelFormatMapping(GPUTextureFormat format, bool gles);
 
   ALWAYS_INLINE GLuint GetGLId() const { return m_id; }
 
   bool Update(u32 x, u32 y, u32 width, u32 height, const void* data, u32 pitch, u32 layer = 0, u32 level = 0) override;
   bool Map(void** map, u32* map_stride, u32 x, u32 y, u32 width, u32 height, u32 layer = 0, u32 level = 0) override;
   void Unmap() override;
+  void GenerateMipmaps() override;
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   void SetDebugName(std::string_view name) override;
+#endif
 
   static std::unique_ptr<OpenGLTexture> Create(u32 width, u32 height, u32 layers, u32 levels, u32 samples, Type type,
-                                               Format format, const void* data = nullptr, u32 data_pitch = 0);
+                                               GPUTextureFormat format, Flags flags, const void* data, u32 data_pitch,
+                                               Error* error);
 
   bool UseTextureStorage() const;
 
@@ -46,7 +50,8 @@ public:
   OpenGLTexture& operator=(const OpenGLTexture&) = delete;
 
 private:
-  OpenGLTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples, Type type, Format format, GLuint id);
+  OpenGLTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples, Type type, GPUTextureFormat format,
+                Flags flags, GLuint id);
 
   GLuint m_id = 0;
 
@@ -75,7 +80,9 @@ public:
   void* Map(u32 required_elements) override;
   void Unmap(u32 used_elements) override;
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   void SetDebugName(std::string_view name) override;
+#endif
 
 private:
   OpenGLTextureBuffer(Format format, u32 size_in_elements, std::unique_ptr<OpenGLStreamBuffer> buffer,
@@ -94,7 +101,9 @@ public:
 
   ALWAYS_INLINE GLuint GetID() const { return m_id; }
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   void SetDebugName(std::string_view name) override;
+#endif
 
 private:
   OpenGLSampler(GLuint id);
@@ -107,8 +116,8 @@ class OpenGLDownloadTexture final : public GPUDownloadTexture
 public:
   ~OpenGLDownloadTexture() override;
 
-  static std::unique_ptr<OpenGLDownloadTexture> Create(u32 width, u32 height, GPUTexture::Format format, void* memory,
-                                                       size_t memory_size, u32 memory_pitch);
+  static std::unique_ptr<OpenGLDownloadTexture> Create(u32 width, u32 height, GPUTextureFormat format, void* memory,
+                                                       size_t memory_size, u32 memory_pitch, Error* error);
 
   void CopyFromTexture(u32 dst_x, u32 dst_y, GPUTexture* src, u32 src_x, u32 src_y, u32 width, u32 height,
                        u32 src_layer, u32 src_level, bool use_transfer_pitch) override;
@@ -118,14 +127,15 @@ public:
 
   void Flush() override;
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   void SetDebugName(std::string_view name) override;
+#endif
 
 private:
-  OpenGLDownloadTexture(u32 width, u32 height, GPUTexture::Format format, bool imported, GLuint buffer_id,
-                        u8* cpu_buffer, u32 buffer_size, const u8* map_ptr, u32 map_pitch);
+  OpenGLDownloadTexture(u32 width, u32 height, GPUTextureFormat format, bool imported, GLuint buffer_id, u8* cpu_buffer,
+                        const u8* map_ptr, u32 map_pitch);
 
   GLuint m_buffer_id = 0;
-  u32 m_buffer_size = 0;
 
   GLsync m_sync = {};
 

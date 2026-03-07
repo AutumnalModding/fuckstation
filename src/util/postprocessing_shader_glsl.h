@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
@@ -16,17 +16,15 @@ public:
 
   ALWAYS_INLINE const std::string& GetCode() const { return m_code; }
 
-  bool IsValid() const override;
-  bool WantsDepthBuffer() const override;
-
   bool LoadFromFile(std::string name, const char* filename, Error* error);
   bool LoadFromString(std::string name, std::string code, Error* error);
 
-  bool ResizeOutput(GPUTexture::Format format, u32 width, u32 height) override;
-  bool CompilePipeline(GPUTexture::Format format, u32 width, u32 height, ProgressCallback* progress) override;
-  GPUDevice::PresentResult Apply(GPUTexture* input_color, GPUTexture* input_depth, GPUTexture* final_target,
-                                 GSVector4i final_rect, s32 orig_width, s32 orig_height, s32 native_width,
-                                 s32 native_height, u32 target_width, u32 target_height) override;
+  bool CompilePipeline(GPUTextureFormat format, u32 width, u32 height, Error* error,
+                       ProgressCallback* progress) override;
+
+  GPUPresentResult Apply(GPUTexture* original_color, GPUTexture* input_color, GPUTexture* input_depth,
+                         GPUTexture* final_target, const GSVector4i& final_rect, s32 orig_width, s32 orig_height,
+                         s32 native_width, s32 native_height, u32 target_width, u32 target_height, float time) override;
 
 private:
   struct CommonUniforms
@@ -58,6 +56,7 @@ private:
 
   std::unique_ptr<GPUPipeline> m_pipeline;
   std::unique_ptr<GPUSampler> m_sampler;
+  GPUTextureFormat m_output_format = GPUTextureFormat::Unknown;
 };
 
 } // namespace PostProcessing

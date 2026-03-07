@@ -1,13 +1,14 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #define INITGUID
 
 #include "dinput_source.h"
 #include "input_manager.h"
-#include "platform_misc.h"
 
 #include "common/assert.h"
+#include "common/bitutils.h"
+#include "common/error.h"
 #include "common/log.h"
 #include "common/string_util.h"
 
@@ -59,7 +60,7 @@ std::string DInputSource::GetDeviceIdentifier(u32 index)
 static constexpr std::array<const char*, DInputSource::NUM_HAT_DIRECTIONS> s_hat_directions = {
   {"Up", "Down", "Left", "Right"}};
 
-bool DInputSource::Initialize(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock)
+bool DInputSource::Initialize(const SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock)
 {
   m_dinput_module = LoadLibraryW(L"dinput8");
   if (!m_dinput_module)
@@ -68,10 +69,10 @@ bool DInputSource::Initialize(SettingsInterface& si, std::unique_lock<std::mutex
     return false;
   }
 
-  PFNDIRECTINPUT8CREATE create =
-    reinterpret_cast<PFNDIRECTINPUT8CREATE>(GetProcAddress(m_dinput_module, "DirectInput8Create"));
+  PFNDIRECTINPUT8CREATE create = reinterpret_cast<PFNDIRECTINPUT8CREATE>(
+    reinterpret_cast<void*>(GetProcAddress(m_dinput_module, "DirectInput8Create")));
   PFNGETDFDIJOYSTICK get_joystick_data_format =
-    reinterpret_cast<PFNGETDFDIJOYSTICK>(GetProcAddress(m_dinput_module, "GetdfDIJoystick"));
+    reinterpret_cast<PFNGETDFDIJOYSTICK>(reinterpret_cast<void*>(GetProcAddress(m_dinput_module, "GetdfDIJoystick")));
   if (!create || !get_joystick_data_format)
   {
     ERROR_LOG("Failed to get DInput function pointers.");
@@ -92,7 +93,7 @@ bool DInputSource::Initialize(SettingsInterface& si, std::unique_lock<std::mutex
   const std::optional<WindowInfo> toplevel_wi(Host::GetTopLevelWindowInfo());
   settings_lock.lock();
 
-  if (!toplevel_wi.has_value() || toplevel_wi->type != WindowInfo::Type::Win32)
+  if (!toplevel_wi.has_value() || toplevel_wi->type != WindowInfoType::Win32)
   {
     ERROR_LOG("Missing top level window, cannot add DInput devices.");
     return false;
@@ -103,7 +104,7 @@ bool DInputSource::Initialize(SettingsInterface& si, std::unique_lock<std::mutex
   return true;
 }
 
-void DInputSource::UpdateSettings(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock)
+void DInputSource::UpdateSettings(const SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock)
 {
   // noop
 }
@@ -152,7 +153,8 @@ bool DInputSource::ReloadDevices()
     {
       const u32 index = static_cast<u32>(m_controllers.size());
       m_controllers.push_back(std::move(cd));
-      InputManager::OnInputDeviceConnected(GetDeviceIdentifier(index), name);
+      InputManager::OnInputDeviceConnected(MakeGenericControllerDeviceKey(InputSourceType::DInput, index),
+                                           GetDeviceIdentifier(index), name);
       changed = true;
     }
   }
@@ -165,10 +167,9 @@ void DInputSource::Shutdown()
   while (!m_controllers.empty())
   {
     const u32 index = static_cast<u32>(m_controllers.size() - 1);
-    InputManager::OnInputDeviceDisconnected(
-      InputBindingKey{{.source_type = InputSourceType::DInput, .source_index = index}},
-      GetDeviceIdentifier(static_cast<u32>(m_controllers.size() - 1)));
     m_controllers.pop_back();
+    InputManager::OnInputDeviceDisconnected(MakeGenericControllerDeviceKey(InputSourceType::DInput, index),
+                                            GetDeviceIdentifier(index));
   }
 }
 
@@ -226,7 +227,7 @@ bool DInputSource::AddDevice(ControllerData& cd, const std::string& name)
     range.diph.dwObj = static_cast<DWORD>(offset);
     range.lMin = std::numeric_limits<s16>::min();
     range.lMax = std::numeric_limits<s16>::max();
-    hr = cd.device->SetProperty(DIPROP_RANGE, &range.diph);
+    cd.device->SetProperty(DIPROP_RANGE, &range.diph);
 
     // did it apply?
     if (SUCCEEDED(cd.device->GetProperty(DIPROP_RANGE, &range.diph)))
@@ -270,10 +271,10 @@ void DInputSource::PollEvents()
 
       if (hr != DI_OK)
       {
-        InputManager::OnInputDeviceDisconnected(
-          InputBindingKey{{.source_type = InputSourceType::DInput, .source_index = static_cast<u32>(i)}},
-          GetDeviceIdentifier(static_cast<u32>(i)));
         m_controllers.erase(m_controllers.begin() + i);
+        InputManager::OnInputDeviceDisconnected(
+          MakeGenericControllerDeviceKey(InputSourceType::DInput, static_cast<u32>(i)),
+          GetDeviceIdentifier(static_cast<u32>(i)));
         continue;
       }
     }
@@ -289,9 +290,9 @@ void DInputSource::PollEvents()
   }
 }
 
-std::vector<std::pair<std::string, std::string>> DInputSource::EnumerateDevices()
+InputManager::DeviceList DInputSource::EnumerateDevices()
 {
-  std::vector<std::pair<std::string, std::string>> ret;
+  InputManager::DeviceList ret;
   for (size_t i = 0; i < m_controllers.size(); i++)
   {
     DIDEVICEINSTANCEW dii;
@@ -303,15 +304,22 @@ std::vector<std::pair<std::string, std::string>> DInputSource::EnumerateDevices(
     if (name.empty())
       name = "Unknown";
 
-    ret.emplace_back(GetDeviceIdentifier(static_cast<u32>(i)), std::move(name));
+    ret.emplace_back(MakeGenericControllerDeviceKey(InputSourceType::DInput, static_cast<u32>(i)),
+                     GetDeviceIdentifier(static_cast<u32>(i)), std::move(name));
   }
 
   return ret;
 }
 
-std::vector<InputBindingKey> DInputSource::EnumerateMotors()
+InputManager::DeviceEffectList DInputSource::EnumerateEffects(std::optional<InputBindingInfo::Type> type,
+                                                              std::optional<InputBindingKey> for_device)
 {
   return {};
+}
+
+u32 DInputSource::GetPollableDeviceCount() const
+{
+  return static_cast<u32>(m_controllers.size());
 }
 
 bool DInputSource::GetGenericBindingMapping(std::string_view device, GenericInputBindingMapping* mapping)
@@ -328,6 +336,16 @@ void DInputSource::UpdateMotorState(InputBindingKey large_key, InputBindingKey s
                                     float small_intensity)
 {
   // not supported
+}
+
+void DInputSource::UpdateLEDState(InputBindingKey key, float intensity)
+{
+  // not supported
+}
+
+bool DInputSource::ContainsDevice(std::string_view device) const
+{
+  return device.starts_with("DInput-");
 }
 
 std::optional<InputBindingKey> DInputSource::ParseKeyString(std::string_view device, std::string_view binding)
@@ -431,8 +449,18 @@ TinyString DInputSource::ConvertKeyToString(InputBindingKey key)
   return ret;
 }
 
-TinyString DInputSource::ConvertKeyToIcon(InputBindingKey key)
+TinyString DInputSource::ConvertKeyToIcon(InputBindingKey key, InputManager::BindingIconMappingFunction mapper)
 {
+  return {};
+}
+
+void DInputSource::SetSubclassPollDeviceList(InputSubclass subclass, const std::span<const InputBindingKey>* devices)
+{
+}
+
+std::unique_ptr<ForceFeedbackDevice> DInputSource::CreateForceFeedbackDevice(std::string_view device, Error* error)
+{
+  Error::SetStringView(error, "Not supported on this input source.");
   return {};
 }
 
@@ -492,6 +520,45 @@ void DInputSource::CheckForStateChanges(size_t index, const DIJOYSTATE& new_stat
       }
     }
   }
+}
+
+std::optional<float> DInputSource::GetCurrentValue(InputBindingKey key)
+{
+  std::optional<float> ret;
+
+  if (key.source_type != InputSourceType::DInput)
+    return ret;
+
+  if (key.source_index >= m_controllers.size())
+    return ret;
+
+  const ControllerData& cd = m_controllers[key.source_index];
+  if (key.source_subtype == InputSubclass::ControllerAxis && key.data < cd.axis_offsets.size())
+  {
+    LONG value;
+    std::memcpy(&value, reinterpret_cast<const u8*>(&cd.last_state) + cd.axis_offsets[key.data], sizeof(value));
+    ret = static_cast<float>(value) / (value < 0 ? 32768.0f : 32767.0f);
+  }
+  else if (key.source_subtype == InputSubclass::ControllerButton)
+  {
+    if (key.data < cd.num_buttons)
+    {
+      ret = BoolToFloat(cd.last_state.rgbButtons[key.data]);
+    }
+    else
+    {
+      // might be a hat
+      const u32 hat_index = (key.data - cd.num_buttons) / NUM_HAT_DIRECTIONS;
+      const u32 hat_direction = (key.data - cd.num_buttons) % NUM_HAT_DIRECTIONS;
+      if (hat_index < cd.num_hats)
+      {
+        const std::array<bool, NUM_HAT_DIRECTIONS> buttons(GetHatButtons(cd.last_state.rgdwPOV[hat_index]));
+        ret = BoolToFloat(buttons[hat_direction]);
+      }
+    }
+  }
+
+  return ret;
 }
 
 std::unique_ptr<InputSource> InputSource::CreateDInputSource()

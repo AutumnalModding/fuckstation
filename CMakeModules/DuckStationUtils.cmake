@@ -1,3 +1,5 @@
+include(CheckSourceCompiles)
+
 function(disable_compiler_warnings_for_target target)
 	if(MSVC)
 		target_compile_options(${target} PRIVATE "/W0")
@@ -74,8 +76,8 @@ function(detect_architecture)
       set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4.1" PARENT_SCOPE)
     elseif(MSVC AND NOT DISABLE_SSE4)
       # Clang defines these macros, MSVC does not.
-      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /D__SSE3__ /D__SSE4_1__")
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /D__SSE3__ /D__SSE4_1__")
+      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /D__SSE3__ /D__SSE4_1__" PARENT_SCOPE)
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /D__SSE3__ /D__SSE4_1__" PARENT_SCOPE)
     endif()
   elseif(("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "aarch64" OR "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm64") AND
          CMAKE_SIZEOF_VOID_P EQUAL 8) # Might have an A64 kernel, e.g. Raspbian.
@@ -92,17 +94,22 @@ function(detect_architecture)
   elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "riscv64")
     message(STATUS "Building RISC-V 64 binaries.")
     set(CPU_ARCH_RISCV64 TRUE PARENT_SCOPE)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -finline-atomics" PARENT_SCOPE)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -finline-atomics" PARENT_SCOPE)
 
-    # Still need this, apparently.
-    link_libraries("-latomic")
+    # Don't want function calls for atomics.
+    if(COMPILER_GCC)
+      set(EXTRA_CFLAGS "${EXTRA_CFLAGS} -finline-atomics")
+
+      # Still need this, apparently.
+      link_libraries("-latomic")
+    endif()
 
     if(NOT "${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
       # Frame pointers generate an annoying amount of code on leaf functions.
-      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fomit-frame-pointer" PARENT_SCOPE)
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fomit-frame-pointer" PARENT_SCOPE)
+      set(EXTRA_CFLAGS "${EXTRA_CFLAGS} -fomit-frame-pointer")
     endif()
+
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${EXTRA_CFLAGS}" PARENT_SCOPE)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${EXTRA_CFLAGS}" PARENT_SCOPE)
   else()
     message(FATAL_ERROR "Unknown system processor: ${CMAKE_SYSTEM_PROCESSOR}")
   endif()
@@ -110,13 +117,24 @@ endfunction()
 
 function(detect_page_size)
   # This is only needed for ARM64, or if the user hasn't overridden it explicitly.
-  if(NOT CPU_ARCH_ARM64 OR HOST_PAGE_SIZE)
+  # For universal Apple builds, we use preprocessor macros to determine page size.
+  # Similar for Windows, except it's always 4KB.
+  if(NOT CPU_ARCH_ARM64 OR NOT LINUX)
+    unset(HOST_PAGE_SIZE CACHE)
+    unset(HOST_PAGE_SIZE PARENT_SCOPE)
+    unset(HOST_MIN_PAGE_SIZE CACHE)
+    unset(HOST_MIN_PAGE_SIZE PARENT_SCOPE)
+    unset(HOST_MAX_PAGE_SIZE CACHE)
+    unset(HOST_MAX_PAGE_SIZE PARENT_SCOPE)
+    return()
+  elseif(DEFINED HOST_PAGE_SIZE)
     return()
   endif()
 
-  if(NOT LINUX)
-    # For universal Apple builds, we use preprocessor macros to determine page size.
-    # Similar for Windows, except it's always 4KB.
+  if(DEFINED HOST_MIN_PAGE_SIZE OR DEFINED HOST_MAX_PAGE_SIZE)
+    if(NOT DEFINED HOST_MIN_PAGE_SIZE OR NOT DEFINED HOST_MAX_PAGE_SIZE)
+      message(FATAL_ERROR "Both HOST_MIN_PAGE_SIZE and HOST_MAX_PAGE_SIZE must be defined.")
+    endif()
     return()
   endif()
 
@@ -153,6 +171,8 @@ endfunction()
 function(detect_cache_line_size)
   # This is only needed for ARM64, or if the user hasn't overridden it explicitly.
   if(NOT CPU_ARCH_ARM64 OR HOST_CACHE_LINE_SIZE)
+    unset(HOST_CACHE_LINE_SIZE CACHE)
+    unset(HOST_CACHE_LINE_SIZE PARENT_SCOPE)
     return()
   endif()
 
@@ -163,7 +183,7 @@ function(detect_cache_line_size)
   endif()
 
   if(CMAKE_CROSSCOMPILING)
-    message(WARNING "Cross-compiling and can't determine page size, assuming default.")
+    message(WARNING "Cross-compiling and can't determine cache line size, assuming default.")
     return()
   endif()
 
@@ -226,8 +246,132 @@ function(get_scm_version)
   endif()
 endfunction()
 
-function(install_imported_dep_library name)
-  get_target_property(SONAME "${name}" IMPORTED_SONAME_RELEASE)
-  get_target_property(LOCATION "${name}" IMPORTED_LOCATION_RELEASE)
-  install(FILES "${LOCATION}" RENAME "${SONAME}" DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+function(add_debug_symbol_flag var)
+  # CMake's regex engine is missing so many features...
+  set(value "${${var}}")
+  if (NOT " ${value} " MATCHES " -g[1-3]? ")
+    message(STATUS "Adding -g1 to ${var}.")
+    set(${var} "${value} -g1" PARENT_SCOPE)
+  endif()
+endfunction()
+
+function(check_cpp20_feature MACRO MINIMUM_VALUE)
+  set(CACHE_VAR "CHECK_CPP20_FEATURE_${MACRO}")
+  if(NOT DEFINED ${CACHE_VAR})
+    # Create a small source code snippet that fails to compile if the feature is not available.
+    set(TEMP_FILE "${CMAKE_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/CMakeTmp/src.cpp")
+    file(WRITE "${TEMP_FILE}" "#include <version>
+#if !defined(${MACRO}) || ${MACRO} < ${MINIMUM_VALUE}L
+#error Missing feature
+#endif
+    ")
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+    try_compile(HAS_FEATURE
+      ${CMAKE_BINARY_DIR}${CMAKE_FILES_DIRECTORY} "${TEMP_FILE}"
+      CXX_STANDARD 20
+      CXX_STANDARD_REQUIRED TRUE
+    )
+    set(${CACHE_VAR} ${HAS_FEATURE} CACHE INTERNAL "Cached feature test result for ${MACRO}")
+  endif()
+  if(NOT HAS_FEATURE)
+    message(FATAL_ERROR "${MACRO} is not supported by your compiler, at least ${MINIMUM_VALUE} is required.")
+  endif()
+endfunction()
+
+function(check_cpp20_attribute ATTRIBUTE MINIMUM_VALUE)
+  set(CACHE_VAR "CHECK_CPP20_ATTRIBUTE_${MACRO}")
+  if(NOT DEFINED ${CACHE_VAR})
+    set(TEMP_FILE "${CMAKE_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/CMakeTmp/src.cpp")
+    file(WRITE "${TEMP_FILE}" "#include <version>
+#if !defined(__has_cpp_attribute) || __has_cpp_attribute(${ATTRIBUTE}) < ${MINIMUM_VALUE}L
+#error Missing feature
+#endif
+    ")
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+    try_compile(HAS_FEATURE
+      ${CMAKE_BINARY_DIR}${CMAKE_FILES_DIRECTORY} "${TEMP_FILE}"
+      CXX_STANDARD 20
+      CXX_STANDARD_REQUIRED TRUE
+    )
+    set(${CACHE_VAR} ${HAS_FEATURE} CACHE INTERNAL "Cached attribute test result for ${MACRO}")
+  endif()
+  if(NOT HAS_FEATURE)
+    message(FATAL_ERROR "${ATTRIBUTE} is not supported by your compiler, at least ${MINIMUM_VALUE} is required.")
+  endif()
+endfunction()
+
+if(APPLE)
+  function(add_metal_sources target sources library_name metal_std)
+    set(air_files)
+    set(compile_flags -std=${metal_std} -ffast-math)
+
+    foreach(source IN LISTS sources)
+      get_filename_component(source_name ${source} NAME)
+      set(air_file ${CMAKE_CURRENT_BINARY_DIR}/${library_name}/${source_name}.air)
+      list(APPEND air_files ${air_file})
+
+      add_custom_command(
+        OUTPUT ${air_file}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/${library_name}
+        COMMAND xcrun metal ${compile_flags} -o ${air_file} -c ${source}
+        DEPENDS ${source}
+        COMMENT "Compiling Metal shader ${source_name}"
+      )
+    endforeach()
+
+    set(metallib_file ${CMAKE_CURRENT_BINARY_DIR}/${library_name}.metallib)
+
+    add_custom_command(
+      OUTPUT ${metallib_file}
+      COMMAND xcrun metallib -o ${metallib_file} ${air_files}
+      DEPENDS ${air_files}
+      COMMENT "Linking Metal library ${library_name}.metallib"
+    )
+
+    target_sources(${target} PRIVATE ${metallib_file})
+    set_source_files_properties(${metallib_file} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+  endfunction()
+endif()
+
+function(add_resources TARGET DEST_SUBDIR SOURCE_DIR)
+  # Recursively find all files in the source directory
+  file(GLOB_RECURSE SOURCE_FILES CONFIGURE_DEPENDS "${SOURCE_DIR}/*")
+
+  foreach(SOURCE_FILE IN LISTS SOURCE_FILES)
+    # Skip directories
+    if(IS_DIRECTORY "${SOURCE_FILE}")
+      continue()
+    endif()
+
+    # Get the path relative to SOURCE_DIR
+    file(RELATIVE_PATH REL_PATH "${SOURCE_DIR}" "${SOURCE_FILE}")
+
+    # Get the subdirectory portion (if any)
+    get_filename_component(REL_SUBDIR "${REL_PATH}" DIRECTORY)
+
+    if(APPLE)
+      # On macOS, add as source with MACOSX_PACKAGE_LOCATION
+      target_sources(${TARGET} PRIVATE "${SOURCE_FILE}")
+      if(REL_SUBDIR)
+        set_source_files_properties("${SOURCE_FILE}" PROPERTIES
+          MACOSX_PACKAGE_LOCATION "Resources/${REL_SUBDIR}")
+      else()
+        set_source_files_properties("${SOURCE_FILE}" PROPERTIES
+          MACOSX_PACKAGE_LOCATION "Resources")
+      endif()
+    else()
+      # On other platforms, use custom command to copy files
+      if(REL_SUBDIR)
+        set(DEST_PATH "$<TARGET_FILE_DIR:${TARGET}>/${DEST_SUBDIR}/${REL_SUBDIR}")
+      else()
+        set(DEST_PATH "$<TARGET_FILE_DIR:${TARGET}>/${DEST_SUBDIR}")
+      endif()
+
+      add_custom_command(TARGET ${TARGET} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_PATH}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SOURCE_FILE}" "${DEST_PATH}/"
+        COMMENT "Copying ${REL_PATH} to ${DEST_SUBDIR}"
+      )
+    endif()
+  endforeach()
 endfunction()

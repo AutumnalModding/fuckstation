@@ -1,59 +1,125 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
 #include "common/types.h"
+
+#include <array>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
 
 class Error;
+struct WindowInfo;
 
+class GPUSwapChain;
+class GPUTexture;
+enum class GPUTextureFormat : u8;
+
+struct ImGuiContext;
 struct ImFont;
 
 union InputBindingKey;
 enum class GenericInputBinding : u8;
 
+enum class OSDMessageType : u8
+{
+  Error,
+  Warning,
+  Info,
+  Quick,
+  Persistent,
+
+  MaxCount
+};
+
+namespace Host {
+
+/// Handle representing an auxiliary render window in the host.
+using AuxiliaryRenderWindowHandle = void*;
+using AuxiliaryRenderWindowUserData = void*;
+
+enum class AuxiliaryRenderWindowEvent : u8
+{
+  CloseRequest,
+  Resized,
+  KeyPressed,
+  KeyReleased,
+  TextEntered,
+  MouseMoved,
+  MousePressed,
+  MouseReleased,
+  MouseWheel,
+  MaxCount,
+};
+
+union AuxiliaryRenderWindowEventParam
+{
+  s32 int_param;
+  u32 uint_param;
+  float float_param;
+};
+
+} // namespace Host
+
 namespace ImGuiManager {
 
 using WCharType = u32;
 
-/// Sets the path to the font to use. Empty string means to use the default.
-void SetFontPathAndRange(std::string path, std::vector<WCharType> range);
+enum class TextFont : u8
+{
+  Default,
+  Chinese,
+  Japanese,
+  Korean,
+  MaxCount
+};
 
-/// Sets the emoji font range to use. Empty means no glyphs will be rasterized.
-/// Should NOT be terminated with zeros, unlike the font range above.
-void SetEmojiFontRange(std::vector<WCharType> range);
+using TextFontOrder = std::array<TextFont, static_cast<size_t>(TextFont::MaxCount)>;
 
-/// Returns a compacted font range, with adjacent glyphs merged into one pair.
-std::vector<WCharType> CompactFontRange(std::span<const WCharType> range);
+/// Default size for screen margins.
+#ifndef __ANDROID__
+inline constexpr float DEFAULT_SCREEN_MARGIN = 10.0f;
+#else
+inline constexpr float DEFAULT_SCREEN_MARGIN = 16.0f;
+#endif
 
-/// Changes the global scale.
-void SetGlobalScale(float global_scale);
-
-/// Changes whether OSD messages are silently dropped.
-bool IsShowingOSDMessages();
-void SetShowOSDMessages(bool enable);
+/// Sets the order for text fonts.
+TextFontOrder GetDefaultTextFontOrder();
+void SetTextFontOrder(const TextFontOrder& order);
 
 /// Initializes ImGui, creates fonts, etc.
-bool Initialize(float global_scale, Error* error);
+bool Initialize(Error* error);
 
 /// Frees all ImGui resources.
 void Shutdown();
 
-/// Returns the size of the display window. Can be safely called from any thread.
-float GetWindowWidth();
-float GetWindowHeight();
+bool CreateGPUResources(Error* error);
+void DestroyGPUResources();
+
+/// Returns main ImGui context.
+ImGuiContext* GetMainContext();
+
+/// Returns true if there is currently a context created.
+bool IsInitialized();
 
 /// Updates internal state when the window is size.
-void WindowResized(float width, float height);
+void WindowResized(GPUTextureFormat format, float width, float height);
 
 /// Updates scaling of the on-screen elements.
 void RequestScaleUpdate();
 
 /// Call at the beginning of the frame to set up ImGui state.
-void NewFrame();
+void NewFrame(u64 current_time);
+
+/// Creates the draw list for the frame, akin to ImGui::Render().
+void CreateDrawLists();
+
+/// Renders ImGui screen elements. Call before EndPresent().
+void RenderDrawLists(GPUSwapChain* swap_chain);
+void RenderDrawLists(GPUTexture* texture);
 
 /// Renders any on-screen display elements.
 void RenderOSDMessages();
@@ -61,28 +127,28 @@ void RenderOSDMessages();
 /// Returns the scale of all on-screen elements.
 float GetGlobalScale();
 
-/// Returns true if fullscreen fonts are present.
-bool HasFullscreenFonts();
-
-/// Allocates/adds fullscreen fonts if they're not loaded.
-bool AddFullscreenFontsIfMissing();
-
-/// Returns the standard font for external drawing.
-ImFont* GetStandardFont();
+/// Returns the screen margins, or "safe zone".
+float GetScreenMargin();
 
 /// Returns the standard font for on-screen display drawing.
-ImFont* GetOSDFont();
+ImFont* GetTextFont();
 
 /// Returns the fixed-width font for external drawing.
+float GetFixedFontSize();
 ImFont* GetFixedFont();
 
-/// Returns the medium font for external drawing, scaled by ImGuiFullscreen.
-/// This font is allocated on demand.
-ImFont* GetMediumFont();
+/// Returns the standard font for external drawing.
+float GetDebugFontSize(float window_scale);
 
-/// Returns the large font for external drawing, scaled by ImGuiFullscreen.
-/// This font is allocated on demand.
-ImFont* GetLargeFont();
+/// Returns the font size for rendering the OSD.
+float GetOSDFontSize();
+
+/// Multiplies an arbitrary size by the OSD scale.
+float OSDScale(float size);
+
+/// Returns true if the south and east controller face buttons are swapped.
+bool AreGamepadFaceButtonsSwapped();
+void SetGamepadFaceButtonsSwapped(bool enabled);
 
 /// Returns true if imgui wants to intercept text input.
 bool WantsTextInput();
@@ -111,6 +177,9 @@ bool ProcessHostKeyEvent(InputBindingKey key, float value);
 /// Called on the CPU thread when any input event fires. Allows imgui to take over controller navigation.
 bool ProcessGenericInputEvent(GenericInputBinding key, float value);
 
+/// Resets the state of ImGui mouse buttons, call after the window is changed and events get lost.
+void ClearMouseButtonState();
+
 /// Sets an image and scale for a software cursor. Software cursors can be used for things like crosshairs.
 void SetSoftwareCursor(u32 index, std::string image_path, float image_scale, u32 multiply_color = 0xFFFFFF);
 bool HasSoftwareCursor(u32 index);
@@ -124,23 +193,76 @@ void RenderSoftwareCursors();
 
 /// Strips icon characters from a string.
 std::string StripIconCharacters(std::string_view str);
+
+/// Returns the duration for the specified OSD message type.
+float GetOSDMessageDuration(OSDMessageType type);
+
+/// Returns the ending position of OSD messages from the last frame.
+float GetOSDMessageEndPosition();
+
+#ifndef __ANDROID__
+
+/// Auxiliary imgui windows.
+struct AuxiliaryRenderWindowState
+{
+  Host::AuxiliaryRenderWindowHandle window_handle = nullptr;
+  std::unique_ptr<GPUSwapChain> swap_chain;
+  ImGuiContext* imgui_context = nullptr;
+  bool close_request = false;
+};
+
+/// Create a new aux render window. This creates the window itself, swap chain, and imgui context.
+/// Window position and dimensions are restored from the configuration file, under the specified section/key.
+bool CreateAuxiliaryRenderWindow(AuxiliaryRenderWindowState* state, std::string_view title, std::string_view icon_name,
+                                 const char* config_section, const char* config_prefix, u32 default_width,
+                                 u32 default_height, Error* error);
+
+/// Destroys a previously-created aux render window, optionally saving its position information.
+void DestroyAuxiliaryRenderWindow(AuxiliaryRenderWindowState* state, const char* config_section = nullptr,
+                                  const char* config_prefix = nullptr);
+
+/// Renders the specified aux render window. draw_callback will be invoked if the window is not hidden.
+/// Returns false if the user has closed the window.
+bool RenderAuxiliaryRenderWindow(AuxiliaryRenderWindowState* state, void (*draw_callback)(float scale));
+
+/// Processes input events from the host.
+void ProcessAuxiliaryRenderWindowInputEvent(Host::AuxiliaryRenderWindowUserData userdata,
+                                            Host::AuxiliaryRenderWindowEvent event,
+                                            Host::AuxiliaryRenderWindowEventParam param1,
+                                            Host::AuxiliaryRenderWindowEventParam param2,
+                                            Host::AuxiliaryRenderWindowEventParam param3);
+
+#endif
+
 } // namespace ImGuiManager
 
 namespace Host {
-/// Typical durations for OSD messages.
-static constexpr float OSD_CRITICAL_ERROR_DURATION = 20.0f;
-static constexpr float OSD_ERROR_DURATION = 15.0f;
-static constexpr float OSD_WARNING_DURATION = 10.0f;
-static constexpr float OSD_INFO_DURATION = 5.0f;
-static constexpr float OSD_QUICK_DURATION = 2.5f;
 
-/// Adds OSD messages, duration is in seconds.
-void AddOSDMessage(std::string message, float duration = 2.0f);
-void AddKeyedOSDMessage(std::string key, std::string message, float duration = 2.0f);
-void AddIconOSDMessage(std::string key, const char* icon, std::string message, float duration = 2.0f);
-void AddKeyedOSDWarning(std::string key, std::string message, float duration = 2.0f);
-void AddIconOSDWarning(std::string key, const char* icon, std::string message, float duration = 2.0f);
+/// Adds OSD messages.
+void AddOSDMessage(OSDMessageType type, std::string message);
+void AddKeyedOSDMessage(OSDMessageType type, std::string key, std::string message);
+void AddIconOSDMessage(OSDMessageType type, std::string key, const char* icon, std::string message);
+void AddIconOSDMessage(OSDMessageType type, std::string key, const char* icon, std::string title, std::string message);
+void AddIconOSDMessage(OSDMessageType type, std::string key, std::string icon, std::string title, std::string message);
 void RemoveKeyedOSDMessage(std::string key);
-void RemoveKeyedOSDWarning(std::string key);
-void ClearOSDMessages(bool clear_warnings);
+void ClearOSDMessages();
+
+/// Called by ImGuiManager when the cursor enters a text field. The host may choose to open an on-screen
+/// keyboard for devices without a physical keyboard.
+void BeginTextInput();
+
+/// Called by ImGuiManager when the cursor leaves a text field.
+void EndTextInput();
+
+#ifndef __ANDROID__
+
+/// Auxiliary window management.
+bool CreateAuxiliaryRenderWindow(s32 x, s32 y, u32 width, u32 height, std::string_view title,
+                                 std::string_view icon_name, AuxiliaryRenderWindowUserData userdata,
+                                 AuxiliaryRenderWindowHandle* handle, WindowInfo* wi, Error* error);
+void DestroyAuxiliaryRenderWindow(AuxiliaryRenderWindowHandle handle, s32* pos_x = nullptr, s32* pos_y = nullptr,
+                                  u32* width = nullptr, u32* height = nullptr);
+
+#endif
+
 } // namespace Host

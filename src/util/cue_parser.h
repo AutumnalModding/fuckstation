@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
+
 #include "cd_image.h"
+
 #include "common/types.h"
+
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -26,7 +30,7 @@ enum : s32
   MAX_INDEX_NUMBER = 99
 };
 
-enum class TrackFlag : u32
+enum class TrackFlag : u8
 {
   PreEmphasis = (1 << 0),
   CopyPermitted = (1 << 1),
@@ -34,13 +38,21 @@ enum class TrackFlag : u32
   SerialCopyManagement = (1 << 3),
 };
 
+enum class FileFormat : u8
+{
+  Binary,
+  Wave,
+  MaxCount
+};
+
 struct Track
 {
-  u32 number;
-  u32 flags;
+  u8 number;
+  u8 flags;
+  TrackMode mode;
+  FileFormat file_format;
   std::string file;
   std::vector<std::pair<u32, MSF>> indices;
-  TrackMode mode;
   MSF start;
   std::optional<MSF> length;
   std::optional<MSF> zero_pregap;
@@ -61,6 +73,7 @@ public:
   const Track* GetTrack(u32 n) const;
 
   bool Parse(std::FILE* fp, Error* error);
+  bool Parse(const std::string& buffer, Error* error);
 
 private:
   Track* GetMutableTrack(u32 n);
@@ -82,7 +95,7 @@ private:
   bool SetTrackLengths(u32 line_number, Error* error);
 
   std::vector<Track> m_tracks;
-  std::optional<std::string> m_current_file;
+  std::optional<std::pair<std::string, FileFormat>> m_current_file;
   std::optional<Track> m_current_track;
 };
 

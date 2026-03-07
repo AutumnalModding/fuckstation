@@ -1,6 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="..\..\dep\msvc\vsprops\Configurations.props" />
+  <Import Project="..\..\dep\vsprops\Configurations.props" />
   <PropertyGroup Label="Globals">
     <ProjectGuid>{3029310E-4211-4C87-801A-72E130A648EF}</ProjectGuid>
   </PropertyGroup>
@@ -18,7 +18,7 @@
       <Project>{57f6206d-f264-4b07-baf8-11b9bbe1f455}</Project>
     </ProjectReference>
   </ItemGroup>
-  <Import Project="..\..\dep\msvc\vsprops\ConsoleApplication.props" />
+  <Import Project="..\..\dep\vsprops\ConsoleApplication.props" />
   <Import Project="..\core\core.props" />
-  <Import Project="..\..\dep\msvc\vsprops\Targets.props" />
+  <Import Project="..\..\dep\vsprops\Targets.props" />
 </Project>

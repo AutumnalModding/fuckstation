@@ -40,11 +40,13 @@ struct ImageInfo
 
   const char* description;
   ConsoleRegion region;
-  Hash hash;
+  bool region_check;
   FastBootPatch fastboot_patch;
   u8 priority;
+  alignas(16) Hash hash;
 
   bool SupportsFastBoot() const { return (fastboot_patch != FastBootPatch::Unsupported); }
+  bool CanSlowBootDisc(DiscRegion disc_region) const;
 
   static TinyString GetHashString(const Hash& hash);
 };
@@ -77,7 +79,12 @@ struct PSEXEHeader
 static_assert(sizeof(PSEXEHeader) == 0x800);
 #pragma pack(pop)
 
+// .cpe files
+inline constexpr u32 CPE_MAGIC = 0x01455043;
+
 std::optional<Image> LoadImageFromFile(const char* filename, Error* error);
+
+const ImageInfo* GetInfoForHash(const std::span<const u8> image, const ImageInfo::Hash& hash);
 
 bool IsValidBIOSForRegion(ConsoleRegion console_region, ConsoleRegion bios_region);
 

@@ -11,7 +11,7 @@ class Error;
 namespace CPU::CodeCache {
 
 /// Returns true if any recompiler is in use.
-bool IsUsingAnyRecompiler();
+bool IsUsingRecompiler();
 
 /// Returns true if any recompiler and fastmem is in use.
 bool IsUsingFastmem();
@@ -27,6 +27,9 @@ void ProcessShutdown();
 
 /// Flushes the code cache, forcing all blocks to be recompiled.
 void Reset();
+
+/// Free all non-persistent resources for the code cache.
+void Shutdown();
 
 /// Invalidates all blocks which are in the range of the specified code page.
 void InvalidateBlocksWithPageIndex(u32 page_index);

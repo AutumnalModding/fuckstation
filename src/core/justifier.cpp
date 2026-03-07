@@ -1,17 +1,19 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "justifier.h"
 #include "gpu.h"
-#include "host.h"
 #include "interrupt_controller.h"
 #include "system.h"
+#include "video_thread.h"
 
 #include "util/imgui_manager.h"
 #include "util/input_manager.h"
 #include "util/state_wrapper.h"
+#include "util/translation.h"
 
 #include "common/assert.h"
+#include "common/gsvector_formatter.h"
 #include "common/log.h"
 #include "common/path.h"
 #include "common/string_util.h"
@@ -19,7 +21,7 @@
 #include "IconsPromptFont.h"
 #include <array>
 
-LOG_CHANNEL(Justifier);
+LOG_CHANNEL(Controller);
 
 // #define CHECK_TIMING 1
 #ifdef CHECK_TIMING
@@ -89,6 +91,7 @@ bool Justifier::DoState(StateWrapper& sw, bool apply_input_state)
     m_position_valid = position_valid;
   }
 
+  sw.DoEx(&m_irq_enabled, 82, true);
   sw.Do(&m_transfer_state);
 
   if (sw.IsReading())
@@ -178,6 +181,13 @@ bool Justifier::Transfer(const u8 data_in, u8* data_out)
 
     case TransferState::ButtonsLSB:
     {
+      const bool new_irq_enabled = ((data_in & 0x10) == 0x10);
+      if (new_irq_enabled != m_irq_enabled)
+      {
+        m_irq_enabled = new_irq_enabled;
+        UpdateIRQEvent();
+      }
+
       *data_out = Truncate8(m_button_state);
       m_transfer_state = TransferState::ButtonsMSB;
       return true;
@@ -212,16 +222,14 @@ void Justifier::UpdatePosition()
     return;
   }
 
-  float display_x, display_y;
   const auto [window_x, window_y] = (m_has_relative_binds) ? GetAbsolutePositionFromRelativeAxes() :
                                                              InputManager::GetPointerAbsolutePosition(m_cursor_index);
-  g_gpu->ConvertScreenCoordinatesToDisplayCoordinates(window_x, window_y, &display_x, &display_y);
+  const GSVector2 display_pos = g_gpu.ConvertScreenCoordinatesToDisplayCoordinates(GSVector2(window_x, window_y));
 
   // are we within the active display area?
   u32 tick, line;
-  if (display_x < 0 || display_y < 0 ||
-      !g_gpu->ConvertDisplayCoordinatesToBeamTicksAndLines(display_x, display_y, m_x_scale, &tick, &line) ||
-      m_shoot_offscreen)
+  if ((display_pos < GSVector2::zero()).anytrue() ||
+      !g_gpu.ConvertDisplayCoordinatesToBeamTicksAndLines(display_pos, m_x_scale, &tick, &line) || m_shoot_offscreen)
   {
     DEV_LOG("Lightgun out of range for window coordinates {:.0f},{:.0f}", window_x, window_y);
     m_position_valid = false;
@@ -234,14 +242,14 @@ void Justifier::UpdatePosition()
   m_irq_tick = static_cast<u16>(static_cast<TickCount>(tick) +
                                 System::ScaleTicksToOverclock(static_cast<TickCount>(m_tick_offset)));
   m_irq_first_line = static_cast<u16>(std::clamp<s32>(static_cast<s32>(line) + m_first_line_offset,
-                                                      static_cast<s32>(g_gpu->GetCRTCActiveStartLine()),
-                                                      static_cast<s32>(g_gpu->GetCRTCActiveEndLine())));
+                                                      static_cast<s32>(g_gpu.GetCRTCActiveStartLine()),
+                                                      static_cast<s32>(g_gpu.GetCRTCActiveEndLine())));
   m_irq_last_line = static_cast<u16>(std::clamp<s32>(static_cast<s32>(line) + m_last_line_offset,
-                                                     static_cast<s32>(g_gpu->GetCRTCActiveStartLine()),
-                                                     static_cast<s32>(g_gpu->GetCRTCActiveEndLine())));
+                                                     static_cast<s32>(g_gpu.GetCRTCActiveStartLine()),
+                                                     static_cast<s32>(g_gpu.GetCRTCActiveEndLine())));
 
-  DEV_LOG("Lightgun window coordinates {},{} -> dpy {},{} -> tick {} line {} [{}-{}]", window_x, window_y, display_x,
-          display_y, tick, line, m_irq_first_line, m_irq_last_line);
+  DEV_LOG("Lightgun window coordinates {},{} -> dpy {} -> tick {} line {} [{}-{}]", window_x, window_y, display_pos,
+          tick, line, m_irq_first_line, m_irq_last_line);
 
   UpdateIRQEvent();
 }
@@ -251,11 +259,11 @@ void Justifier::UpdateIRQEvent()
   // TODO: Avoid deactivate and event sort.
   m_irq_event.Deactivate();
 
-  if (!m_position_valid)
+  if (!m_position_valid || !m_irq_enabled)
     return;
 
   u32 current_tick, current_line;
-  g_gpu->GetBeamPosition(&current_tick, &current_line);
+  g_gpu.GetBeamPosition(&current_tick, &current_line);
 
   u32 target_line;
   if (current_line < m_irq_first_line || current_line >= m_irq_last_line)
@@ -263,7 +271,7 @@ void Justifier::UpdateIRQEvent()
   else
     target_line = current_line + 1;
 
-  const TickCount ticks_until_pos = g_gpu->GetSystemTicksUntilTicksAndLine(m_irq_tick, target_line);
+  const TickCount ticks_until_pos = g_gpu.GetSystemTicksUntilTicksAndLine(m_irq_tick, target_line);
   DEBUG_LOG("Triggering IRQ in {} ticks @ tick {} line {}", ticks_until_pos, m_irq_tick, target_line);
   m_irq_event.Schedule(ticks_until_pos);
 }
@@ -298,7 +306,9 @@ std::pair<float, float> Justifier::GetAbsolutePositionFromRelativeAxes() const
 {
   const float screen_rel_x = (((m_relative_pos[1] > 0.0f) ? m_relative_pos[1] : -m_relative_pos[0]) + 1.0f) * 0.5f;
   const float screen_rel_y = (((m_relative_pos[3] > 0.0f) ? m_relative_pos[3] : -m_relative_pos[2]) + 1.0f) * 0.5f;
-  return std::make_pair(screen_rel_x * ImGuiManager::GetWindowWidth(), screen_rel_y * ImGuiManager::GetWindowHeight());
+  const WindowInfo& wi = VideoThread::GetRenderWindowInfo();
+  return std::make_pair(screen_rel_x * static_cast<float>(wi.surface_width),
+                        screen_rel_y * static_cast<float>(wi.surface_height));
 }
 
 bool Justifier::CanUseSoftwareCursor() const
@@ -327,13 +337,9 @@ std::unique_ptr<Justifier> Justifier::Create(u32 index)
 
 static const Controller::ControllerBindingInfo s_binding_info[] = {
 #define BUTTON(name, display_name, icon_name, binding, genb)                                                           \
-  {                                                                                                                    \
-    name, display_name, icon_name, static_cast<u32>(binding), InputBindingInfo::Type::Button, genb                     \
-  }
+  {name, display_name, icon_name, static_cast<u32>(binding), InputBindingInfo::Type::Button, genb}
 #define HALFAXIS(name, display_name, icon_name, binding, genb)                                                         \
-  {                                                                                                                    \
-    name, display_name, icon_name, static_cast<u32>(binding), InputBindingInfo::Type::HalfAxis, genb                   \
-  }
+  {name, display_name, icon_name, static_cast<u32>(binding), InputBindingInfo::Type::HalfAxis, genb}
 
   // clang-format off
   {"Pointer", TRANSLATE_NOOP("Justifier", "Pointer/Aiming"), ICON_PF_MOUSE, static_cast<u32>(Justifier::Binding::ButtonCount), InputBindingInfo::Type::Pointer, GenericInputBinding::Unknown},
@@ -351,21 +357,27 @@ static const Controller::ControllerBindingInfo s_binding_info[] = {
 #undef BUTTON
 };
 
+#ifndef __ANDROID__
+static constexpr const char* DEFAULT_CROSSHAIR_PATH = "images" FS_OSPATH_SEPARATOR_STR "crosshair.png";
+#else
+static constexpr const char* DEFAULT_CROSSHAIR_PATH = "";
+#endif
+
 static const SettingInfo s_settings[] = {
   {SettingInfo::Type::Path, "CrosshairImagePath", TRANSLATE_NOOP("Justifier", "Crosshair Image Path"),
-   TRANSLATE_NOOP("Justifier", "Path to an image to use as a crosshair/cursor."), nullptr, nullptr, nullptr, nullptr,
-   nullptr, nullptr, 0.0f},
+   TRANSLATE_NOOP("Justifier", "Path to an image to use as a crosshair/cursor."), DEFAULT_CROSSHAIR_PATH, nullptr,
+   nullptr, nullptr, nullptr, nullptr, 0.0f},
   {SettingInfo::Type::Float, "CrosshairScale", TRANSLATE_NOOP("Justifier", "Crosshair Image Scale"),
-   TRANSLATE_NOOP("Justifier", "Scale of crosshair image on screen."), "1.0", "0.0001", "100.0", "0.10", "%.0f%%",
-   nullptr, 100.0f},
+   TRANSLATE_NOOP("Justifier", "Scale of crosshair image on screen."), "1", "0.0001", "100", "0.1", "%.0f%%", nullptr,
+   100.0f},
   {SettingInfo::Type::String, "CrosshairColor", TRANSLATE_NOOP("Justifier", "Cursor Color"),
    TRANSLATE_NOOP("Justifier",
                   "Applies a color to the chosen crosshair images, can be used for multiple players. Specify "
                   "in HTML/CSS format (e.g. #aabbcc)"),
    "#ffffff", nullptr, nullptr, nullptr, nullptr, nullptr, 0.0f},
   {SettingInfo::Type::Float, "XScale", TRANSLATE_NOOP("Justifier", "X Scale"),
-   TRANSLATE_NOOP("Justifier", "Scales X coordinates relative to the center of the screen."), "1.0", "0.01", "2.0",
-   "0.01", "%.0f%%", nullptr, 100.0f},
+   TRANSLATE_NOOP("Justifier", "Scales X coordinates relative to the center of the screen."), "1", "0.01", "2", "0.01",
+   "%.0f%%", nullptr, 100.0f},
   {SettingInfo::Type::Integer, "FirstLineOffset", TRANSLATE_NOOP("Justifier", "Line Start Offset"),
    TRANSLATE_NOOP("Justifier",
                   "Offset applied to lightgun vertical position that the Justifier will first trigger on."),
@@ -388,21 +400,17 @@ static const SettingInfo s_settings[] = {
    "5", "0", "80", "1", "%u", nullptr, 0.0f},
 };
 
-const Controller::ControllerInfo Justifier::INFO = {ControllerType::Justifier,
-                                                    "Justifier",
-                                                    TRANSLATE_NOOP("ControllerType", "Justifier"),
-                                                    ICON_PF_LIGHT_GUN,
-                                                    s_binding_info,
-                                                    s_settings,
-                                                    Controller::VibrationCapabilities::NoVibration};
+const Controller::ControllerInfo Justifier::INFO = {
+  ControllerType::Justifier, "Justifier",    TRANSLATE_NOOP("ControllerType", "Justifier"),
+  ICON_PF_LIGHT_GUN,         s_binding_info, s_settings};
 
-void Justifier::LoadSettings(SettingsInterface& si, const char* section, bool initial)
+void Justifier::LoadSettings(const SettingsInterface& si, const char* section, bool initial)
 {
   Controller::LoadSettings(si, section, initial);
 
   m_x_scale = si.GetFloatValue(section, "XScale", 1.0f);
 
-  std::string cursor_path = si.GetStringValue(section, "CrosshairImagePath");
+  std::string cursor_path = si.GetStringValue(section, "CrosshairImagePath", DEFAULT_CROSSHAIR_PATH);
   const float cursor_scale = si.GetFloatValue(section, "CrosshairScale", 1.0f);
   u32 cursor_color = 0xFFFFFF;
   if (std::string cursor_color_str = si.GetStringValue(section, "CrosshairColor", ""); !cursor_color_str.empty())
@@ -412,13 +420,11 @@ void Justifier::LoadSettings(SettingsInterface& si, const char* section, bool in
       cursor_color_str[0] == '#' ? std::string_view(cursor_color_str).substr(1) : std::string_view(cursor_color_str),
       16));
     if (cursor_color_opt.has_value())
+    {
       cursor_color = cursor_color_opt.value();
+      cursor_color = (cursor_color & 0x00FF00u) | ((cursor_color >> 16) & 0xFFu) | ((cursor_color & 0xFFu) << 16);
+    }
   }
-
-#ifndef __ANDROID__
-  if (cursor_path.empty())
-    cursor_path = Path::Combine(EmuFolders::Resources, "images/crosshair.png");
-#endif
 
   const s32 prev_pointer_index = GetSoftwarePointerIndex();
 
@@ -439,7 +445,7 @@ void Justifier::LoadSettings(SettingsInterface& si, const char* section, bool in
     }
 
     // Pointer changed, so need to update software cursor.
-    const bool had_software_cursor = m_cursor_path.empty();
+    const bool had_software_cursor = !m_cursor_path.empty();
     m_cursor_path = std::move(cursor_path);
     m_cursor_scale = cursor_scale;
     m_cursor_color = cursor_color;
@@ -447,7 +453,17 @@ void Justifier::LoadSettings(SettingsInterface& si, const char* section, bool in
     {
       if (!m_cursor_path.empty())
       {
-        ImGuiManager::SetSoftwareCursor(new_pointer_index, m_cursor_path, m_cursor_scale, m_cursor_color);
+        std::string image_path;
+#ifndef __ANDROID__
+        if (!Path::IsAbsolute(m_cursor_path))
+          image_path = Path::Combine(EmuFolders::Resources, m_cursor_path);
+        else
+          image_path = m_cursor_path;
+#else
+        image_path = m_cursor_path;
+#endif
+
+        ImGuiManager::SetSoftwareCursor(new_pointer_index, std::move(image_path), m_cursor_scale, m_cursor_color);
         if (m_has_relative_binds)
           UpdateSoftwarePointerPosition();
       }

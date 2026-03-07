@@ -4,9 +4,11 @@
 #pragma once
 
 #include "ui_memorycardeditorwindow.h"
+#include "ui_memorycardrenamefiledialog.h"
 
 #include "core/memory_card_image.h"
 
+#include <QtCore/QTimer>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QDialogButtonBox>
@@ -30,15 +32,8 @@ public:
   static bool createMemoryCard(const QString& path, Error* error);
 
 protected:
-  void resizeEvent(QResizeEvent* ev);
-  void closeEvent(QCloseEvent* ev);
-
-private Q_SLOTS:
-  void onCardASelectionChanged();
-  void onCardBSelectionChanged();
-  void doCopyFile();
-  void doDeleteFile();
-  void doUndeleteFile();
+  bool event(QEvent* event) override;
+  void closeEvent(QCloseEvent* event) override;
 
 private:
   struct Card
@@ -52,6 +47,8 @@ private:
     QComboBox* path_cb = nullptr;
     QTableWidget* table = nullptr;
     QLabel* blocks_free_label = nullptr;
+    QLabel* modified_icon_label = nullptr;
+    QLabel* modified_label = nullptr;
     QPushButton* save_button = nullptr;
     QPushButton* import_button = nullptr;
     QPushButton* import_file_button = nullptr;
@@ -76,19 +73,55 @@ private:
   void importCard(Card* card);
   void formatCard(Card* card);
 
+  void doRenameSaveFile();
   void doExportSaveFile();
   void importSaveFile(Card* card);
 
   std::tuple<Card*, const MemoryCardImage::FileInfo*> getSelectedFile();
   void updateButtonState();
 
+  void updateAnimationTimerActive();
+
+  void onCardASelectionChanged();
+  void onCardBSelectionChanged();
+  void onCardContextMenuRequested(const QPoint& pos);
+  void doCopyFile();
+  void doDeleteFile();
+  void doUndeleteFile();
+  void incrementAnimationFrame();
+
   Ui::MemoryCardEditorDialog m_ui;
   QPushButton* m_deleteFile;
   QPushButton* m_undeleteFile;
+  QPushButton* m_renameFile;
   QPushButton* m_exportFile;
   QPushButton* m_moveLeft;
   QPushButton* m_moveRight;
 
   Card m_card_a;
   Card m_card_b;
+  u32 m_current_frame_index = 0;
+  int m_file_icon_width = 0;
+  int m_file_icon_height = 0;
+
+  QTimer* m_animation_timer = nullptr;
+};
+
+class MemoryCardRenameFileDialog final : public QDialog
+{
+  Q_OBJECT
+
+public:
+  MemoryCardRenameFileDialog(QWidget* parent, std::string_view old_name);
+  ~MemoryCardRenameFileDialog() override;
+
+  std::string getNewName() const;
+
+private:
+  void setupAdditionalUi();
+
+  void updateSimplifiedFieldsFromFullName();
+  void updateFullNameFromSimplifiedFields();
+
+  Ui::MemoryCardRenameFileDialog m_ui;
 };

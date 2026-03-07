@@ -18,163 +18,41 @@
     <ClCompile Include="aboutdialog.cpp" />
     <ClCompile Include="memorycardsettingswidget.cpp" />
     <ClCompile Include="inputbindingdialog.cpp" />
-    <ClCompile Include="gamelistmodel.cpp" />
     <ClCompile Include="autoupdaterdialog.cpp" />
     <ClCompile Include="biossettingswidget.cpp" />
     <ClCompile Include="memorycardeditorwindow.cpp" />
     <ClCompile Include="postprocessingsettingswidget.cpp" />
-    <ClCompile Include="cheatmanagerwindow.cpp" />
-    <ClCompile Include="cheatcodeeditordialog.cpp" />
     <ClCompile Include="debuggerwindow.cpp" />
     <ClCompile Include="debuggermodels.cpp" />
     <ClCompile Include="memoryviewwidget.cpp" />
     <ClCompile Include="emulationsettingswidget.cpp" />
     <ClCompile Include="achievementsettingswidget.cpp" />
     <ClCompile Include="achievementlogindialog.cpp" />
-    <ClCompile Include="qtkeycodes.cpp" />
     <ClCompile Include="controllerglobalsettingswidget.cpp" />
     <ClCompile Include="controllersettingswindow.cpp" />
     <ClCompile Include="controllerbindingwidgets.cpp" />
     <ClCompile Include="gamelistrefreshthread.cpp" />
     <ClCompile Include="foldersettingswidget.cpp" />
     <ClCompile Include="gamesummarywidget.cpp" />
-    <ClCompile Include="qttranslations.cpp" />
-    <ClCompile Include="coverdownloaddialog.cpp" />
+    <ClCompile Include="coverdownloadwindow.cpp" />
     <ClCompile Include="colorpickerbutton.cpp" />
     <ClCompile Include="pch.cpp" />
     <ClCompile Include="setupwizarddialog.cpp" />
     <ClCompile Include="logwindow.cpp" />
-    <ClCompile Include="$(IntDir)moc_aboutdialog.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_achievementlogindialog.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_achievementsettingswidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_advancedsettingswidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_audiosettingswidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_autoupdaterdialog.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_biossettingswidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_cheatcodeeditordialog.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_cheatmanagerwindow.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_colorpickerbutton.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_consolesettingswidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_controllerbindingwidgets.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_controllerglobalsettingswidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_controllersettingswindow.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_coverdownloaddialog.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_debuggermodels.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_debuggerwindow.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_displaywidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_emulationsettingswidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_foldersettingswidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_gamelistmodel.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_gamelistrefreshthread.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_gamelistsettingswidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_gamelistwidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_gamesummarywidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_hotkeysettingswidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_inputbindingdialog.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_inputbindingwidgets.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_logwindow.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_mainwindow.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_memorycardeditorwindow.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_memorycardsettingswidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_memoryviewwidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_postprocessingsettingswidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_qthost.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_qtprogresscallback.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_settingswindow.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_setupwizarddialog.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
     <ClCompile Include="graphicssettingswidget.cpp" />
-    <ClCompile Include="$(IntDir)moc_graphicssettingswidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
-    <ClCompile Include="$(IntDir)moc_interfacesettingswidget.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
     <ClCompile Include="memoryscannerwindow.cpp" />
-    <ClCompile Include="$(IntDir)moc_memoryscannerwindow.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
     <ClCompile Include="selectdiscdialog.cpp" />
-    <ClCompile Include="$(IntDir)moc_selectdiscdialog.cpp">
-      <Filter>moc</Filter>
-    </ClCompile>
     <ClCompile Include="vcruntimecheck.cpp" />
     <ClCompile Include="qtthemes.cpp" />
+    <ClCompile Include="gamecheatsettingswidget.cpp" />
+    <ClCompile Include="gamepatchsettingswidget.cpp" />
+    <ClCompile Include="isobrowserwindow.cpp" />
+    <ClCompile Include="debuggercodeview.cpp" />
+    <ClCompile Include="togglebutton.cpp" />
+    <ClCompile Include="memoryeditorwindow.cpp" />
+    <ClCompile Include="qtwindowinfo.cpp" />
+    <ClCompile Include="osdsettingswidget.cpp" />
+    <ClCompile Include="capturesettingswidget.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="qtutils.h" />
@@ -182,6 +60,7 @@
     <ClInclude Include="resource.h" />
     <ClInclude Include="controllersettingwidgetbinder.h" />
     <ClInclude Include="pch.h" />
+    <ClInclude Include="qtwindowinfo.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="resources">
@@ -189,9 +68,6 @@
     </Filter>
     <Filter Include="translations">
       <UniqueIdentifier>{4230e20b-2aff-4c86-966c-b620263a371d}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="moc">
-      <UniqueIdentifier>{9c2685f7-0991-4a58-98a5-c548b97d0dd8}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -211,16 +87,12 @@
     <QtMoc Include="aboutdialog.h" />
     <QtMoc Include="memorycardsettingswidget.h" />
     <QtMoc Include="inputbindingdialog.h" />
-    <QtMoc Include="gamelistmodel.h" />
     <QtMoc Include="autoupdaterdialog.h" />
     <QtMoc Include="biossettingswidget.h" />
     <QtMoc Include="memorycardeditorwindow.h" />
     <QtMoc Include="postprocessingsettingswidget.h" />
-    <QtMoc Include="cheatmanagerwindow.h" />
-    <QtMoc Include="cheatcodeeditordialog.h" />
     <QtMoc Include="debuggermodels.h" />
     <QtMoc Include="debuggerwindow.h" />
-    <QtMoc Include="memoryviewwidget.h" />
     <QtMoc Include="emulationsettingswidget.h" />
     <QtMoc Include="achievementsettingswidget.h" />
     <QtMoc Include="achievementlogindialog.h" />
@@ -230,13 +102,22 @@
     <QtMoc Include="gamelistrefreshthread.h" />
     <QtMoc Include="gamesummarywidget.h" />
     <QtMoc Include="foldersettingswidget.h" />
-    <QtMoc Include="coverdownloaddialog.h" />
+    <QtMoc Include="coverdownloadwindow.h" />
     <QtMoc Include="colorpickerbutton.h" />
     <QtMoc Include="setupwizarddialog.h" />
     <QtMoc Include="logwindow.h" />
     <QtMoc Include="graphicssettingswidget.h" />
     <QtMoc Include="memoryscannerwindow.h" />
     <QtMoc Include="selectdiscdialog.h" />
+    <QtMoc Include="gamecheatsettingswidget.h" />
+    <QtMoc Include="gamepatchsettingswidget.h" />
+    <QtMoc Include="isobrowserwindow.h" />
+    <QtMoc Include="debuggercodeview.h" />
+    <QtMoc Include="togglebutton.h" />
+    <QtMoc Include="memoryeditorwindow.h" />
+    <QtMoc Include="memoryviewwidget.h" />
+    <QtMoc Include="osdsettingswidget.h" />
+    <QtMoc Include="capturesettingswidget.h" />
   </ItemGroup>
   <ItemGroup>
     <QtUi Include="consolesettingswidget.ui" />
@@ -252,8 +133,7 @@
     <QtUi Include="biossettingswidget.ui" />
     <QtUi Include="postprocessingchainconfigwidget.ui" />
     <QtUi Include="memorycardeditorwindow.ui" />
-    <QtUi Include="cheatmanagerwindow.ui" />
-    <QtUi Include="cheatcodeeditordialog.ui" />
+    <QtUi Include="gamecheatcodeeditordialog.ui" />
     <QtUi Include="emulationsettingswidget.ui" />
     <QtUi Include="achievementsettingswidget.ui" />
     <QtUi Include="achievementlogindialog.ui" />
@@ -270,20 +150,29 @@
     <QtUi Include="controllerbindingwidget_analog_joystick.ui" />
     <QtUi Include="controllerbindingwidget_negcon.ui" />
     <QtUi Include="controllerbindingwidget_guncon.ui" />
-    <QtUi Include="controllermacrowidget.ui" />
     <QtUi Include="controllermacroeditwidget.ui" />
     <QtUi Include="controllerbindingwidget_mouse.ui" />
-    <QtUi Include="coverdownloaddialog.ui" />
+    <QtUi Include="coverdownloadwindow.ui" />
     <QtUi Include="setupwizarddialog.ui" />
-    <QtUi Include="controllerledsettingsdialog.ui" />
     <QtUi Include="debuggeraddbreakpointdialog.ui" />
     <QtUi Include="graphicssettingswidget.ui" />
     <QtUi Include="memoryscannerwindow.ui" />
     <QtUi Include="controllerbindingwidget_negconrumble.ui" />
-    <QtUi Include="audioexpansionsettingsdialog.ui" />
-    <QtUi Include="audiostretchsettingsdialog.ui" />
     <QtUi Include="controllerbindingwidget_justifier.ui" />
     <QtUi Include="selectdiscdialog.ui" />
+    <QtUi Include="texturereplacementsettingsdialog.ui" />
+    <QtUi Include="gamepatchsettingswidget.ui" />
+    <QtUi Include="gamecheatsettingswidget.ui" />
+    <QtUi Include="gamepatchdetailswidget.ui" />
+    <QtUi Include="gamecheatcodechoiceeditordialog.ui" />
+    <QtUi Include="memorycardrenamefiledialog.ui" />
+    <QtUi Include="isobrowserwindow.ui" />
+    <QtUi Include="postprocessingoverlayconfigwidget.ui" />
+    <QtUi Include="memoryeditorwindow.ui" />
+    <QtUi Include="postprocessingselectshaderdialog.ui" />
+    <QtUi Include="editgameserialdialog.ui" />
+    <QtUi Include="osdsettingswidget.ui" />
+    <QtUi Include="capturesettingswidget.ui" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="duckstation-qt.rc" />
@@ -301,6 +190,9 @@
       <Filter>translations</Filter>
     </None>
     <None Include="translations\duckstation-qt_es-es.ts">
+      <Filter>translations</Filter>
+    </None>
+    <None Include="translations\duckstation-qt_sv.ts">
       <Filter>translations</Filter>
     </None>
   </ItemGroup>

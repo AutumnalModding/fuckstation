@@ -15,32 +15,46 @@
 #include <unistd.h>
 #endif
 
-namespace Common {
-
 #ifdef _WIN32
 
 static double s_counter_frequency;
 static bool s_counter_initialized = false;
 
-// This gets leaked... oh well.
-static thread_local HANDLE s_sleep_timer;
-static thread_local bool s_sleep_timer_created = false;
+namespace {
+
+struct SleepTimerHandle
+{
+  SleepTimerHandle() = default;
+  ~SleepTimerHandle()
+  {
+    if (handle != NULL)
+      CloseHandle(handle);
+  }
+
+  HANDLE handle = NULL;
+  bool created = false;
+};
+
+}; // namespace
+
+static thread_local SleepTimerHandle s_sleep_timer;
 
 static HANDLE GetSleepTimer()
 {
-  if (s_sleep_timer_created)
-    return s_sleep_timer;
+  if (s_sleep_timer.created)
+    return s_sleep_timer.handle;
 
-  s_sleep_timer_created = true;
-  s_sleep_timer = CreateWaitableTimerEx(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-  if (!s_sleep_timer)
+  s_sleep_timer.created = true;
+  s_sleep_timer.handle =
+    CreateWaitableTimerEx(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  if (!s_sleep_timer.handle)
   {
-    s_sleep_timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
-    if (!s_sleep_timer)
+    s_sleep_timer.handle = CreateWaitableTimer(nullptr, TRUE, nullptr);
+    if (!s_sleep_timer.handle)
       std::fprintf(stderr, "CreateWaitableTimer() failed, falling back to Sleep()\n");
   }
 
-  return s_sleep_timer;
+  return s_sleep_timer.handle;
 }
 
 double Timer::GetFrequency()
@@ -135,7 +149,7 @@ void Timer::SleepUntil(Value value, bool exact)
     }
 
     // falling back to sleep... bad.
-    Sleep(static_cast<DWORD>(static_cast<u64>(diff) / 1000000));
+    Sleep(static_cast<DWORD>(ConvertValueToMilliseconds(diff)));
   }
 }
 
@@ -379,9 +393,7 @@ void Timer::NanoSleep(std::uint64_t ns)
   // Round down to the next millisecond.
   usleep(static_cast<useconds_t>((ns / 1000000) * 1000));
 #else
-  const struct timespec ts = {0, static_cast<long>(ns)};
+  const struct timespec ts = {static_cast<long>(ns / 1000000000ULL), static_cast<long>(ns % 1000000000ULL)};
   nanosleep(&ts, nullptr);
 #endif
 }
-
-} // namespace Common

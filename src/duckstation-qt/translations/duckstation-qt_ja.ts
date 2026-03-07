@@ -2054,7 +2054,7 @@ Unread messages: {}</source>
     </message>
 </context>
 <context>
-    <name>AutoUpdaterDialog</name>
+    <name>AutoUpdaterWindow</name>
     <message>
         <location filename="../autoupdaterdialog.ui" line="17"/>
         <location filename="../autoupdaterdialog.cpp" line="240"/>
@@ -5831,7 +5831,7 @@ This file can be several gigabytes, so be aware of SSD wear.</source>
     </message>
 </context>
 <context>
-    <name>EmuThread</name>
+    <name>CoreThread</name>
     <message>
         <location filename="../qthost.cpp" line="806"/>
         <location filename="../qthost.cpp" line="820"/>
@@ -9041,7 +9041,7 @@ Error was:</source>
     </message>
     <message>
         <location filename="../../core/fullscreen_ui.cpp" line="7602"/>
-        <source>Saved {:%c}</source>
+        <source>Saved {}</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -11060,7 +11060,7 @@ Scanning recursively takes more time, but will identify files in subdirectories.
         <translation type="vanished">形式</translation>
     </message>
     <message>
-        <source>Behaviour</source>
+        <source>Behavior</source>
         <translation type="vanished">動作</translation>
     </message>
     <message>
@@ -13062,7 +13062,7 @@ Scanning recursively takes more time, but will identify files in subdirectories.
     <name>InterfaceSettingsWidget</name>
     <message>
         <location filename="../interfacesettingswidget.ui" line="29"/>
-        <source>Behaviour</source>
+        <source>Behavior</source>
         <translation>動作</translation>
     </message>
     <message>

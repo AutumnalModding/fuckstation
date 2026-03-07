@@ -6,6 +6,7 @@ add_library(common
   binary_reader_writer.h
   bitfield.h
   bitutils.h
+  bcdutils.h
   crash_handler.cpp
   crash_handler.h
   dimensional_array.h
@@ -32,12 +33,11 @@ add_library(common
   layered_settings_interface.h
   log.cpp
   log.h
+  log_channels.h
   memmap.cpp
   memmap.h
   md5_digest.cpp
   md5_digest.h
-  memory_settings_interface.cpp
-  memory_settings_interface.h
   minizip_helpers.h
   path.h
   perf_scope.cpp
@@ -46,26 +46,38 @@ add_library(common
   progress_callback.h
   ryml_helpers.h
   scoped_guard.h
+  settings_interface.cpp
   settings_interface.h
   sha1_digest.cpp
   sha1_digest.h
+  sha256_digest.cpp
+  sha256_digest.h
   small_string.cpp
   small_string.h
   string_util.cpp
   string_util.h
+  string_pool.cpp
+  string_pool.h
+  time_helpers.h
   thirdparty/SmallVector.cpp
   thirdparty/SmallVector.h
+  thirdparty/aes.cpp
+  thirdparty/aes.h
+  thirdparty/usb_key_code_data.h
+  thirdparty/usb_key_code_data.inl
+  task_queue.cpp
+  task_queue.h
   threading.cpp
   threading.h
   timer.cpp
   timer.h
   types.h
+  xorshift_prng.h
 )
 
 target_include_directories(common PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
-target_include_directories(common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
-target_link_libraries(common PUBLIC fmt Threads::Threads fast_float)
-target_link_libraries(common PRIVATE "${CMAKE_DL_LIBS}")
+target_link_libraries(common PUBLIC fmt Threads::Threads)
+target_link_libraries(common PRIVATE fast_float "${CMAKE_DL_LIBS}")
 
 if(WIN32)
   target_sources(common PRIVATE
@@ -95,7 +107,8 @@ if(APPLE)
   target_sources(common PRIVATE ${MAC_SOURCES})
   set_source_files_properties(${MAC_SOURCES} PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
   find_library(COCOA_LIBRARY Cocoa REQUIRED)
-  target_link_libraries(common PRIVATE ${COCOA_LIBRARY})
+  find_library(QUARTZCORE_LIBRARY QuartzCore)
+  target_link_libraries(common PRIVATE ${COCOA_LIBRARY} ${QUARTZCORE_LIBRARY})
 endif()
 
 if(NOT WIN32 AND NOT ANDROID AND NOT APPLE)
@@ -112,9 +125,18 @@ if(LINUX)
 endif()
 
 # If the host size was detected, we need to set it as a macro.
-if(HOST_PAGE_SIZE)
-  target_compile_definitions(common PUBLIC "-DOVERRIDE_HOST_PAGE_SIZE=${HOST_PAGE_SIZE}")
+if(DEFINED HOST_MIN_PAGE_SIZE AND DEFINED HOST_MAX_PAGE_SIZE)
+  target_compile_definitions(common PUBLIC
+    "-DMIN_HOST_PAGE_SIZE=${HOST_MIN_PAGE_SIZE}"
+    "-DMAX_HOST_PAGE_SIZE=${HOST_MAX_PAGE_SIZE}"
+  )
+elseif(DEFINED HOST_PAGE_SIZE)
+  target_compile_definitions(common PUBLIC
+    "-DOVERRIDE_HOST_PAGE_SIZE=${HOST_PAGE_SIZE}"
+  )
 endif()
-if(HOST_CACHE_LINE_SIZE)
-	target_compile_definitions(common PUBLIC "-DOVERRIDE_HOST_CACHE_LINE_SIZE=${HOST_CACHE_LINE_SIZE}")
+if(DEFINED HOST_CACHE_LINE_SIZE)
+	target_compile_definitions(common PUBLIC
+    "-DOVERRIDE_HOST_CACHE_LINE_SIZE=${HOST_CACHE_LINE_SIZE}"
+  )
 endif()

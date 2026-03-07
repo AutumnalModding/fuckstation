@@ -441,18 +441,18 @@ Token logowania wygenerowany %2.</translation>
     </message>
     <message>
         <location filename="../../core/achievements.cpp" line="1338"/>
-        <source>Your Time: {}{}</source>
-        <translation>Twój czas: {}{}</translation>
+        <source>Your Time: {}</source>
+        <translation>Twój czas: {}</translation>
     </message>
     <message>
         <location filename="../../core/achievements.cpp" line="1339"/>
-        <source>Your Score: {}{}</source>
-        <translation>Twój wynik: {}{}</translation>
+        <source>Your Score: {}</source>
+        <translation>Twój wynik: {}</translation>
     </message>
     <message>
         <location filename="../../core/achievements.cpp" line="1340"/>
-        <source>Your Value: {}{}</source>
-        <translation>Twój wartość: {}{}</translation>
+        <source>Your Value: {}</source>
+        <translation>Twój wartość: {}</translation>
     </message>
     <message>
         <location filename="../../core/achievements.cpp" line="1349"/>
@@ -461,25 +461,23 @@ Token logowania wygenerowany %2.</translation>
     </message>
     <message>
         <location filename="../../core/achievements.cpp" line="1368"/>
-        <source>Your Time: {} (Best: {})</source>
-        <translation>Twój czas: {} (Najlepszy: {})</translation>
+        <source>Your Time: {0} (Best: {1})</source>
+        <translation>Twój czas: {0} (Najlepszy: {1})</translation>
     </message>
     <message>
         <location filename="../../core/achievements.cpp" line="1369"/>
-        <source>Your Score: {} (Best: {})</source>
-        <translation>Twój wynik: {} (Najlepszy: {})</translation>
+        <source>Your Score: {0} (Best: {1})</source>
+        <translation>Twój wynik: {0} (Najlepszy: {1})</translation>
     </message>
     <message>
         <location filename="../../core/achievements.cpp" line="1370"/>
-        <source>Your Value: {} (Best: {})</source>
-        <translation>Twój watość: {} (Najlepszy: {})</translation>
+        <source>Your Value: {0} (Best: {1})</source>
+        <translation>Twój watość: {0} (Najlepszy: {1})</translation>
     </message>
     <message>
         <location filename="../../core/achievements.cpp" line="1375"/>
-        <source>{}
-Leaderboard Position: {} of {}</source>
-        <translation>{}
-Pozycja w tabeli wyników: {} z {}</translation>
+        <source>Leaderboard Position: {0} of {1}</source>
+        <translation>Pozycja w tabeli wyników: {0} z {1}</translation>
     </message>
     <message>
         <location filename="../../core/achievements.cpp" line="1503"/>
@@ -1892,7 +1890,7 @@ Nieprzeczytane wiadomości: {}</translation>
     </message>
 </context>
 <context>
-    <name>AutoUpdaterDialog</name>
+    <name>AutoUpdaterWindow</name>
     <message>
         <location filename="../autoupdaterdialog.ui" line="17"/>
         <location filename="../autoupdaterdialog.cpp" line="337"/>
@@ -4742,7 +4740,7 @@ Ten plik może mieć kilka gigabajtów, więc pamiętaj o zużyciu dysku SSD.</t
     </message>
 </context>
 <context>
-    <name>EmuThread</name>
+    <name>CoreThread</name>
     <message>
         <location filename="../qthost.cpp" line="848"/>
         <location filename="../qthost.cpp" line="862"/>
@@ -7811,8 +7809,8 @@ Spowodowany błąd:</translation>
     </message>
     <message>
         <location filename="../../core/fullscreen_ui.cpp" line="7651"/>
-        <source>Saved {:%c}</source>
-        <translation>Zapisano {:%c}</translation>
+        <source>Saved {}</source>
+        <translation>Zapisano {}</translation>
     </message>
     <message>
         <location filename="../../core/fullscreen_ui.cpp" line="7652"/>
@@ -8587,7 +8585,7 @@ Spowodowany błąd:</translation>
 Do you want to {0} anyway?</source>
         <translation>OSTRZEŻENIE: Twoja gra nadal zapisuje się na karcie pamięci. Kontynuowanie {0} może NIEODWRACALNIE ZNISZCZYĆ TWOJĄ KARTĘ PAMIĘCI. Zalecamy wznowienie gry i odczekanie 5 sekund na zakończenie jej zapisywania.
 
-Czy mimo to chcesz {}?</translation>
+Czy mimo to chcesz {0}?</translation>
     </message>
     <message>
         <location filename="../../core/fullscreen_ui.cpp" line="7811"/>
@@ -11668,7 +11666,7 @@ Skanowanie rekursywne zajmuje więcej czasu, ale identyfikuje pliki w podkatalog
     <name>InterfaceSettingsWidget</name>
     <message>
         <location filename="../interfacesettingswidget.ui" line="29"/>
-        <source>Behaviour</source>
+        <source>Behavior</source>
         <translation>Zachowanie</translation>
     </message>
     <message>
@@ -16012,7 +16010,7 @@ Po zrzuceniu, obraz BIOS powinien zostać umieszczony w folderze bios w katalogu
 This may be due to your GPU not supporting the chosen renderer ({1}), or because your graphics drivers need to be updated.</source>
         <translation>Nie udało się utworzyć urządzenia renderującego:
 
-(0)
+{0}
 
 Może to być spowodowane tym, że twoja karta graficzna nie wspiera wybranego silnika renderującego ({1}) lub sterownik wymaga aktualizacji.</translation>
     </message>

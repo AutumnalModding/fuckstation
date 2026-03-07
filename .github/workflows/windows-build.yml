@@ -1,0 +1,143 @@
+name: 💻 Windows
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-build:
+    name: "${{ matrix.name }}"
+    runs-on: windows-2022
+    timeout-minutes: 240
+    strategy:
+      matrix:
+        include:
+          - name: "x64"
+            arch: "x64"
+            vcvars: "x64"
+            config: "ReleaseLTCG-Clang"
+            platform: "x64"
+            bindir: "x64"
+            assetname: "duckstation-windows-x64-release.zip"
+            installerassetname: "duckstation-windows-x64-installer.exe"
+            updatername: "updater-x64-ReleaseLTCG.exe"
+            installername: "installer-x64-ReleaseLTCG.exe"
+            uninstallername: "uninstaller-x64-ReleaseLTCG.exe"
+          - name: "x64 SSE2"
+            arch: "x64-sse2"
+            vcvars: "x64"
+            config: "ReleaseLTCG-Clang-SSE2"
+            platform: "x64"
+            bindir: "x64"
+            assetname: "duckstation-windows-x64-sse2-release.zip"
+            installerassetname: "duckstation-windows-x64-sse2-installer.exe"
+            updatername: "updater-x64-ReleaseLTCG-SSE2.exe"
+            installername: "installer-x64-ReleaseLTCG-SSE2.exe"
+            uninstallername: "uninstaller-x64-ReleaseLTCG-SSE2.exe"
+          - name: "ARM64"
+            arch: "arm64"
+            vcvars: "amd64_arm64"
+            config: "ReleaseLTCG-Clang"
+            platform: "ARM64"
+            bindir: "ARM64"
+            assetname: "duckstation-windows-arm64-release.zip"
+            installerassetname: "duckstation-windows-arm64-installer.exe"
+            updatername: "updater-ARM64-ReleaseLTCG.exe"
+            installername: "installer-ARM64-ReleaseLTCG.exe"
+            uninstallername: "uninstaller-ARM64-ReleaseLTCG.exe"
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Download x64 Dependencies
+      shell: cmd
+      run: |
+        set /p DEPS_VERSION=<dep\PREBUILT-VERSION
+        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/dependencies/releases/download/%DEPS_VERSION%/deps-windows-x64.7z"
+        "C:\Program Files\7-Zip\7z.exe" x -odep\prebuilt deps-windows-x64.7z
+
+    - name: Download ARM64 Dependencies
+      shell: cmd
+      if: matrix.arch == 'arm64'
+      run: |
+        set /p DEPS_VERSION=<dep\PREBUILT-VERSION
+        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/dependencies/releases/download/%DEPS_VERSION%/deps-windows-arm64.7z"
+        "C:\Program Files\7-Zip\7z.exe" x -odep\prebuilt deps-windows-arm64.7z
+
+    - name: Download Patch Archives
+      shell: cmd
+      run: |
+        cd data/resources
+        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/chtdb/releases/download/latest/cheats.zip"
+        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/chtdb/releases/download/latest/patches.zip"
+
+    - name: Tag as Preview Release
+      if: github.ref == 'refs/heads/master'
+      shell: cmd
+      run: |
+        echo #pragma once > src/scmversion/tag.h
+        echo #define UPDATER_RELEASE_CHANNEL "preview" >> src/scmversion/tag.h
+        echo #define UPDATER_RELEASE_IS_OFFICIAL 1 >> src/scmversion/tag.h
+
+    - name: Tag as Stable Build
+      if: github.ref == 'refs/heads/dev'
+      shell: cmd
+      run: |
+        echo #pragma once > src/scmversion/tag.h
+        echo #define UPDATER_RELEASE_CHANNEL "latest" >> src/scmversion/tag.h
+        echo #define UPDATER_RELEASE_IS_OFFICIAL 1 >> src/scmversion/tag.h
+
+    - name: Update RC Version Fields
+      shell: cmd
+      run: |
+        cd src\scmversion
+        call update_rc_version.bat
+        cd ..\..
+        git update-index --assume-unchanged src/duckstation-qt/duckstation-qt.rc
+
+    - name: Compile ${{ matrix.name }} Release Build
+      shell: cmd
+      run: |
+        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.vcvars }}
+        msbuild duckstation.sln -t:Build -p:Platform=${{ matrix.platform }};Configuration=${{ matrix.config }}
+
+    - name: Create ${{ matrix.name }} Symbols Archive
+      shell: cmd
+      run: |
+        "C:\Program Files\7-Zip\7z.exe" a -mx9 -r duckstation-windows-${{ matrix.arch }}-release-symbols.zip ./bin/${{ matrix.bindir }}/*.pdb
+
+    - name: Remove Extra Bloat Before Archiving
+      shell: cmd
+      run: |
+        del /Q bin\${{ matrix.bindir }}\*.pdb bin\${{ matrix.bindir }}\*.exp bin\${{ matrix.bindir }}\*.lib bin\${{ matrix.bindir }}\*.iobj bin\${{ matrix.bindir }}\*.ipdb bin\${{ matrix.bindir }}\common-tests*
+
+    - name: Rename Updater and Installer Programs
+      shell: cmd
+      run: |
+        rename bin\${{ matrix.bindir }}\${{ matrix.updatername }} updater.exe
+        rename bin\${{ matrix.bindir }}\${{ matrix.uninstallername }} uninstaller.exe
+        move bin\${{ matrix.bindir }}\${{ matrix.installername }} ${{ matrix.installerassetname }}.tmp
+
+    - name: Create ${{ matrix.name }} Release Archive
+      shell: cmd
+      run: |
+        "C:\Program Files\7-Zip\7z.exe" a -mx9 -r ${{ matrix.assetname }} ./bin/${{ matrix.bindir }}/*
+
+    - name: Create ${{ matrix.name }} Installer Archive
+      shell: cmd
+      run: |
+        "C:\Program Files\7-Zip\7z.exe" a -mx9 -r installer.7z ./bin/${{ matrix.bindir }}/*
+        copy /B ${{ matrix.installerassetname }}.tmp + installer.7z ${{ matrix.installerassetname }}
+        del /Q ${{ matrix.installerassetname }}.tmp
+
+    - name: Upload ${{ matrix.name }} Artifacts
+      uses: actions/upload-artifact@v6
+      with:
+        name: "windows-${{ matrix.arch }}"
+        path: "duckstation-windows-${{ matrix.arch }}-*.*"
+        compression-level: 0
+        if-no-files-found: error

@@ -1,8 +1,9 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
+#include "gpu_device.h"
 #include "postprocessing_shader.h"
 
 #include "common/thirdparty/SmallVector.h"
@@ -27,17 +28,18 @@ public:
   ReShadeFXShader();
   ~ReShadeFXShader();
 
-  bool IsValid() const override;
-  bool WantsDepthBuffer() const override;
-
   bool LoadFromFile(std::string name, std::string filename, bool only_config, Error* error);
   bool LoadFromString(std::string name, std::string filename, std::string code, bool only_config, Error* error);
 
-  bool ResizeOutput(GPUTexture::Format format, u32 width, u32 height) override;
-  bool CompilePipeline(GPUTexture::Format format, u32 width, u32 height, ProgressCallback* progress) override;
-  GPUDevice::PresentResult Apply(GPUTexture* input_color, GPUTexture* input_depth, GPUTexture* final_target,
-                                 GSVector4i final_rect, s32 orig_width, s32 orig_height, s32 native_width,
-                                 s32 native_height, u32 target_width, u32 target_height) override;
+  bool ResizeTargets(u32 source_width, u32 source_height, GPUTextureFormat target_format, u32 target_width,
+                     u32 target_height, u32 viewport_width, u32 viewport_height, Error* error) override;
+
+  bool CompilePipeline(GPUTextureFormat format, u32 width, u32 height, Error* error,
+                       ProgressCallback* progress) override;
+
+  GPUPresentResult Apply(GPUTexture* original_color, GPUTexture* input_color, GPUTexture* input_depth,
+                         GPUTexture* final_target, const GSVector4i& final_rect, s32 orig_width, s32 orig_height,
+                         s32 native_width, s32 native_height, u32 target_width, u32 target_height, float time) override;
 
 private:
   using TextureID = s32;
@@ -98,10 +100,11 @@ private:
     ShaderOption::ValueVector value;
   };
 
-  bool CreateModule(s32 buffer_width, s32 buffer_height, reshadefx::codegen* cg, std::string code, Error* error);
+  bool CreateModule(s32 buffer_width, s32 buffer_height, reshadefx::codegen* cg, GPUShaderLanguage cg_language,
+                    std::string code, Error* error);
   bool CreateOptions(const reshadefx::effect_module& mod, Error* error);
   bool GetSourceOption(const reshadefx::uniform& ui, SourceOptionType* si, Error* error);
-  bool CreatePasses(GPUTexture::Format backbuffer_format, const reshadefx::effect_module& mod, Error* error);
+  bool CreatePasses(GPUTextureFormat backbuffer_format, const reshadefx::effect_module& mod, Error* error);
 
   const char* GetTextureNameForID(TextureID id) const;
   GPUTexture* GetTextureByID(TextureID id, GPUTexture* input_color, GPUTexture* input_depth,
@@ -113,8 +116,11 @@ private:
   {
     std::unique_ptr<GPUTexture> texture;
     std::string reshade_name; // TODO: we might be able to drop this
-    GPUTexture::Format format;
-    float rt_scale;
+    GPUTextureFormat format;
+    u32 render_target_width;
+    u32 render_target_height;
+    bool render_target;
+    bool storage_access;
   };
 
   struct Sampler
@@ -131,8 +137,11 @@ private:
     llvm::SmallVector<TextureID, GPUDevice::MAX_RENDER_TARGETS> render_targets;
     llvm::SmallVector<Sampler, GPUDevice::MAX_TEXTURE_SAMPLERS> samplers;
     u32 num_vertices;
+    u16 dispatch_size[3];
+    bool is_compute;
+    bool clear_render_targets;
 
-#ifdef _DEBUG
+#ifdef ENABLE_GPU_OBJECT_NAMES
     std::string name;
 #endif
   };
@@ -141,11 +150,9 @@ private:
   std::vector<Texture> m_textures;
   std::vector<SourceOption> m_source_options;
   u32 m_uniforms_size = 0;
-  bool m_valid = false;
-  bool m_wants_depth_buffer = false;
 
-  Common::Timer m_frame_timer;
   u32 m_frame_count = 0;
+  Timer m_frame_timer;
 
   // Specifically using a fixed seed, so that it's consistent from run-to-run.
   std::mt19937 m_random{0x1337};

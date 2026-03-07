@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
-#include <QtWidgets/QWidget>
+
 #include "ui_achievementsettingswidget.h"
+
+#include <QtWidgets/QWidget>
 
 class SettingsWindow;
 
@@ -15,17 +17,18 @@ public:
   explicit AchievementSettingsWidget(SettingsWindow* dialog, QWidget* parent);
   ~AchievementSettingsWidget();
 
-private Q_SLOTS:
+private:
+  void setupAdditionalUi();
+
+  void updateLoginState();
+
   void updateEnableState();
   void onHardcoreModeStateChanged();
   void onAchievementsNotificationDurationSliderChanged();
   void onLeaderboardsNotificationDurationSliderChanged();
   void onLoginLogoutPressed();
+  void onLoginCompleted();
   void onViewProfilePressed();
-  void onAchievementsRefreshed(quint32 id, const QString& game_info_string);
-
-private:
-  void updateLoginState();
 
   Ui::AchievementSettingsWidget m_ui;
 

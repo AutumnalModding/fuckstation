@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "audio_stream.h"
@@ -7,28 +7,30 @@
 #include "common/error.h"
 #include "common/log.h"
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 
-LOG_CHANNEL(SDLAudioStream);
+LOG_CHANNEL(AudioStream);
 
 namespace {
+
 class SDLAudioStream final : public AudioStream
 {
 public:
-  SDLAudioStream(u32 sample_rate, const AudioStreamParameters& parameters);
-  ~SDLAudioStream();
+  SDLAudioStream(AudioStreamSource* source, u32 channels);
+  ~SDLAudioStream() override;
 
-  void SetPaused(bool paused) override;
+  bool Initialize(u32 sample_rate, u32 channels, u32 output_latency_frames, bool output_latency_minimal,
+                  bool auto_start, Error* error);
 
-  bool OpenDevice(Error* error);
-  void CloseDevice();
+  bool Start(Error* error) override;
+  bool Stop(Error* error) override;
 
 protected:
-  ALWAYS_INLINE bool IsOpen() const { return (m_device_id != 0); }
+  static void AudioCallback(void* userdata, SDL_AudioStream* stream, int additional_amount, int total_amount);
 
-  static void AudioCallback(void* userdata, uint8_t* stream, int len);
-
-  u32 m_device_id = 0;
+  AudioStreamSource* m_source;
+  SDL_AudioStream* m_sdl_stream = nullptr;
+  u32 m_channels;
 };
 } // namespace
 
@@ -39,7 +41,7 @@ static bool InitializeSDLAudio(Error* error)
     return true;
 
   // May as well keep it alive until the process exits.
-  if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0)
+  if (!SDL_InitSubSystem(SDL_INIT_AUDIO))
   {
     Error::SetStringFmt(error, "SDL_InitSubSystem(SDL_INIT_AUDIO) failed: {}", SDL_GetError());
     return false;
@@ -51,78 +53,86 @@ static bool InitializeSDLAudio(Error* error)
   return true;
 }
 
-SDLAudioStream::SDLAudioStream(u32 sample_rate, const AudioStreamParameters& parameters)
-  : AudioStream(sample_rate, parameters)
+SDLAudioStream::SDLAudioStream(AudioStreamSource* source, u32 channels) : m_source(source), m_channels(channels)
 {
 }
 
 SDLAudioStream::~SDLAudioStream()
 {
-  if (IsOpen())
-    SDLAudioStream::CloseDevice();
-}
-
-std::unique_ptr<AudioStream> AudioStream::CreateSDLAudioStream(u32 sample_rate, const AudioStreamParameters& parameters,
-                                                               Error* error)
-{
-  if (!InitializeSDLAudio(error))
-    return {};
-
-  std::unique_ptr<SDLAudioStream> stream = std::make_unique<SDLAudioStream>(sample_rate, parameters);
-  if (!stream->OpenDevice(error))
-    stream.reset();
-
-  return stream;
-}
-
-bool SDLAudioStream::OpenDevice(Error* error)
-{
-  DebugAssert(!IsOpen());
-
-  SDL_AudioSpec spec = {};
-  spec.freq = m_sample_rate;
-  spec.channels = NUM_CHANNELS;
-  spec.format = AUDIO_S16;
-  spec.samples = static_cast<Uint16>(GetBufferSizeForMS(
-    m_sample_rate, (m_parameters.output_latency_ms == 0) ? m_parameters.buffer_ms : m_parameters.output_latency_ms));
-  spec.callback = AudioCallback;
-  spec.userdata = static_cast<void*>(this);
-
-  SDL_AudioSpec obtained_spec = {};
-  m_device_id = SDL_OpenAudioDevice(nullptr, 0, &spec, &obtained_spec, SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
-  if (m_device_id == 0)
+  if (m_sdl_stream)
   {
-    Error::SetStringFmt(error, "SDL_OpenAudioDevice() failed: {}", SDL_GetError());
+    SDL_DestroyAudioStream(m_sdl_stream);
+    m_sdl_stream = nullptr;
+  }
+}
+
+bool SDLAudioStream::Initialize(u32 sample_rate, u32 channels, u32 output_latency_frames, bool output_latency_minimal,
+                                bool auto_start, Error* error)
+{
+  const SDL_AudioSpec spec = {
+    .format = SDL_AUDIO_S16LE, .channels = static_cast<int>(channels), .freq = static_cast<int>(sample_rate)};
+
+  m_sdl_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, AudioCallback, this);
+  if (!m_sdl_stream)
+  {
+    Error::SetStringFmt(error, "SDL_OpenAudioDeviceStream() failed: {}", SDL_GetError());
     return false;
   }
 
-  DEV_LOG("Requested {} frame buffer, got {} frame buffer", spec.samples, obtained_spec.samples);
-
-  BaseInitialize();
-  SDL_PauseAudioDevice(m_device_id, 0);
+  if (auto_start)
+    SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(m_sdl_stream));
 
   return true;
 }
 
-void SDLAudioStream::SetPaused(bool paused)
+bool SDLAudioStream::Start(Error* error)
 {
-  if (m_paused == paused)
+  if (!SDL_ResumeAudioStreamDevice(m_sdl_stream))
+  {
+    Error::SetStringFmt(error, "SDL_ResumeAudioStreamDevice() failed: {}", SDL_GetError());
+    return false;
+  }
+
+  return true;
+}
+
+bool SDLAudioStream::Stop(Error* error)
+{
+  if (!SDL_PauseAudioStreamDevice(m_sdl_stream))
+  {
+    Error::SetStringFmt(error, "SDL_PauseAudioStreamDevice() failed: {}", SDL_GetError());
+    return false;
+  }
+
+  return true;
+}
+
+void SDLAudioStream::AudioCallback(void* userdata, SDL_AudioStream* stream, int additional_amount, int total_amount)
+{
+  if (additional_amount == 0)
     return;
 
-  SDL_PauseAudioDevice(m_device_id, paused ? 1 : 0);
-  m_paused = paused;
+  u8* data = SDL_stack_alloc(u8, additional_amount);
+  if (data)
+  {
+    SDLAudioStream* const this_ptr = static_cast<SDLAudioStream*>(userdata);
+    const u32 num_frames = static_cast<u32>(additional_amount) / (sizeof(SampleType) * this_ptr->m_channels);
+    this_ptr->m_source->ReadFrames(reinterpret_cast<SampleType*>(data), num_frames);
+    SDL_PutAudioStreamData(stream, data, additional_amount);
+    SDL_stack_free(data);
+  }
 }
 
-void SDLAudioStream::CloseDevice()
+std::unique_ptr<AudioStream> AudioStream::CreateSDLAudioStream(u32 sample_rate, u32 channels, u32 output_latency_frames,
+                                                               bool output_latency_minimal, AudioStreamSource* source,
+                                                               bool auto_start, Error* error)
 {
-  SDL_CloseAudioDevice(m_device_id);
-  m_device_id = 0;
-}
+  if (!InitializeSDLAudio(error))
+    return {};
 
-void SDLAudioStream::AudioCallback(void* userdata, uint8_t* stream, int len)
-{
-  SDLAudioStream* const this_ptr = static_cast<SDLAudioStream*>(userdata);
-  const u32 num_frames = len / sizeof(SampleType) / NUM_CHANNELS;
+  std::unique_ptr<SDLAudioStream> stream = std::make_unique<SDLAudioStream>(source, channels);
+  if (!stream->Initialize(sample_rate, channels, output_latency_frames, output_latency_minimal, auto_start, error))
+    stream.reset();
 
-  this_ptr->ReadFrames(reinterpret_cast<SampleType*>(stream), num_frames);
+  return stream;
 }

@@ -1,11 +1,9 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
 #include "common/bitfield.h"
-#include "common/bitutils.h"
-#include "common/progress_callback.h"
 #include "common/types.h"
 
 #include <array>
@@ -15,6 +13,7 @@
 #include <vector>
 
 class Error;
+class ProgressCallback;
 
 class CDImage
 {
@@ -32,24 +31,20 @@ public:
     SECTOR_HEADER_SIZE = 4,
     MODE1_HEADER_SIZE = 4,
     MODE2_HEADER_SIZE = 12,
-    FRAMES_PER_SECOND = 75, // "sectors", or "timecode frames" (not "channel frames")
+    MODE2_DATA_SECTOR_SIZE = 2336, // header + edc
+    FRAMES_PER_SECOND = 75,        // "sectors", or "timecode frames" (not "channel frames")
     SECONDS_PER_MINUTE = 60,
     FRAMES_PER_MINUTE = FRAMES_PER_SECOND * SECONDS_PER_MINUTE,
     SUBCHANNEL_BYTES_PER_FRAME = 12,
     LEAD_OUT_SECTOR_COUNT = 6750,
     ALL_SUBCODE_SIZE = 96,
+    AUDIO_SAMPLE_RATE = 44100,
+    AUDIO_CHANNELS = 2,
   };
 
   enum : u8
   {
     LEAD_OUT_TRACK_NUMBER = 0xAA
-  };
-
-  enum class ReadMode : u8
-  {
-    DataOnly,  // 2048 bytes per sector.
-    RawSector, // 2352 bytes per sector.
-    RawNoSync, // 2340 bytes per sector.
   };
 
   enum class TrackMode : u8
@@ -92,55 +87,21 @@ public:
     u8 second;
     u8 frame;
 
-    static constexpr Position FromBCD(u8 minute, u8 second, u8 frame)
-    {
-      return Position{PackedBCDToBinary(minute), PackedBCDToBinary(second), PackedBCDToBinary(frame)};
-    }
+    static Position FromBCD(u8 minute, u8 second, u8 frame);
+    static Position FromLBA(LBA lba);
 
-    static constexpr Position FromLBA(LBA lba)
-    {
-      const u8 frame = Truncate8(lba % FRAMES_PER_SECOND);
-      lba /= FRAMES_PER_SECOND;
+    LBA ToLBA() const;
+    std::tuple<u8, u8, u8> ToBCD() const;
 
-      const u8 second = Truncate8(lba % SECONDS_PER_MINUTE);
-      lba /= SECONDS_PER_MINUTE;
+    Position operator+(const Position& rhs);
+    Position& operator+=(const Position& pos);
 
-      const u8 minute = Truncate8(lba);
-
-      return Position{minute, second, frame};
-    }
-
-    LBA ToLBA() const
-    {
-      return ZeroExtend32(minute) * FRAMES_PER_MINUTE + ZeroExtend32(second) * FRAMES_PER_SECOND + ZeroExtend32(frame);
-    }
-
-    constexpr std::tuple<u8, u8, u8> ToBCD() const
-    {
-      return std::make_tuple<u8, u8, u8>(BinaryToBCD(minute), BinaryToBCD(second), BinaryToBCD(frame));
-    }
-
-    Position operator+(const Position& rhs) { return FromLBA(ToLBA() + rhs.ToLBA()); }
-    Position& operator+=(const Position& pos)
-    {
-      *this = *this + pos;
-      return *this;
-    }
-
-#define RELATIONAL_OPERATOR(op)                                                                                        \
-  bool operator op(const Position& rhs) const                                                                          \
-  {                                                                                                                    \
-    return std::tie(minute, second, frame) op std::tie(rhs.minute, rhs.second, rhs.frame);                             \
-  }
-
-    RELATIONAL_OPERATOR(==);
-    RELATIONAL_OPERATOR(!=);
-    RELATIONAL_OPERATOR(<);
-    RELATIONAL_OPERATOR(<=);
-    RELATIONAL_OPERATOR(>);
-    RELATIONAL_OPERATOR(>=);
-
-#undef RELATIONAL_OPERATOR
+    bool operator==(const Position& rhs) const;
+    bool operator!=(const Position& rhs) const;
+    bool operator<(const Position& rhs) const;
+    bool operator<=(const Position& rhs) const;
+    bool operator>(const Position& rhs) const;
+    bool operator>=(const Position& rhs) const;
   };
 
   union SubChannelQ
@@ -160,14 +121,6 @@ public:
       Control() = default;
 
       Control(u8 bits_) : bits(bits_) {}
-
-      Control(const Control& rhs) : bits(rhs.bits) {}
-
-      Control& operator=(const Control& rhs)
-      {
-        bits = rhs.bits;
-        return *this;
-      }
     };
 
     struct
@@ -193,16 +146,6 @@ public:
     bool IsData() const { return GetControl().data; }
 
     bool IsCRCValid() const;
-
-    SubChannelQ() = default;
-
-    SubChannelQ(const SubChannelQ& q) : data(q.data) {}
-
-    SubChannelQ& operator=(const SubChannelQ& q)
-    {
-      data = q.data;
-      return *this;
-    }
   };
   static_assert(sizeof(SubChannelQ) == SUBCHANNEL_BYTES_PER_FRAME, "SubChannelQ is correct size");
 
@@ -243,23 +186,25 @@ public:
   /// Returns true if the specified filename is a CD-ROM device name.
   static bool IsDeviceName(const char* filename);
 
+  /// Returns true if an overlayable patch file exists for the specified image path.
+  static bool HasOverlayablePatch(const char* path);
+
   // Opening disc image.
-  static std::unique_ptr<CDImage> Open(const char* filename, bool allow_patches, Error* error);
-  static std::unique_ptr<CDImage> OpenBinImage(const char* filename, Error* error);
-  static std::unique_ptr<CDImage> OpenCueSheetImage(const char* filename, Error* error);
-  static std::unique_ptr<CDImage> OpenCHDImage(const char* filename, Error* error);
-  static std::unique_ptr<CDImage> OpenEcmImage(const char* filename, Error* error);
-  static std::unique_ptr<CDImage> OpenMdsImage(const char* filename, Error* error);
-  static std::unique_ptr<CDImage> OpenPBPImage(const char* filename, Error* error);
-  static std::unique_ptr<CDImage> OpenM3uImage(const char* filename, bool apply_patches, Error* error);
-  static std::unique_ptr<CDImage> OpenDeviceImage(const char* filename, Error* error);
-  static std::unique_ptr<CDImage>
-  CreateMemoryImage(CDImage* image, ProgressCallback* progress = ProgressCallback::NullProgressCallback);
-  static std::unique_ptr<CDImage> OverlayPPFPatch(const char* filename, std::unique_ptr<CDImage> parent_image,
-                                                  ProgressCallback* progress = ProgressCallback::NullProgressCallback);
+  static std::unique_ptr<CDImage> Open(const char* path, bool allow_patches, Error* error);
+  static std::unique_ptr<CDImage> OpenBinImage(const char* path, Error* error);
+  static std::unique_ptr<CDImage> OpenCueSheetImage(const char* path, Error* error);
+  static std::unique_ptr<CDImage> OpenCHDImage(const char* path, Error* error);
+  static std::unique_ptr<CDImage> OpenMdsImage(const char* path, Error* error);
+  static std::unique_ptr<CDImage> OpenPBPImage(const char* path, Error* error);
+  static std::unique_ptr<CDImage> OpenCCDImage(const char* path, Error* error);
+  static std::unique_ptr<CDImage> OpenM3uImage(const char* path, bool apply_patches, Error* error);
+  static std::unique_ptr<CDImage> OpenDeviceImage(const char* path, Error* error);
+  static std::unique_ptr<CDImage> CreateMemoryImage(CDImage* image, ProgressCallback* progress, Error* error);
+  static std::unique_ptr<CDImage> OverlayPPFPatch(const char* path, std::unique_ptr<CDImage> parent_image,
+                                                  Error* error);
 
   // Accessors.
-  const std::string& GetFileName() const { return m_filename; }
+  const std::string& GetPath() const { return m_filename; }
   LBA GetPositionOnDisc() const { return m_position_on_disc; }
   Position GetMSFPositionOnDisc() const { return Position::FromLBA(m_position_on_disc); }
   LBA GetPositionInTrack() const { return m_position_in_track; }
@@ -295,23 +240,23 @@ public:
   // Seek to track and LBA.
   bool Seek(u32 track_number, LBA lba);
 
-  // Read from the current LBA. Returns the number of sectors read.
-  u32 Read(ReadMode read_mode, u32 sector_count, void* buffer);
-
   // Read a single raw sector, and subchannel from the current LBA.
   bool ReadRawSector(void* buffer, SubChannelQ* subq);
+
+  /// Generates sub-channel Q given the specified position.
+  bool GenerateSubChannelQ(SubChannelQ* subq, LBA lba) const;
+
+  /// Generates sub-channel Q from the given index and index-offset.
+  void GenerateSubChannelQ(SubChannelQ* subq, const Index& index, u32 index_offset) const;
 
   // Reads sub-channel Q for the specified index+LBA.
   virtual bool ReadSubChannelQ(SubChannelQ* subq, const Index& index, LBA lba_in_index);
 
   // Returns true if the image has replacement subchannel data.
-  virtual bool HasNonStandardSubchannel() const;
+  virtual bool HasSubchannelData() const;
 
   // Reads a single sector from an index.
   virtual bool ReadSectorFromIndex(void* buffer, const Index& index, LBA lba_in_index) = 0;
-
-  // Retrieve image metadata.
-  virtual std::string GetMetadata(std::string_view type) const;
 
   // Returns true if this image type has sub-images (e.g. m3u).
   virtual bool HasSubImages() const;
@@ -326,10 +271,10 @@ public:
   virtual bool SwitchSubImage(u32 index, Error* error);
 
   // Retrieve sub-image metadata.
-  virtual std::string GetSubImageMetadata(u32 index, std::string_view type) const;
+  virtual std::string GetSubImageTitle(u32 index) const;
 
   // Returns true if the source supports precaching, which may be more optimal than an in-memory copy.
-  virtual PrecacheResult Precache(ProgressCallback* progress = ProgressCallback::NullProgressCallback);
+  virtual PrecacheResult Precache(ProgressCallback* progress, Error* error);
   virtual bool IsPrecached() const;
 
   // Returns the size on disk of the image. This could be multiple files.
@@ -340,14 +285,8 @@ protected:
   void ClearTOC();
   void CopyTOC(const CDImage* image);
 
-  const Index* GetIndexForDiscPosition(LBA pos);
-  const Index* GetIndexForTrackPosition(u32 track_number, LBA track_pos);
-
-  /// Generates sub-channel Q given the specified position.
-  bool GenerateSubChannelQ(SubChannelQ* subq, LBA lba);
-
-  /// Generates sub-channel Q from the given index and index-offset.
-  void GenerateSubChannelQ(SubChannelQ* subq, const Index& index, u32 index_offset);
+  const Index* GetIndexForDiscPosition(LBA pos) const;
+  const Index* GetIndexForTrackPosition(u32 track_number, LBA track_pos) const;
 
   /// Synthesis of lead-out data.
   void AddLeadOutIndex();

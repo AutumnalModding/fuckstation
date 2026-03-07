@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "selectdiscdialog.h"
@@ -11,10 +11,15 @@
 
 #include <QtWidgets/QTreeWidget>
 
-SelectDiscDialog::SelectDiscDialog(const std::string& disc_set_name, QWidget* parent /* = nullptr */) : QDialog(parent)
+#include "moc_selectdiscdialog.cpp"
+
+SelectDiscDialog::SelectDiscDialog(const GameDatabase::DiscSetEntry* dsentry, bool localized_titles,
+                                   QWidget* parent /* = nullptr */)
+  : QDialog(parent)
 {
   m_ui.setupUi(this);
-  populateList(disc_set_name);
+  QtUtils::SetColumnWidthsForTreeView(m_ui.discList, {50, -1, 100});
+  populateList(dsentry, localized_titles);
   updateStartEnabled();
 
   connect(m_ui.select, &QPushButton::clicked, this, &SelectDiscDialog::onSelectClicked);
@@ -25,20 +30,13 @@ SelectDiscDialog::SelectDiscDialog(const std::string& disc_set_name, QWidget* pa
 
 SelectDiscDialog::~SelectDiscDialog() = default;
 
-void SelectDiscDialog::resizeEvent(QResizeEvent* ev)
-{
-  QDialog::resizeEvent(ev);
-
-  QtUtils::ResizeColumnsForTreeView(m_ui.discList, {50, -1, 100});
-}
-
 void SelectDiscDialog::onListItemActivated(const QTreeWidgetItem* item)
 {
   if (!item)
     return;
 
   m_selected_path = item->data(0, Qt::UserRole).toString().toStdString();
-  done(1);
+  accept();
 }
 
 void SelectDiscDialog::updateStartEnabled()
@@ -53,18 +51,18 @@ void SelectDiscDialog::updateStartEnabled()
 
 void SelectDiscDialog::onSelectClicked()
 {
-  done(1);
+  accept();
 }
 
 void SelectDiscDialog::onCancelClicked()
 {
-  done(0);
+  reject();
 }
 
-void SelectDiscDialog::populateList(const std::string& disc_set_name)
+void SelectDiscDialog::populateList(const GameDatabase::DiscSetEntry* dsentry, bool localized_titles)
 {
   const auto lock = GameList::GetLock();
-  const std::vector<const GameList::Entry*> entries = GameList::GetDiscSetMembers(disc_set_name);
+  const std::vector<const GameList::Entry*> entries = GameList::GetDiscSetMembers(dsentry, localized_titles);
   const GameList::Entry* last_played_entry = nullptr;
 
   for (const GameList::Entry* entry : entries)
@@ -85,5 +83,8 @@ void SelectDiscDialog::populateList(const std::string& disc_set_name)
     }
   }
 
-  setWindowTitle(tr("Select Disc for %1").arg(QString::fromStdString(disc_set_name)));
+  const GameList::Entry* dsgentry = GameList::GetEntryForPath(dsentry->GetSaveTitle());
+  setWindowTitle(tr("Select Disc for %1")
+                   .arg(QtUtils::StringViewToQString(dsgentry ? dsgentry->GetDisplayTitle(localized_titles) :
+                                                                dsentry->GetDisplayTitle(localized_titles))));
 }

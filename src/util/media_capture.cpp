@@ -3,7 +3,7 @@
 
 #include "media_capture.h"
 #include "gpu_device.h"
-#include "host.h"
+#include "translation.h"
 
 #include "common/align.h"
 #include "common/assert.h"
@@ -16,7 +16,7 @@
 #include "common/string_util.h"
 #include "common/threading.h"
 
-#include "IconsFontAwesome5.h"
+#include "IconsFontAwesome.h"
 #include "fmt/format.h"
 
 #include <algorithm>
@@ -55,7 +55,9 @@ extern "C" {
 #include "libavformat/avformat.h"
 #include "libavformat/version.h"
 #include "libavutil/dict.h"
+#include "libavutil/ffversion.h"
 #include "libavutil/opt.h"
+#include "libavutil/pixdesc.h"
 #include "libavutil/version.h"
 #include "libswresample/swresample.h"
 #include "libswresample/version.h"
@@ -85,7 +87,7 @@ public:
 
   virtual ~MediaCaptureBase() override;
 
-  bool BeginCapture(float fps, float aspect, u32 width, u32 height, GPUTexture::Format texture_format, u32 sample_rate,
+  bool BeginCapture(float fps, float aspect, u32 width, u32 height, GPUTextureFormat texture_format, u32 sample_rate,
                     std::string path, bool capture_video, std::string_view video_codec, u32 video_bitrate,
                     std::string_view video_codec_args, bool capture_audio, std::string_view audio_codec,
                     u32 audio_bitrate, std::string_view audio_codec_args, Error* error) override final;
@@ -148,7 +150,7 @@ protected:
   std::atomic_bool m_capturing{false};
   std::atomic_bool m_encoding_error{false};
 
-  GPUTexture::Format m_video_render_texture_format = GPUTexture::Format::Unknown;
+  GPUTextureFormat m_video_render_texture_format = GPUTextureFormat::Unknown;
   u32 m_video_width = 0;
   u32 m_video_height = 0;
   float m_video_fps = 0;
@@ -184,7 +186,7 @@ protected:
 
 MediaCaptureBase::~MediaCaptureBase() = default;
 
-bool MediaCaptureBase::BeginCapture(float fps, float aspect, u32 width, u32 height, GPUTexture::Format texture_format,
+bool MediaCaptureBase::BeginCapture(float fps, float aspect, u32 width, u32 height, GPUTextureFormat texture_format,
                                     u32 sample_rate, std::string path, bool capture_video, std::string_view video_codec,
                                     u32 video_bitrate, std::string_view video_codec_args, bool capture_audio,
                                     std::string_view audio_codec, u32 audio_bitrate, std::string_view audio_codec_args,
@@ -200,9 +202,7 @@ bool MediaCaptureBase::BeginCapture(float fps, float aspect, u32 width, u32 heig
     Error::SetStringView(error, "No path specified.");
     return false;
   }
-  else if (capture_video &&
-           (fps == 0.0f || m_video_width == 0 || !Common::IsAlignedPow2(m_video_width, VIDEO_WIDTH_ALIGNMENT) ||
-            m_video_height == 0 || !Common::IsAlignedPow2(m_video_height, VIDEO_HEIGHT_ALIGNMENT)))
+  else if (capture_video && (fps == 0.0f || m_video_width == 0 || m_video_height == 0))
   {
     Error::SetStringView(error, "Invalid video dimensions/rate.");
     return false;
@@ -244,7 +244,7 @@ GPUTexture* MediaCaptureBase::GetRenderTexture()
     return m_render_texture.get();
 
   m_render_texture = g_gpu_device->CreateTexture(m_video_width, m_video_height, 1, 1, 1, GPUTexture::Type::RenderTarget,
-                                                 m_video_render_texture_format);
+                                                 m_video_render_texture_format, GPUTexture::Flags::None);
   if (!m_render_texture) [[unlikely]]
   {
     ERROR_LOG("Failed to create {}x{} render texture.", m_video_width, m_video_height);
@@ -256,7 +256,7 @@ GPUTexture* MediaCaptureBase::GetRenderTexture()
 
 bool MediaCaptureBase::DeliverVideoFrame(GPUTexture* stex)
 {
-  std::unique_lock<std::mutex> lock(m_lock);
+  std::unique_lock lock(m_lock);
 
   // If the encoder thread reported an error, stop the capture.
   if (m_encoding_error.load(std::memory_order_acquire))
@@ -285,9 +285,7 @@ bool MediaCaptureBase::DeliverVideoFrame(GPUTexture* stex)
       return false;
     }
 
-#ifdef _DEBUG
-    GL_OBJECT_NAME_FMT(pf.tex, "GSCapture {}x{} Download Texture", stex->GetWidth(), stex->GetHeight());
-#endif
+    GL_OBJECT_NAME_FMT(pf.tex, "MediaCapture {}x{} Download Texture", stex->GetWidth(), stex->GetHeight());
   }
 
   pf.tex->CopyFromTexture(0, 0, stex, 0, 0, m_video_width, m_video_height, 0, 0);
@@ -333,7 +331,7 @@ void MediaCaptureBase::EncoderThreadEntryPoint()
   Threading::SetNameOfCurrentThread("Media Capture Encoding");
 
   Error error;
-  std::unique_lock<std::mutex> lock(m_lock);
+  std::unique_lock lock(m_lock);
 
   for (;;)
   {
@@ -420,7 +418,7 @@ bool MediaCaptureBase::DeliverAudioFrames(const s16* frames, u32 num_frames)
   if ((audio_buffer_size - m_audio_buffer_size.load(std::memory_order_acquire)) < num_frames)
   {
     // Need to wait for it to drain a bit.
-    std::unique_lock<std::mutex> lock(m_lock);
+    std::unique_lock lock(m_lock);
     m_frame_encoded_cv.wait(lock, [this, &num_frames, &audio_buffer_size]() {
       return (!m_capturing.load(std::memory_order_acquire) ||
               ((audio_buffer_size - m_audio_buffer_size.load(std::memory_order_acquire)) >= num_frames));
@@ -444,7 +442,7 @@ bool MediaCaptureBase::DeliverAudioFrames(const s16* frames, u32 num_frames)
   if (!IsCapturingVideo() && buffer_size >= m_audio_frame_size)
   {
     // If we're not capturing video, push "frames" when we hit the audio packet size.
-    std::unique_lock<std::mutex> lock(m_lock);
+    std::unique_lock lock(m_lock);
     if (!m_capturing.load(std::memory_order_acquire))
       return false;
 
@@ -496,7 +494,7 @@ void MediaCaptureBase::ClearState()
 
 bool MediaCaptureBase::EndCapture(Error* error)
 {
-  std::unique_lock<std::mutex> lock(m_lock);
+  std::unique_lock lock(m_lock);
   if (!InternalEndCapture(lock, error))
   {
     DeleteOutputFile();
@@ -577,7 +575,7 @@ void MediaCaptureBase::UpdateCaptureThreadUsage(double pct_divider, double time_
 
 void MediaCaptureBase::Flush()
 {
-  std::unique_lock<std::mutex> lock(m_lock);
+  std::unique_lock lock(m_lock);
 
   if (m_encoding_error)
     return;
@@ -634,7 +632,6 @@ class MediaCaptureMF final : public MediaCaptureBase
   template<class T>
   using ComPtr = Microsoft::WRL::ComPtr<T>;
 
-  static constexpr u32 FRAME_RATE_NUMERATOR = 10 * 1000 * 1000;
   static constexpr DWORD INVALID_STREAM_INDEX = std::numeric_limits<DWORD>::max();
   static constexpr u32 AUDIO_BITS_PER_SAMPLE = sizeof(s16) * 8;
 
@@ -672,19 +669,17 @@ private:
     // Both of these use truncation, not rounding, so that the next sample lines up.
     return static_cast<LONGLONG>(static_cast<double>(pts) * duration);
   }
-  static constexpr LONGLONG ConvertFramesToDuration(u32 frames, double duration)
-  {
-    return static_cast<LONGLONG>(static_cast<double>(frames) * duration);
-  }
   static constexpr time_t ConvertPTSToSeconds(s64 pts, double duration)
   {
     return static_cast<time_t>((static_cast<double>(pts) * duration) / 1e+7);
   }
 
-  ComPtr<IMFTransform> CreateVideoYUVTransform(ComPtr<IMFMediaType>* output_type, float fps, Error* error);
-  ComPtr<IMFTransform> CreateVideoEncodeTransform(std::string_view codec, float fps, u32 bitrate,
-                                                  IMFMediaType* input_type, ComPtr<IMFMediaType>* output_type,
-                                                  bool* use_async_transform, Error* error);
+  ComPtr<IMFTransform> CreateVideoYUVTransform(ComPtr<IMFMediaType>* output_type, u32 frame_rate_numerator,
+                                               u32 frame_rate_denominator, Error* error);
+  ComPtr<IMFTransform> CreateVideoEncodeTransform(std::string_view codec, u32 frame_rate_numerator,
+                                                  u32 frame_rate_denominator, u32 bitrate, IMFMediaType* input_type,
+                                                  ComPtr<IMFMediaType>* output_type, bool* use_async_transform,
+                                                  Error* error);
   bool GetAudioTypes(std::string_view codec, ComPtr<IMFMediaType>* input_type, ComPtr<IMFMediaType>* output_type,
                      u32 sample_rate, u32 bitrate, Error* error);
   void ConvertVideoFrame(u8* dst, size_t dst_stride, const u8* src, size_t src_stride, u32 width, u32 height) const;
@@ -742,8 +737,6 @@ struct MediaFoundationAudioCodec
 static constexpr const MediaFoundationVideoCodec s_media_foundation_video_codecs[] = {
   {"h264", "H.264 with Software Encoding", MFVideoFormat_H264, false},
   {"h264_hw", "H.264 with Hardware Encoding", MFVideoFormat_H264, true},
-  {"h265", "H.265 with Software Encoding", MFVideoFormat_H265, false},
-  {"h265_hw", "H.265 with Hardware Encoding", MFVideoFormat_H265, true},
   {"hevc", "HEVC with Software Encoding", MFVideoFormat_HEVC, false},
   {"hevc_hw", "HEVC with Hardware Encoding", MFVideoFormat_HEVC, true},
   {"vp9", "VP9 with Software Encoding", MFVideoFormat_VP90, false},
@@ -886,12 +879,18 @@ bool MediaCaptureMF::InternalBeginCapture(float fps, float aspect, u32 sample_ra
 
   if (capture_video)
   {
+    static constexpr u32 FRAME_RATE_DENOMERATOR = 10 * 1000 * 1000;
+    const u32 frame_rate_numerator =
+      static_cast<u32>(static_cast<double>(fps) * static_cast<double>(FRAME_RATE_DENOMERATOR));
+
     m_video_sample_duration = ConvertFrequencyToMFDurationUnits(fps);
 
     ComPtr<IMFMediaType> yuv_media_type;
-    if (!(m_video_yuv_transform = CreateVideoYUVTransform(&yuv_media_type, fps, error)) ||
-        !(m_video_encode_transform = CreateVideoEncodeTransform(video_codec, fps, video_bitrate, yuv_media_type.Get(),
-                                                                &video_media_type, &use_async_video_transform, error)))
+    if (!(m_video_yuv_transform =
+            CreateVideoYUVTransform(&yuv_media_type, frame_rate_numerator, FRAME_RATE_DENOMERATOR, error)) ||
+        !(m_video_encode_transform =
+            CreateVideoEncodeTransform(video_codec, frame_rate_numerator, FRAME_RATE_DENOMERATOR, video_bitrate,
+                                       yuv_media_type.Get(), &video_media_type, &use_async_video_transform, error)))
     {
       return false;
     }
@@ -998,7 +997,8 @@ bool MediaCaptureMF::InternalEndCapture(std::unique_lock<std::mutex>& lock, Erro
 }
 
 MediaCaptureMF::ComPtr<IMFTransform> MediaCaptureMF::CreateVideoYUVTransform(ComPtr<IMFMediaType>* output_type,
-                                                                             float fps, Error* error)
+                                                                             u32 frame_rate_numerator,
+                                                                             u32 frame_rate_denominator, Error* error)
 {
   const MFT_REGISTER_TYPE_INFO input_type_info = {.guidMajorType = MFMediaType_Video,
                                                   .guidSubtype = VIDEO_RGB_MEDIA_FORMAT};
@@ -1042,14 +1042,14 @@ MediaCaptureMF::ComPtr<IMFTransform> MediaCaptureMF::CreateVideoYUVTransform(Com
       FAILED(hr = input_type->SetGUID(MF_MT_SUBTYPE, VIDEO_RGB_MEDIA_FORMAT)) ||
       FAILED(hr = input_type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive)) ||
       FAILED(hr = MFSetAttributeSize(input_type.Get(), MF_MT_FRAME_SIZE, m_video_width, m_video_height)) ||
+      FAILED(hr =
+               MFSetAttributeRatio(input_type.Get(), MF_MT_FRAME_RATE, frame_rate_numerator, frame_rate_denominator)) ||
       FAILED(hr = (*output_type)->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video)) ||
       FAILED(hr = (*output_type)->SetGUID(MF_MT_SUBTYPE, VIDEO_YUV_MEDIA_FORMAT)) ||
       FAILED(hr = (*output_type)->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive)) ||
       FAILED(hr = MFSetAttributeSize(output_type->Get(), MF_MT_FRAME_SIZE, m_video_width, m_video_height)) ||
-      FAILED(hr = MFSetAttributeRatio(
-               output_type->Get(), MF_MT_FRAME_RATE,
-               static_cast<UINT32>(static_cast<double>(fps) * static_cast<double>(FRAME_RATE_NUMERATOR)),
-               FRAME_RATE_NUMERATOR))) [[unlikely]]
+      FAILED(hr = MFSetAttributeRatio(output_type->Get(), MF_MT_FRAME_RATE, frame_rate_numerator,
+                                      frame_rate_denominator))) [[unlikely]]
   {
     Error::SetHResult(error, "YUV setting attributes failed: ", hr);
     return nullptr;
@@ -1070,10 +1070,10 @@ MediaCaptureMF::ComPtr<IMFTransform> MediaCaptureMF::CreateVideoYUVTransform(Com
   return transform;
 }
 
-MediaCaptureMF::ComPtr<IMFTransform> MediaCaptureMF::CreateVideoEncodeTransform(std::string_view codec, float fps,
-                                                                                u32 bitrate, IMFMediaType* input_type,
-                                                                                ComPtr<IMFMediaType>* output_type,
-                                                                                bool* use_async_transform, Error* error)
+MediaCaptureMF::ComPtr<IMFTransform>
+MediaCaptureMF::CreateVideoEncodeTransform(std::string_view codec, u32 frame_rate_numerator, u32 frame_rate_denominator,
+                                           u32 bitrate, IMFMediaType* input_type, ComPtr<IMFMediaType>* output_type,
+                                           bool* use_async_transform, Error* error)
 {
   const MFT_REGISTER_TYPE_INFO input_type_info = {.guidMajorType = MFMediaType_Video,
                                                   .guidSubtype = VIDEO_YUV_MEDIA_FORMAT};
@@ -1118,7 +1118,20 @@ MediaCaptureMF::ComPtr<IMFTransform> MediaCaptureMF::CreateVideoEncodeTransform(
   ComPtr<IMFTransform> transform;
   hr = transforms[0]->ActivateObject(IID_PPV_ARGS(transform.GetAddressOf()));
   if (transforms)
+  {
+    LPWSTR transform_name;
+    UINT32 transform_name_length;
+    if (SUCCEEDED(
+          transforms[0]->GetAllocatedString(MFT_FRIENDLY_NAME_Attribute, &transform_name, &transform_name_length)))
+    {
+      INFO_LOG("Video encoder name: {}",
+               StringUtil::WideStringToUTF8String(std::wstring_view(transform_name, transform_name_length)));
+      CoTaskMemFree(transform_name);
+    }
+
     wrap_MFHeapFree(transforms);
+  }
+
   if (FAILED(hr)) [[unlikely]]
   {
     Error::SetHResult(error, "Encoder ActivateObject() failed: ", hr);
@@ -1154,7 +1167,7 @@ MediaCaptureMF::ComPtr<IMFTransform> MediaCaptureMF::CreateVideoEncodeTransform(
   u32 profile = 0;
   if (output_type_info.guidSubtype == MFVideoFormat_H264)
     profile = eAVEncH264VProfile_Main;
-  else if (output_type_info.guidSubtype == MFVideoFormat_H265)
+  else if (output_type_info.guidSubtype == MFVideoFormat_HEVC)
     profile = eAVEncH265VProfile_Main_420_8;
   else if (output_type_info.guidSubtype == MFVideoFormat_VP90)
     profile = eAVEncVP9VProfile_420_8;
@@ -1165,10 +1178,8 @@ MediaCaptureMF::ComPtr<IMFTransform> MediaCaptureMF::CreateVideoEncodeTransform(
       FAILED(hr = (*output_type)->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive)) ||
       FAILED(hr = (*output_type)->SetUINT32(MF_MT_MPEG2_PROFILE, profile)) ||
       FAILED(hr = MFSetAttributeSize(output_type->Get(), MF_MT_FRAME_SIZE, m_video_width, m_video_height)) ||
-      FAILED(hr = MFSetAttributeRatio(
-               output_type->Get(), MF_MT_FRAME_RATE,
-               static_cast<UINT32>(static_cast<double>(fps) * static_cast<double>(FRAME_RATE_NUMERATOR)),
-               FRAME_RATE_NUMERATOR)) ||
+      FAILED(
+        hr = MFSetAttributeRatio(output_type->Get(), MF_MT_FRAME_RATE, frame_rate_numerator, frame_rate_denominator)) ||
       FAILED(hr = MFSetAttributeRatio(output_type->Get(), MF_MT_PIXEL_ASPECT_RATIO, par_numerator, par_denominator)))
     [[unlikely]]
   {
@@ -1219,7 +1230,7 @@ ALWAYS_INLINE_RELEASE void MediaCaptureMF::ConvertVideoFrame(u8* dst, size_t dst
     src_stride = static_cast<size_t>(-static_cast<std::make_signed_t<size_t>>(src_stride));
   }
 
-  if (m_video_render_texture_format == GPUTexture::Format::RGBA8)
+  if (m_video_render_texture_format == GPUTextureFormat::RGBA8)
   {
     // need to convert rgba -> bgra, as well as flipping vertically
     const u32 vector_width = 4;
@@ -1340,13 +1351,17 @@ bool MediaCaptureMF::SendFrame(const PendingFrame& pf, Error* error)
     return false;
   }
 
-  if (FAILED(hr = sample->SetSampleTime(ConvertPTSToTimestamp(pf.pts, m_video_sample_duration)))) [[unlikely]]
+  const LONGLONG sample_time = ConvertPTSToTimestamp(pf.pts, m_video_sample_duration);
+  const LONGLONG next_sample_time = ConvertPTSToTimestamp(pf.pts + 1, m_video_sample_duration);
+  const LONGLONG sample_duration = next_sample_time - sample_time;
+
+  if (FAILED(hr = sample->SetSampleTime(sample_time))) [[unlikely]]
   {
     Error::SetHResult(error, "SetSampleTime() failed: ", hr);
     return false;
   }
 
-  if (FAILED(hr = sample->SetSampleDuration(static_cast<LONGLONG>(m_video_sample_duration)))) [[unlikely]]
+  if (FAILED(hr = sample->SetSampleDuration(sample_duration))) [[unlikely]]
   {
     Error::SetHResult(error, "SetSampleDuration() failed: ", hr);
     return false;
@@ -1386,7 +1401,8 @@ bool MediaCaptureMF::SendFrame(const PendingFrame& pf, Error* error)
     }
 
     DWORD status;
-    MFT_OUTPUT_DATA_BUFFER yuv_buf = {.pSample = m_video_yuv_sample.Get()};
+    MFT_OUTPUT_DATA_BUFFER yuv_buf = {
+      .dwStreamID = 0, .pSample = m_video_yuv_sample.Get(), .dwStatus = 0, .pEvents = nullptr};
     hr = m_video_yuv_transform->ProcessOutput(0, 1, &yuv_buf, &status);
     if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT)
       break;
@@ -1453,7 +1469,8 @@ bool MediaCaptureMF::ProcessVideoOutputSamples(Error* error)
       }
     }
 
-    MFT_OUTPUT_DATA_BUFFER video_buf = {.pSample = m_video_output_sample.Get()};
+    MFT_OUTPUT_DATA_BUFFER video_buf = {
+      .dwStreamID = 0, .pSample = m_video_output_sample.Get(), .dwStatus = 0, .pEvents = nullptr};
     DWORD status;
     hr = m_video_encode_transform->ProcessOutput(0, 1, &video_buf, &status);
     if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT)
@@ -1524,21 +1541,6 @@ bool MediaCaptureMF::ProcessVideoEvents(Error* error)
       return false;
     }
 
-    UINT32 stream_id = 0;
-    if (type == METransformNeedInput || type == METransformHaveOutput)
-    {
-      if (FAILED(hr = event->GetUINT32(MF_EVENT_MFT_INPUT_STREAM_ID, &stream_id)))
-      {
-        Error::SetHResult(error, "Get stream ID failed: ", hr);
-        return false;
-      }
-      else if (stream_id != 0)
-      {
-        Error::SetStringFmt(error, "Unexpected stream ID {}", stream_id);
-        return false;
-      }
-    }
-
     switch (type)
     {
       case METransformNeedInput:
@@ -1570,7 +1572,8 @@ bool MediaCaptureMF::ProcessVideoEvents(Error* error)
           }
         }
 
-        MFT_OUTPUT_DATA_BUFFER video_buf = {.pSample = m_video_output_sample.Get()};
+        MFT_OUTPUT_DATA_BUFFER video_buf = {
+          .dwStreamID = 0, .pSample = m_video_output_sample.Get(), .dwStatus = 0, .pEvents = nullptr};
         DWORD status;
         if (FAILED(hr = m_video_encode_transform->ProcessOutput(0, 1, &video_buf, &status))) [[unlikely]]
         {
@@ -1653,6 +1656,7 @@ bool MediaCaptureMF::GetAudioTypes(std::string_view codec, ComPtr<IMFMediaType>*
   if (output_subtype == AUDIO_INPUT_MEDIA_FORMAT)
   {
     *output_type = std::move(*input_type);
+    *input_type = ComPtr<IMFMediaType>();
     return true;
   }
 
@@ -1760,15 +1764,17 @@ bool MediaCaptureMF::ProcessAudioPackets(s64 video_pts, Error* error)
       return false;
     }
 
-    if (FAILED(hr = sample->SetSampleTime(ConvertPTSToTimestamp(m_next_audio_pts, m_audio_sample_duration))))
-      [[unlikely]]
+    const LONGLONG sample_time = ConvertPTSToTimestamp(m_next_audio_pts, m_audio_sample_duration);
+    const LONGLONG next_sample_time = ConvertPTSToTimestamp(m_next_audio_pts + contig_frames, m_audio_sample_duration);
+    const LONGLONG sample_duration = next_sample_time - sample_time;
+
+    if (FAILED(hr = sample->SetSampleTime(sample_time))) [[unlikely]]
     {
       Error::SetHResult(error, "Audio SetSampleTime() failed: ", hr);
       return false;
     }
 
-    if (FAILED(hr = sample->SetSampleDuration(ConvertFramesToDuration(contig_frames, m_audio_sample_duration))))
-      [[unlikely]]
+    if (FAILED(hr = sample->SetSampleDuration(sample_duration))) [[unlikely]]
     {
       Error::SetHResult(error, "Audio SetSampleDuration() failed: ", hr);
       return false;
@@ -1796,23 +1802,16 @@ bool MediaCaptureMF::ProcessAudioPackets(s64 video_pts, Error* error)
 
 #ifndef __ANDROID__
 
-// We're using deprecated fields because we're targeting multiple ffmpeg versions.
-#if defined(_MSC_VER)
-#pragma warning(disable : 4996) // warning C4996: 'AVCodecContext::channels': was declared deprecated
-#elif defined(__clang__)
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#elif defined(__GNUC__)
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
-
-// Compatibility with both ffmpeg 4.x and 5.x.
-#if (LIBAVFORMAT_VERSION_MAJOR < 59)
-#define ff_const59
+// Symbols added in FFmpeg 7.1.
+#if (LIBAVCODEC_VERSION_MAJOR > 61 || LIBAVCODEC_VERSION_MINOR >= 19)
+#define AVCODEC_71_IMPORTS(X) X(avcodec_get_supported_config)
+#define HAS_AVCODEC_GET_SUPPORTED_CONFIG
 #else
-#define ff_const59 const
+#define AVCODEC_71_IMPORTS(X)
 #endif
 
 #define VISIT_AVCODEC_IMPORTS(X)                                                                                       \
+  AVCODEC_71_IMPORTS(X)                                                                                                \
   X(avcodec_find_encoder_by_name)                                                                                      \
   X(avcodec_find_encoder)                                                                                              \
   X(avcodec_alloc_context3)                                                                                            \
@@ -1840,17 +1839,10 @@ bool MediaCaptureMF::ProcessAudioPackets(s64 video_pts, Error* error)
   X(avio_open)                                                                                                         \
   X(avio_closep)
 
-#if LIBAVUTIL_VERSION_MAJOR < 57
-#define AVUTIL_57_IMPORTS(X)
-#else
-#define AVUTIL_57_IMPORTS(X)                                                                                           \
+#define VISIT_AVUTIL_IMPORTS(X)                                                                                        \
   X(av_channel_layout_default)                                                                                         \
   X(av_channel_layout_copy)                                                                                            \
-  X(av_opt_set_chlayout)
-#endif
-
-#define VISIT_AVUTIL_IMPORTS(X)                                                                                        \
-  AVUTIL_57_IMPORTS(X)                                                                                                 \
+  X(av_opt_set_chlayout)                                                                                               \
   X(av_frame_alloc)                                                                                                    \
   X(av_frame_get_buffer)                                                                                               \
   X(av_frame_free)                                                                                                     \
@@ -1863,6 +1855,7 @@ bool MediaCaptureMF::ProcessAudioPackets(s64 video_pts, Error* error)
   X(av_opt_set_int)                                                                                                    \
   X(av_opt_set_sample_fmt)                                                                                             \
   X(av_compare_ts)                                                                                                     \
+  X(av_get_pix_fmt)                                                                                                    \
   X(av_get_bytes_per_sample)                                                                                           \
   X(av_sample_fmt_is_planar)                                                                                           \
   X(av_d2q)                                                                                                            \
@@ -1967,18 +1960,25 @@ bool MediaCaptureFFmpeg::LoadFFmpeg(Error* error)
   if (s_library_loaded)
     return true;
 
-  static constexpr auto open_dynlib = [](DynamicLibrary& lib, const char* name, int major_version, Error* error) {
-    std::string full_name(DynamicLibrary::GetVersionedFilename(name, major_version));
-    return lib.Open(full_name.c_str(), error);
+  static constexpr auto open_dynlib = [](DynamicLibrary& lib, const char* name, int major_version) {
+    Error error;
+    const std::string full_name = DynamicLibrary::GetVersionedFilename(name, major_version);
+    if (!lib.Open(full_name.c_str(), &error))
+    {
+      ERROR_LOG("Failed to open {}: {}", name, error.GetDescription());
+      return false;
+    }
+
+    return true;
   };
 
   bool result = true;
 
-  result = result && open_dynlib(s_avutil_library, "avutil", LIBAVUTIL_VERSION_MAJOR, error);
-  result = result && open_dynlib(s_avcodec_library, "avcodec", LIBAVCODEC_VERSION_MAJOR, error);
-  result = result && open_dynlib(s_avformat_library, "avformat", LIBAVFORMAT_VERSION_MAJOR, error);
-  result = result && open_dynlib(s_swscale_library, "swscale", LIBSWSCALE_VERSION_MAJOR, error);
-  result = result && open_dynlib(s_swresample_library, "swresample", LIBSWRESAMPLE_VERSION_MAJOR, error);
+  result = result && open_dynlib(s_avutil_library, "avutil", LIBAVUTIL_VERSION_MAJOR);
+  result = result && open_dynlib(s_avcodec_library, "avcodec", LIBAVCODEC_VERSION_MAJOR);
+  result = result && open_dynlib(s_avformat_library, "avformat", LIBAVFORMAT_VERSION_MAJOR);
+  result = result && open_dynlib(s_swscale_library, "swscale", LIBSWSCALE_VERSION_MAJOR);
+  result = result && open_dynlib(s_swresample_library, "swresample", LIBSWRESAMPLE_VERSION_MAJOR);
 
 #define RESOLVE_IMPORT(X) result = result && s_avcodec_library.GetSymbol(#X, &wrap_##X);
   VISIT_AVCODEC_IMPORTS(RESOLVE_IMPORT);
@@ -2009,18 +2009,18 @@ bool MediaCaptureFFmpeg::LoadFFmpeg(Error* error)
 
   UnloadFFmpeg();
 
-  Error::SetStringFmt(
-    error,
-    TRANSLATE_FS(
-      "MediaCapture",
-      "You may be missing one or more files, or are using the incorrect version. This build of DuckStation requires:\n"
-      "  libavcodec: {}\n"
-      "  libavformat: {}\n"
-      "  libavutil: {}\n"
-      "  libswscale: {}\n"
-      "  libswresample: {}\n"),
-    LIBAVCODEC_VERSION_MAJOR, LIBAVFORMAT_VERSION_MAJOR, LIBAVUTIL_VERSION_MAJOR, LIBSWSCALE_VERSION_MAJOR,
-    LIBSWRESAMPLE_VERSION_MAJOR);
+  Error::SetStringFmt(error,
+                      TRANSLATE_FS("MediaCapture",
+                                   "FFmpeg was not found, or is not the correct version.\n"
+                                   "You can download FFmpeg from {}.\n"
+                                   "This build of DuckStation requires FFmpeg v{}, with library versions:\n"
+                                   "  libavcodec: {}\n"
+                                   "  libavformat: {}\n"
+                                   "  libavutil: {}\n"
+                                   "  libswscale: {}\n"
+                                   "  libswresample: {}\n"),
+                      "https://www.ffmpeg.org/", FFMPEG_VERSION, LIBAVCODEC_VERSION_MAJOR, LIBAVFORMAT_VERSION_MAJOR,
+                      LIBAVUTIL_VERSION_MAJOR, LIBSWSCALE_VERSION_MAJOR, LIBSWRESAMPLE_VERSION_MAJOR);
   return false;
 }
 
@@ -2068,7 +2068,7 @@ bool MediaCaptureFFmpeg::IsCapturingVideo() const
 
 time_t MediaCaptureFFmpeg::GetElapsedTime() const
 {
-  std::unique_lock<std::mutex> lock(m_lock);
+  std::unique_lock lock(m_lock);
   s64 seconds;
   if (m_video_stream)
   {
@@ -2096,7 +2096,7 @@ bool MediaCaptureFFmpeg::InternalBeginCapture(float fps, float aspect, u32 sampl
                                               std::string_view audio_codec, u32 audio_bitrate,
                                               std::string_view audio_codec_args, Error* error)
 {
-  ff_const59 AVOutputFormat* output_format = wrap_av_guess_format(nullptr, m_path.c_str(), nullptr);
+  const AVOutputFormat* output_format = wrap_av_guess_format(nullptr, m_path.c_str(), nullptr);
   if (!output_format)
   {
     Error::SetStringFmt(error, "Failed to get output format for '{}'", Path::GetFileName(m_path));
@@ -2124,10 +2124,17 @@ bool MediaCaptureFFmpeg::InternalBeginCapture(float fps, float aspect, u32 sampl
       }
     }
 
-    // FFmpeg decides whether mp4, mkv, etc should use h264 or mpeg4 as their default codec by whether x264 was enabled
-    // But there's a lot of other h264 encoders (e.g. hardware encoders) we may want to use instead
-    if (!vcodec && wrap_avformat_query_codec(output_format, AV_CODEC_ID_H264, FF_COMPLIANCE_NORMAL))
-      vcodec = wrap_avcodec_find_encoder(AV_CODEC_ID_H264);
+    // Default to VP9, because there's no LGPL H.264 encoder.
+    // Except on MacOS, where we get it through VideoToolbox.
+#ifndef __APPLE__
+    constexpr AVCodecID default_video_codec = AV_CODEC_ID_VP9;
+#else
+    constexpr AVCodecID default_video_codec = AV_CODEC_ID_H264;
+#endif
+
+    // Use container default if available.
+    if (!vcodec && wrap_avformat_query_codec(output_format, default_video_codec, FF_COMPLIANCE_NORMAL))
+      vcodec = wrap_avcodec_find_encoder(default_video_codec);
     if (!vcodec)
       vcodec = wrap_avcodec_find_encoder(output_format->video_codec);
 
@@ -2151,11 +2158,13 @@ bool MediaCaptureFFmpeg::InternalBeginCapture(float fps, float aspect, u32 sampl
     m_video_codec_context->sample_aspect_ratio = wrap_av_d2q(aspect, 100000);
     wrap_av_reduce(&m_video_codec_context->time_base.num, &m_video_codec_context->time_base.den, 10000,
                    static_cast<s64>(static_cast<double>(fps) * 10000.0), std::numeric_limits<s32>::max());
+    wrap_av_reduce(&m_video_codec_context->framerate.num, &m_video_codec_context->framerate.den,
+                   static_cast<s64>(static_cast<double>(fps) * 10000.0), 10000, std::numeric_limits<s32>::max());
 
     // Map input pixel format.
-    static constexpr const std::pair<GPUTexture::Format, AVPixelFormat> texture_pf_mapping[] = {
-      {GPUTexture::Format::RGBA8, AV_PIX_FMT_RGBA},
-      {GPUTexture::Format::BGRA8, AV_PIX_FMT_BGRA},
+    static constexpr const std::pair<GPUTextureFormat, AVPixelFormat> texture_pf_mapping[] = {
+      {GPUTextureFormat::RGBA8, AV_PIX_FMT_RGBA},
+      {GPUTextureFormat::BGRA8, AV_PIX_FMT_BGRA},
     };
     if (const auto pf_mapping =
           std::find_if(std::begin(texture_pf_mapping), std::end(texture_pf_mapping),
@@ -2171,43 +2180,33 @@ bool MediaCaptureFFmpeg::InternalBeginCapture(float fps, float aspect, u32 sampl
       return false;
     }
 
-    // Default to YUV 4:2:0 if the codec doesn't specify a pixel format.
-    AVPixelFormat sw_pix_fmt = AV_PIX_FMT_YUV420P;
-    if (vcodec->pix_fmts)
+    if (!video_codec_args.empty())
     {
-      // Prefer YUV420 given the choice, but otherwise fall back to whatever it supports.
-      sw_pix_fmt = vcodec->pix_fmts[0];
-      for (u32 i = 0; vcodec->pix_fmts[i] != AV_PIX_FMT_NONE; i++)
+      res = wrap_av_dict_parse_string(&m_video_codec_arguments, SmallString(video_codec_args).c_str(), "=", ":", 0);
+      if (res < 0)
       {
-        if (vcodec->pix_fmts[i] == AV_PIX_FMT_YUV420P)
-        {
-          sw_pix_fmt = vcodec->pix_fmts[i];
-          break;
-        }
+        SetAVError(error, "av_dict_parse_string() for video failed: ", res);
+        return false;
       }
     }
-    m_video_codec_context->pix_fmt = sw_pix_fmt;
+
+    // Select output pixel format.
+    AVPixelFormat request_pix_fmt = AV_PIX_FMT_YUV420P;
+    if (const AVDictionaryEntry* de = wrap_av_dict_get(m_video_codec_arguments, "pixel_format", nullptr, 0))
+    {
+      const AVPixelFormat de_fmt = wrap_av_get_pix_fmt(de->value);
+      request_pix_fmt = (de_fmt != AV_PIX_FMT_NONE) ? de_fmt : request_pix_fmt;
+      if (de_fmt == AV_PIX_FMT_NONE)
+        WARNING_LOG("Invalid pixel format override: {}", de->value);
+    }
 
     // Can we use hardware encoding?
     const AVCodecHWConfig* hwconfig = wrap_avcodec_get_hw_config(vcodec, 0);
-    if (hwconfig && hwconfig->pix_fmt != AV_PIX_FMT_NONE && hwconfig->pix_fmt != sw_pix_fmt)
-    {
-      // First index isn't our preferred pixel format, try the others, but fall back if one doesn't exist.
-      int index = 1;
-      while (const AVCodecHWConfig* next_hwconfig = wrap_avcodec_get_hw_config(vcodec, index++))
-      {
-        if (next_hwconfig->pix_fmt == sw_pix_fmt)
-        {
-          hwconfig = next_hwconfig;
-          break;
-        }
-      }
-    }
-
+    AVPixelFormat sw_pix_fmt = request_pix_fmt;
     if (hwconfig)
     {
+      // Can't do this test for hardware codecs, because they don't list the software formats as inputs.
       Error hw_error;
-
       INFO_LOG("Trying to use {} hardware device for video encoding.",
                wrap_av_hwdevice_get_type_name(hwconfig->device_type));
       res = wrap_av_hwdevice_ctx_create(&m_video_hw_context, hwconfig->device_type, nullptr, nullptr, 0);
@@ -2255,20 +2254,51 @@ bool MediaCaptureFFmpeg::InternalBeginCapture(float fps, float aspect, u32 sampl
       }
     }
 
-    if (!video_codec_args.empty())
+    if (!hwconfig)
     {
-      res = wrap_av_dict_parse_string(&m_video_codec_arguments, SmallString(video_codec_args).c_str(), "=", ":", 0);
+      // Default to YUV 4:2:0 if the codec doesn't specify a pixel format.
+      const AVPixelFormat* supported_pixel_formats = nullptr;
+      int num_supported_pixel_formats = 0;
+#ifdef HAS_AVCODEC_GET_SUPPORTED_CONFIG
+      res = wrap_avcodec_get_supported_config(m_video_codec_context, vcodec, AV_CODEC_CONFIG_PIX_FORMAT, 0,
+                                              reinterpret_cast<const void**>(&supported_pixel_formats),
+                                              &num_supported_pixel_formats);
       if (res < 0)
       {
-        SetAVError(error, "av_dict_parse_string() for video failed: ", res);
+        SetAVError(error, "avcodec_get_supported_config() failed: ", res);
         return false;
       }
+#else
+      supported_pixel_formats = vcodec->pix_fmts;
+      if (supported_pixel_formats)
+      {
+        while (supported_pixel_formats[num_supported_pixel_formats] != AV_PIX_FMT_NONE)
+          num_supported_pixel_formats++;
+      }
+#endif
+
+      if (!supported_pixel_formats || num_supported_pixel_formats == 0)
+      {
+        Error::SetStringView(error, "Video codec supports no formats.");
+        return false;
+      }
+
+      // Prefer YUV420 given the choice, but otherwise fall back to whatever it supports.
+      sw_pix_fmt = supported_pixel_formats[0];
+      for (int i = 0; i < num_supported_pixel_formats; i++)
+      {
+        if (supported_pixel_formats[i] == request_pix_fmt)
+        {
+          sw_pix_fmt = supported_pixel_formats[i];
+          break;
+        }
+      }
+
+      m_video_codec_context->pix_fmt = sw_pix_fmt;
     }
 
     if (output_format->flags & AVFMT_GLOBALHEADER)
       m_video_codec_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-
-    bool has_pixel_format_override = wrap_av_dict_get(m_video_codec_arguments, "pixel_format", nullptr, 0);
 
     res = wrap_avcodec_open2(m_video_codec_context, vcodec, &m_video_codec_arguments);
     if (res < 0)
@@ -2276,10 +2306,6 @@ bool MediaCaptureFFmpeg::InternalBeginCapture(float fps, float aspect, u32 sampl
       SetAVError(error, "avcodec_open2() for video failed: ", res);
       return false;
     }
-
-    // If the user overrode the pixel format, get that now
-    if (has_pixel_format_override)
-      sw_pix_fmt = m_video_codec_context->pix_fmt;
 
     m_converted_video_frame = wrap_av_frame_alloc();
     m_hw_video_frame = IsUsingHardwareVideoEncoding() ? wrap_av_frame_alloc() : nullptr;
@@ -2369,17 +2395,35 @@ bool MediaCaptureFFmpeg::InternalBeginCapture(float fps, float aspect, u32 sampl
     m_audio_codec_context->sample_fmt = AV_SAMPLE_FMT_S16;
     m_audio_codec_context->sample_rate = sample_rate;
     m_audio_codec_context->time_base = {1, static_cast<int>(sample_rate)};
-#if LIBAVUTIL_VERSION_MAJOR < 57
-    m_audio_codec_context->channels = AUDIO_CHANNELS;
-    m_audio_codec_context->channel_layout = AV_CH_LAYOUT_STEREO;
-#else
     wrap_av_channel_layout_default(&m_audio_codec_context->ch_layout, AUDIO_CHANNELS);
-#endif
 
     bool supports_format = false;
-    for (const AVSampleFormat* p = acodec->sample_fmts; *p != AV_SAMPLE_FMT_NONE; p++)
+    const AVSampleFormat* supported_sample_formats = nullptr;
+    int num_supported_sample_formats = 0;
+#ifdef HAS_AVCODEC_GET_SUPPORTED_CONFIG
+    res = wrap_avcodec_get_supported_config(m_video_codec_context, acodec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0,
+                                            reinterpret_cast<const void**>(&supported_sample_formats),
+                                            &num_supported_sample_formats);
+    if (res < 0)
     {
-      if (*p == m_audio_codec_context->sample_fmt)
+      SetAVError(error, "avcodec_get_supported_config() for audio failed: ", res);
+      return false;
+    }
+#else
+    if (!acodec->sample_fmts)
+    {
+      Error::SetStringView(error, "Video codec supports no formats.");
+      return false;
+    }
+
+    supported_sample_formats = acodec->sample_fmts;
+    while (supported_sample_formats[num_supported_sample_formats] != AV_SAMPLE_FMT_NONE)
+      num_supported_sample_formats++;
+#endif
+
+    for (int i = 0; i < num_supported_sample_formats; i++)
+    {
+      if (supported_sample_formats[i] == m_audio_codec_context->sample_fmt)
       {
         supports_format = true;
         break;
@@ -2388,7 +2432,7 @@ bool MediaCaptureFFmpeg::InternalBeginCapture(float fps, float aspect, u32 sampl
     if (!supports_format)
     {
       WARNING_LOG("Audio codec '{}' does not support S16 samples, using default.", acodec->name);
-      m_audio_codec_context->sample_fmt = acodec->sample_fmts[0];
+      m_audio_codec_context->sample_fmt = supported_sample_formats[0];
       m_swr_context = wrap_swr_alloc();
       if (!m_swr_context)
       {
@@ -2402,11 +2446,8 @@ bool MediaCaptureFFmpeg::InternalBeginCapture(float fps, float aspect, u32 sampl
       wrap_av_opt_set_int(m_swr_context, "out_channel_count", AUDIO_CHANNELS, 0);
       wrap_av_opt_set_int(m_swr_context, "out_sample_rate", sample_rate, 0);
       wrap_av_opt_set_sample_fmt(m_swr_context, "out_sample_fmt", m_audio_codec_context->sample_fmt, 0);
-
-#if LIBAVUTIL_VERSION_MAJOR >= 59
       wrap_av_opt_set_chlayout(m_swr_context, "in_chlayout", &m_audio_codec_context->ch_layout, 0);
       wrap_av_opt_set_chlayout(m_swr_context, "out_chlayout", &m_audio_codec_context->ch_layout, 0);
-#endif
 
       res = wrap_swr_init(m_swr_context);
       if (res < 0)
@@ -2875,7 +2916,7 @@ MediaCapture::CodecList MediaCaptureFFmpeg::GetAudioCodecList(const char* contai
 
 } // namespace
 
-static constexpr const std::array s_backend_names = {
+static constexpr const std::array<const char*, static_cast<size_t>(MediaCaptureBackend::MaxCount)> s_backend_names = {
 #ifdef _WIN32
   "MediaFoundation",
 #endif
@@ -2883,12 +2924,13 @@ static constexpr const std::array s_backend_names = {
   "FFmpeg",
 #endif
 };
-static constexpr const std::array s_backend_display_names = {
+static constexpr const std::array<const char*, static_cast<size_t>(MediaCaptureBackend::MaxCount)>
+  s_backend_display_names = {
 #ifdef _WIN32
-  TRANSLATE_DISAMBIG_NOOP("Settings", "Media Foundation", "MediaCaptureBackend"),
+    TRANSLATE_DISAMBIG_NOOP("Settings", "Media Foundation", "MediaCaptureBackend"),
 #endif
 #ifndef __ANDROID__
-  TRANSLATE_DISAMBIG_NOOP("Settings", "FFmpeg", "MediaCaptureBackend"),
+    TRANSLATE_DISAMBIG_NOOP("Settings", "FFmpeg", "MediaCaptureBackend"),
 #endif
 };
 static_assert(s_backend_names.size() == static_cast<size_t>(MediaCaptureBackend::MaxCount));

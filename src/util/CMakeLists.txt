@@ -1,13 +1,14 @@
 add_library(util
+  animated_image.cpp
+  animated_image.h
   audio_stream.cpp
   audio_stream.h
   cd_image.cpp
   cd_image.h
-  cd_image_bin.cpp
+  cd_image_ccd.cpp
   cd_image_cue.cpp
   cd_image_chd.cpp
   cd_image_device.cpp
-  cd_image_ecm.cpp
   cd_image_hasher.cpp
   cd_image_hasher.h
   cd_image_m3u.cpp
@@ -15,12 +16,16 @@ add_library(util
   cd_image_mds.cpp
   cd_image_pbp.cpp
   cd_image_ppf.cpp
-  cd_subchannel_replacement.cpp
-  cd_subchannel_replacement.h
   compress_helpers.cpp
   compress_helpers.h
+  core_audio_stream.cpp
+  core_audio_stream.h
   cue_parser.cpp
   cue_parser.h
+  dyn_shaderc.h
+  dyn_spirv_cross.h
+  elf_file.cpp
+  elf_file.h
   gpu_device.cpp
   gpu_device.h
   gpu_framebuffer_manager.h
@@ -28,14 +33,12 @@ add_library(util
   gpu_shader_cache.h
   gpu_texture.cpp
   gpu_texture.h
-  host.cpp
-  host.h
+  gpu_types.h
   http_downloader.cpp
   http_downloader.h
   image.cpp
   image.h
-  imgui_fullscreen.cpp
-  imgui_fullscreen.h
+  imgui_gsvector.h
   imgui_manager.cpp
   imgui_manager.h
   ini_settings_interface.cpp
@@ -50,7 +53,6 @@ add_library(util
   media_capture.h
   page_fault_handler.cpp
   page_fault_handler.h
-  platform_misc.h
   postprocessing.cpp
   postprocessing.h
   postprocessing_shader.cpp
@@ -59,29 +61,44 @@ add_library(util
   postprocessing_shader_fx.h
   postprocessing_shader_glsl.cpp
   postprocessing_shader_glsl.h
+  postprocessing_shader_slang.cpp
+  postprocessing_shader_slang.h
   shadergen.cpp
   shadergen.h
   shiftjis.cpp
   shiftjis.h
   sockets.cpp
   sockets.h
+  spirv_module.cpp
+  spirv_module.h
   state_wrapper.cpp
   state_wrapper.h
-  wav_writer.cpp
-  wav_writer.h
+  texture_decompress.cpp
+  texture_decompress.h
+  translation.cpp
+  translation.h
+  wav_reader_writer.cpp
+  wav_reader_writer.h
   window_info.cpp
   window_info.h
 )
 
 target_precompile_headers(util PRIVATE "pch.h")
 target_include_directories(util PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
-target_include_directories(util PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
-target_link_libraries(util PUBLIC common simpleini imgui)
-target_link_libraries(util PRIVATE libchdr JPEG::JPEG PNG::PNG WebP::libwebp ZLIB::ZLIB SoundTouch::SoundTouchDLL xxhash Zstd::Zstd reshadefx)
+target_link_libraries(util PUBLIC common imgui)
+target_link_libraries(util PRIVATE libchdr lzma libjpeg-turbo::jpeg PNG::PNG WebP::webp plutosvg::plutosvg ZLIB::ZLIB SoundTouch::SoundTouchDLL xxhash zstd::libzstd_shared reshadefx)
 
 if(ENABLE_X11)
+  target_sources(util PRIVATE
+    x11_tools.cpp
+    x11_tools.h
+  )
   target_compile_definitions(util PRIVATE "-DENABLE_X11=1")
-  target_link_libraries(util PRIVATE X11::X11 X11::Xrandr)
+  target_include_directories(util PRIVATE
+    "${X11_xcb_INCLUDE_PATH}"
+    "${X11_xcb_randr_INCLUDE_PATH}"
+    "${X11_X11_xcb_INCLUDE_PATH}"
+  )
 endif()
 
 if(ENABLE_WAYLAND)
@@ -110,7 +127,6 @@ if(ENABLE_OPENGL)
       opengl_context_wgl.cpp
       opengl_context_wgl.h
     )
-    target_link_libraries(util PRIVATE "opengl32.lib")
   endif()
 
   if(LINUX OR BSD OR ANDROID)
@@ -122,8 +138,10 @@ if(ENABLE_OPENGL)
 
     if(ENABLE_X11)
       target_sources(util PRIVATE
-        opengl_context_egl_x11.cpp
-        opengl_context_egl_x11.h
+        opengl_context_egl_xcb.cpp
+        opengl_context_egl_xcb.h
+        opengl_context_egl_xlib.cpp
+        opengl_context_egl_xlib.h
       )
     endif()
     if(ENABLE_WAYLAND)
@@ -131,9 +149,12 @@ if(ENABLE_OPENGL)
         opengl_context_egl_wayland.cpp
         opengl_context_egl_wayland.h
       )
+      target_include_directories(util PRIVATE
+        "${Wayland_INCLUDE_DIRS}" # For wayland-egl
+      )
     endif()
     if(ANDROID)
-      target_include_directories(util PRIVATE "${CMAKE_SOURCE_DIR}/android/app/src/cpp")
+      target_include_directories(util PRIVATE "${CMAKE_SOURCE_DIR}/android")
     endif()
   endif()
 
@@ -152,8 +173,8 @@ if(ENABLE_VULKAN)
     vulkan_builders.h
     vulkan_device.cpp
     vulkan_device.h
-    vulkan_entry_points.h
     vulkan_entry_points.inl
+    vulkan_headers.h
     vulkan_loader.cpp
     vulkan_loader.h
     vulkan_pipeline.cpp
@@ -169,11 +190,10 @@ if(ENABLE_VULKAN)
   target_link_libraries(util PUBLIC vulkan-headers)
 endif()
 
-if(ENABLE_VULKAN OR APPLE)
-  # shaderc is loaded dynamically to reduce module loads on startup.
-  get_target_property(SHADERC_INCLUDE_DIR Shaderc::shaderc_shared INTERFACE_INCLUDE_DIRECTORIES)
-  target_include_directories(util PUBLIC ${SHADERC_INCLUDE_DIR})
-endif()
+# shaderc/spirv-cross is loaded dynamically to reduce module loads on startup.
+get_target_property(SHADERC_INCLUDE_DIR Shaderc::shaderc_shared INTERFACE_INCLUDE_DIRECTORIES)
+get_target_property(SPIRV_CROSS_INCLUDE_DIR spirv-cross-c-shared INTERFACE_INCLUDE_DIRECTORIES)
+target_include_directories(util PUBLIC ${SHADERC_INCLUDE_DIR} ${SPIRV_CROSS_INCLUDE_DIR})
 
 if(NOT ANDROID)
   target_sources(util PRIVATE
@@ -181,10 +201,20 @@ if(NOT ANDROID)
     sdl_audio_stream.cpp
     sdl_input_source.cpp
     sdl_input_source.h
+    sdl_video_helpers.h
+  )
+  if(ENABLE_OPENGL)
+    target_sources(util PRIVATE
+      opengl_context_sdl.cpp
+      opengl_context_sdl.h
+    )
+  endif()
+  target_compile_definitions(util PUBLIC
+    ENABLE_SDL
   )
   target_link_libraries(util PUBLIC
     cubeb
-    SDL2::SDL2
+    SDL3::SDL3
   )
   # FFmpeg loaded dynamically on demand.
   target_include_directories(util PUBLIC ${FFMPEG_INCLUDE_DIRS})
@@ -217,29 +247,23 @@ if(WIN32)
     dinput_source.cpp
     dinput_source.h
     http_downloader_winhttp.cpp
-    http_downloader_winhttp.h
-    platform_misc_win32.cpp
     win32_raw_input_source.cpp
     win32_raw_input_source.h
     xinput_source.cpp
     xinput_source.h
   )
   target_link_libraries(util PRIVATE d3d12ma)
-  target_link_libraries(util PRIVATE d3d11.lib d3d12.lib d3dcompiler.lib dxgi.lib winmm.lib Dwmapi.lib winhttp.lib)
+  target_link_libraries(util PRIVATE Cfgmgr32.lib Dwmapi.lib winhttp.lib)
 
-  if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
+  if(CMAKE_BUILD_TYPE MATCHES "Debug|Devel")
     target_link_libraries(util PRIVATE WinPixEventRuntime::WinPixEventRuntime)
   endif()
 elseif(APPLE)
-  include(AddMetalSources)
-
   set(MAC_SOURCES
     metal_device.h
     metal_device.mm
-    metal_layer.h
     metal_stream_buffer.h
     metal_stream_buffer.mm
-    platform_misc_mac.mm
   )
   set(METAL_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/metal_shaders.metal"
@@ -252,14 +276,6 @@ elseif(APPLE)
   target_link_libraries(util PRIVATE ${METAL_LIBRARY} ${QUARTZCORE_LIBRARY} ${IOK_LIBRARY})
   set_source_files_properties(${MAC_SOURCES} PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
 elseif(NOT ANDROID)
-  target_sources(util PRIVATE
-    platform_misc_unix.cpp
-  )
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(DBUS REQUIRED dbus-1)
-  target_include_directories(util PRIVATE ${DBUS_INCLUDE_DIRS})
-  target_link_libraries(util PRIVATE ${DBUS_LINK_LIBRARIES})
-
   if(LINUX)
     target_link_libraries(util PRIVATE UDEV::UDEV)
   endif()
@@ -268,7 +284,6 @@ endif()
 if(NOT WIN32 AND NOT ANDROID)
   target_sources(util PRIVATE
     http_downloader_curl.cpp
-    http_downloader_curl.h
   )
   target_link_libraries(util PRIVATE
     CURL::libcurl
@@ -278,7 +293,7 @@ endif()
 function(add_util_resources target)
   if(APPLE)
     get_property(UTIL_METAL_SOURCES GLOBAL PROPERTY UTIL_METAL_SOURCES)
-    add_metal_sources(${target} ${UTIL_METAL_SOURCES})
+    add_metal_sources(${target} ${UTIL_METAL_SOURCES} metal_shaders macos-metal2.3)
 
     # Copy MoltenVK into the bundle
     unset(MOLTENVK_PATH CACHE)
@@ -294,11 +309,24 @@ function(add_util_resources target)
       message(WARNING "MoltenVK not found in path, it will depend on the target system having it.")
     endif()
 
-    # Copy shaderc/spirv-cross into the bundle
-    get_target_property(SPIRV_CROSS_LIBRARY spirv-cross-c-shared IMPORTED_SONAME_RELEASE)
-    get_target_property(SHADERC_LIBRARY Shaderc::shaderc_shared IMPORTED_LOCATION_RELEASE)
-    target_sources(${target} PRIVATE "${SHADERC_LIBRARY}" "${SPIRV_CROSS_LIBRARY}")
-    set_source_files_properties("${SHADERC_LIBRARY}" "${SPIRV_CROSS_LIBRARY}" PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
+    # Copy dynamically-loaded libraries (harfbuzz/shaderc/spirv-cross) into the bundle.
+    # Use IMPORTED_SONAME_RELEASE to get the major-versioned filename (stripping the @rpath/ prefix).
+    foreach(dyn_lib harfbuzz::harfbuzz spirv-cross-c-shared Shaderc::shaderc_shared)
+      get_target_property(dyn_lib_path ${dyn_lib} IMPORTED_LOCATION_RELEASE)
+      get_target_property(dyn_lib_soname ${dyn_lib} IMPORTED_SONAME_RELEASE)
+      if(dyn_lib_soname)
+        string(REPLACE "@rpath/" "" dyn_lib_soname_filename "${dyn_lib_soname}")
+        get_filename_component(dyn_lib_dir "${dyn_lib_path}" DIRECTORY)
+        set(dyn_lib_major_path "${dyn_lib_dir}/${dyn_lib_soname_filename}")
+        if(EXISTS "${dyn_lib_major_path}")
+          set(dyn_lib_path "${dyn_lib_major_path}")
+        else()
+          message(WARNING "Could not find major-versioned symlink for ${dyn_lib}.")
+        endif()
+      endif()
+      target_sources(${target} PRIVATE "${dyn_lib_path}")
+      set_source_files_properties("${dyn_lib_path}" PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
+    endforeach()
 
     # Copy FFmpeg libraries into the bundle
     foreach(component avcodec avformat avutil swresample swscale)
@@ -307,20 +335,13 @@ function(add_util_resources target)
       target_sources(${target} PRIVATE ${version_lib})
       set_source_files_properties(${target} PRIVATE ${version_lib} PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
     endforeach()
-  elseif(ALLOW_INSTALL)
-    if(INSTALL_SELF_CONTAINED)
-      # Ensure we look for dependency libraries in the installation directory.
-      set_target_properties(${target} PROPERTIES INSTALL_RPATH "$ORIGIN")
-
-      # Copy dependency libraries to installation directory.
-      install_imported_dep_library(Shaderc::shaderc_shared)
-      install_imported_dep_library(spirv-cross-c-shared)
-      install_imported_dep_library(SoundTouch::SoundTouchDLL)
-      install_imported_dep_library(lunasvg::lunasvg)
-    else()
-      # Prevent CMake from overriding the RPATH in the binary. i.e. use the build locations.
-      # This is needed for Flatpak builds, since the libs are in /app.
-      set_target_properties(${target} PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE)
-    endif()
+  elseif(NOT WIN32)
+    # We need to add the rpath for shaderc to the executable.
+    get_target_property(SHADERC_LIBRARY Shaderc::shaderc_shared IMPORTED_LOCATION)
+    get_filename_component(SHADERC_LIBRARY_DIRECTORY ${SHADERC_LIBRARY} DIRECTORY)
+    set_target_properties(${target} PROPERTIES BUILD_RPATH "${SHADERC_LIBRARY_DIRECTORY}")
+    get_target_property(SPIRV_CROSS_LIBRARY spirv-cross-c-shared IMPORTED_LOCATION)
+    get_filename_component(SPIRV_CROSS_LIBRARY_DIRECTORY ${SPIRV_CROSS_LIBRARY} DIRECTORY)
+    set_target_properties(${target} PROPERTIES BUILD_RPATH "${SPIRV_CROSS_LIBRARY_DIRECTORY}")
   endif()
 endfunction()

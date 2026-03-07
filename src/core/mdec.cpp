@@ -1,7 +1,8 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "mdec.h"
+#include "cdrom.h"
 #include "cpu_core.h"
 #include "dma.h"
 #include "system.h"
@@ -29,6 +30,7 @@ static constexpr u32 DATA_IN_FIFO_SIZE = 1024;
 static constexpr u32 DATA_OUT_FIFO_SIZE = 768;
 static constexpr u32 NUM_BLOCKS = 6;
 static constexpr TickCount TICKS_PER_BLOCK = 448;
+static constexpr u8 ACTIVE_FRAME_COUNT = 30;
 
 enum DataOutputDepth : u8
 {
@@ -131,12 +133,13 @@ struct MDECState
   StatusRegister status = {};
   bool enable_dma_in = false;
   bool enable_dma_out = false;
+  State state = State::Idle;
+  u8 active_frame_count = 0;
+  u32 remaining_halfwords = 0;
 
   // Even though the DMA is in words, we access the FIFO as halfwords.
   InlineFIFOQueue<u16, DATA_IN_FIFO_SIZE / sizeof(u16)> data_in_fifo;
   InlineFIFOQueue<u32, DATA_OUT_FIFO_SIZE / sizeof(u32)> data_out_fifo;
-  State state = State::Idle;
-  u32 remaining_halfwords = 0;
 
   std::array<u8, 64> iq_uv{};
   std::array<u8, 64> iq_y{};
@@ -152,7 +155,9 @@ struct MDECState
   alignas(VECTOR_ALIGNMENT) std::array<u32, 256> block_rgb{};
   TimingEvent block_copy_out_event{"MDEC Block Copy Out", 1, 1, &MDEC::CopyOutBlock, nullptr};
 
+#if defined(_DEBUG) || defined(_DEVEL)
   u32 total_blocks_decoded = 0;
+#endif
 };
 } // namespace
 
@@ -161,7 +166,10 @@ ALIGN_TO_CACHE_LINE static MDECState s_state;
 
 void MDEC::Initialize()
 {
+#if defined(_DEBUG) || defined(_DEVEL)
   s_state.total_blocks_decoded = 0;
+#endif
+  s_state.active_frame_count = 0;
   Reset();
 }
 
@@ -172,6 +180,7 @@ void MDEC::Shutdown()
 
 void MDEC::Reset()
 {
+  s_state.active_frame_count = 0;
   s_state.block_copy_out_event.Deactivate();
   SoftReset();
 }
@@ -208,9 +217,27 @@ bool MDEC::DoState(StateWrapper& sw)
   bool block_copy_out_pending = HasPendingBlockCopyOut();
   sw.Do(&block_copy_out_pending);
   if (sw.IsReading())
+  {
     s_state.block_copy_out_event.SetState(block_copy_out_pending);
+    s_state.active_frame_count = 0;
+  }
 
   return !sw.HasError();
+}
+
+bool MDEC::IsActive()
+{
+  return (s_state.active_frame_count > 0);
+}
+
+bool MDEC::IsDecodingMacroblock()
+{
+  return (s_state.state == State::DecodingMacroblock);
+}
+
+void MDEC::EndFrame()
+{
+  s_state.active_frame_count = (s_state.active_frame_count > 0) ? (s_state.active_frame_count - 1) : 0;
 }
 
 u32 MDEC::ReadRegister(u32 offset)
@@ -226,11 +253,11 @@ u32 MDEC::ReadRegister(u32 offset)
       return s_state.status.bits;
     }
 
-      [[unlikely]] default:
-      {
-        ERROR_LOG("Unknown MDEC register read: 0x{:08X}", offset);
-        return UINT32_C(0xFFFFFFFF);
-      }
+    [[unlikely]] default:
+    {
+      ERROR_LOG("Unknown MDEC register read: 0x{:08X}", offset);
+      return UINT32_C(0xFFFFFFFF);
+    }
   }
 }
 
@@ -258,11 +285,11 @@ void MDEC::WriteRegister(u32 offset, u32 value)
       return;
     }
 
-      [[unlikely]] default:
-      {
-        ERROR_LOG("Unknown MDEC register write: 0x{:08X} <- 0x{:08X}", offset, value);
-        return;
-      }
+    [[unlikely]] default:
+    {
+      ERROR_LOG("Unknown MDEC register write: 0x{:08X} <- 0x{:08X}", offset, value);
+      return;
+    }
   }
 }
 
@@ -276,11 +303,7 @@ void MDEC::DMARead(u32* words, u32 word_count)
 
   const u32 words_to_read = std::min(word_count, s_state.data_out_fifo.GetSize());
   if (words_to_read > 0)
-  {
     s_state.data_out_fifo.PopRange(words, words_to_read);
-    words += words_to_read;
-    word_count -= words_to_read;
-  }
 
   DEBUG_LOG("DMA read complete, {} bytes left", s_state.data_out_fifo.GetSize() * sizeof(u32));
   if (s_state.data_out_fifo.IsEmpty())
@@ -385,6 +408,12 @@ void MDEC::WriteCommandRegister(u32 value)
 
 void MDEC::Execute()
 {
+  if (std::exchange(s_state.active_frame_count, ACTIVE_FRAME_COUNT) == 0)
+  {
+    if (g_settings.mdec_disable_cdrom_speedup)
+      CDROM::DisableReadSpeedup();
+  }
+
   for (;;)
   {
     switch (s_state.state)
@@ -525,7 +554,7 @@ bool MDEC::DecodeMonoMacroblock()
   if (!s_state.data_out_fifo.IsEmpty())
     return false;
 
-  if (g_settings.use_old_mdec_routines) [[unlikely]]
+  if (g_settings.mdec_use_old_routines) [[unlikely]]
   {
     if (!DecodeRLE_Old(s_state.blocks[0].data(), s_state.iq_y.data()))
       return false;
@@ -548,13 +577,15 @@ bool MDEC::DecodeMonoMacroblock()
 
   ScheduleBlockCopyOut(TICKS_PER_BLOCK * 6);
 
+#if defined(_DEBUG) || defined(_DEVEL)
   s_state.total_blocks_decoded++;
+#endif
   return true;
 }
 
 bool MDEC::DecodeColoredMacroblock()
 {
-  if (g_settings.use_old_mdec_routines) [[unlikely]]
+  if (g_settings.mdec_use_old_routines) [[unlikely]]
   {
     for (; s_state.current_block < NUM_BLOCKS; s_state.current_block++)
     {
@@ -603,7 +634,9 @@ bool MDEC::DecodeColoredMacroblock()
     YUVToRGB_New(8, 8, s_state.blocks[0], s_state.blocks[1], s_state.blocks[5]);
   }
 
+#if defined(_DEBUG) || defined(_DEVEL)
   s_state.total_blocks_decoded += 4;
+#endif
 
   ScheduleBlockCopyOut(TICKS_PER_BLOCK * 6);
   return true;
@@ -711,10 +744,10 @@ void MDEC::CopyOutBlock(void* param, TickCount ticks, TickCount ticks_late)
 
       for (u32 index = 0; index < s_state.block_rgb.size(); index += 16)
       {
-        const GSVector4i rgbx0 = GSVector4i::load<false>(&s_state.block_rgb[index]);
-        const GSVector4i rgbx1 = GSVector4i::load<false>(&s_state.block_rgb[index + 4]);
-        const GSVector4i rgbx2 = GSVector4i::load<false>(&s_state.block_rgb[index + 8]);
-        const GSVector4i rgbx3 = GSVector4i::load<false>(&s_state.block_rgb[index + 12]);
+        const GSVector4i rgbx0 = GSVector4i::load<true>(&s_state.block_rgb[index]);
+        const GSVector4i rgbx1 = GSVector4i::load<true>(&s_state.block_rgb[index + 4]);
+        const GSVector4i rgbx2 = GSVector4i::load<true>(&s_state.block_rgb[index + 8]);
+        const GSVector4i rgbx3 = GSVector4i::load<true>(&s_state.block_rgb[index + 12]);
 
         GSVector4i::store<true>(&rgbp[0], rgbx0.shuffle8(mask00) | rgbx1.shuffle8(mask01));
         GSVector4i::store<true>(&rgbp[4], rgbx1.shuffle8(mask11) | rgbx2.shuffle8(mask12));
@@ -729,7 +762,7 @@ void MDEC::CopyOutBlock(void* param, TickCount ticks, TickCount ticks_late)
 
     case DataOutputDepth_15Bit:
     {
-      if (g_settings.use_old_mdec_routines) [[unlikely]]
+      if (g_settings.mdec_use_old_routines) [[unlikely]]
       {
         const u16 a = ZeroExtend16(s_state.status.data_output_bit15.GetValue()) << 15;
         for (u32 i = 0; i < static_cast<u32>(s_state.block_rgb.size());)
@@ -1048,8 +1081,8 @@ void MDEC::YUVToRGB_New(u32 xx, u32 yy, const std::array<s16, 64>& Crblk, const 
   const GSVector4i addval = s_state.status.data_output_signed ? GSVector4i::cxpr(0) : GSVector4i::cxpr(0x80808080);
   for (u32 y = 0; y < 8; y++)
   {
-    const GSVector4i Cr = GSVector4i::loadl(&Crblk[(xx / 2) + ((y + yy) / 2) * 8]).s16to32();
-    const GSVector4i Cb = GSVector4i::loadl(&Cbblk[(xx / 2) + ((y + yy) / 2) * 8]).s16to32();
+    const GSVector4i Cr = GSVector4i::loadl<false>(&Crblk[(xx / 2) + ((y + yy) / 2) * 8]).s16to32();
+    const GSVector4i Cb = GSVector4i::loadl<false>(&Cbblk[(xx / 2) + ((y + yy) / 2) * 8]).s16to32();
     const GSVector4i Y = GSVector4i::load<true>(&Yblk[y * 8]);
 
     // BT.601 YUV->RGB coefficients, rounding formula from Mednafen.
@@ -1125,23 +1158,16 @@ void MDEC::SetScaleMatrix(const u16* values)
   }
 }
 
-void MDEC::DrawDebugStateWindow()
+void MDEC::DrawDebugStateWindow(float scale)
 {
-  const float framebuffer_scale = ImGuiManager::GetGlobalScale();
-
-  ImGui::SetNextWindowSize(ImVec2(300.0f * framebuffer_scale, 350.0f * framebuffer_scale), ImGuiCond_FirstUseEver);
-  if (!ImGui::Begin("MDEC State", nullptr))
-  {
-    ImGui::End();
-    return;
-  }
-
   static constexpr std::array<const char*, 5> state_names = {
     {"None", "Decoding Macroblock", "Writing Macroblock", "SetIqTab", "SetScale"}};
   static constexpr std::array<const char*, 4> output_depths = {{"4-bit", "8-bit", "24-bit", "15-bit"}};
   static constexpr std::array<const char*, 7> block_names = {{"Crblk", "Cbblk", "Y1", "Y2", "Y3", "Y4", "Output"}};
 
+#if defined(_DEBUG) || defined(_DEVEL)
   ImGui::Text("Blocks Decoded: %u", s_state.total_blocks_decoded);
+#endif
   ImGui::Text("Data-In FIFO Size: %u (%u bytes)", s_state.data_in_fifo.GetSize(), s_state.data_in_fifo.GetSize() * 4);
   ImGui::Text("Data-Out FIFO Size: %u (%u bytes)", s_state.data_out_fifo.GetSize(),
               s_state.data_out_fifo.GetSize() * 4);
@@ -1163,6 +1189,4 @@ void MDEC::DrawDebugStateWindow()
     ImGui::Text("Parameter Words Remaining: %d",
                 static_cast<s32>(SignExtend32(s_state.status.parameter_words_remaining.GetValue())));
   }
-
-  ImGui::End();
 }

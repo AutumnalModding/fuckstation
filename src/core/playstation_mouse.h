@@ -23,7 +23,7 @@ public:
 
   static const Controller::ControllerInfo INFO;
 
-  PlayStationMouse(u32 index);
+  explicit PlayStationMouse(u32 index);
   ~PlayStationMouse() override;
 
   static std::unique_ptr<PlayStationMouse> Create(u32 index);
@@ -39,7 +39,7 @@ public:
   void ResetTransferState() override;
   bool Transfer(const u8 data_in, u8* data_out) override;
 
-  void LoadSettings(SettingsInterface& si, const char* section, bool initial) override;
+  void LoadSettings(const SettingsInterface& si, const char* section, bool initial) override;
 
 private:
   enum class TransferState : u8

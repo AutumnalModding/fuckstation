@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
@@ -33,22 +33,29 @@ public:
   DInputSource();
   ~DInputSource() override;
 
-  bool Initialize(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock) override;
-  void UpdateSettings(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock) override;
+  bool Initialize(const SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock) override;
+  void UpdateSettings(const SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock) override;
   bool ReloadDevices() override;
   void Shutdown() override;
 
   void PollEvents() override;
-  std::vector<std::pair<std::string, std::string>> EnumerateDevices() override;
-  std::vector<InputBindingKey> EnumerateMotors() override;
+  std::optional<float> GetCurrentValue(InputBindingKey key) override;
+  InputManager::DeviceList EnumerateDevices() override;
+  InputManager::DeviceEffectList EnumerateEffects(std::optional<InputBindingInfo::Type> type,
+                                                  std::optional<InputBindingKey> for_device) override;
+  u32 GetPollableDeviceCount() const override;
   bool GetGenericBindingMapping(std::string_view device, GenericInputBindingMapping* mapping) override;
   void UpdateMotorState(InputBindingKey key, float intensity) override;
   void UpdateMotorState(InputBindingKey large_key, InputBindingKey small_key, float large_intensity,
                         float small_intensity) override;
+  void UpdateLEDState(InputBindingKey key, float intensity) override;
 
+  bool ContainsDevice(std::string_view device) const override;
   std::optional<InputBindingKey> ParseKeyString(std::string_view device, std::string_view binding) override;
   TinyString ConvertKeyToString(InputBindingKey key) override;
-  TinyString ConvertKeyToIcon(InputBindingKey key) override;
+  TinyString ConvertKeyToIcon(InputBindingKey key, InputManager::BindingIconMappingFunction mapper) override;
+  void SetSubclassPollDeviceList(InputSubclass subclass, const std::span<const InputBindingKey>* devices) override;
+  std::unique_ptr<ForceFeedbackDevice> CreateForceFeedbackDevice(std::string_view device, Error* error) override;
 
 private:
   template<typename T>

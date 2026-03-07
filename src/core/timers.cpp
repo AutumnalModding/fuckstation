@@ -5,6 +5,7 @@
 #include "gpu.h"
 #include "interrupt_controller.h"
 #include "system.h"
+#include "timing_event.h"
 
 #include "util/imgui_manager.h"
 #include "util/state_wrapper.h"
@@ -74,7 +75,7 @@ static void UpdateSysClkEvent();
 namespace {
 struct TimersState
 {
-  TimingEvent sysclk_event{ "Timer SysClk Interrupt", 1, 1, &Timers::AddSysClkTicks, nullptr };
+  TimingEvent sysclk_event{"Timer SysClk Interrupt", 1, 1, &Timers::AddSysClkTicks, nullptr};
 
   std::array<CounterState, NUM_TIMERS> counters{};
   TickCount sysclk_ticks_carry = 0; // 0 unless overclocking is enabled
@@ -314,8 +315,8 @@ u32 Timers::ReadRegister(u32 offset)
       if (timer_index < 2 && cs.external_counting_enabled)
       {
         // timers 0/1 depend on the GPU
-        if (timer_index == 0 || g_gpu->IsCRTCScanlinePending())
-          g_gpu->SynchronizeCRTC();
+        if (timer_index == 0 || g_gpu.IsCRTCScanlinePending())
+          g_gpu.SynchronizeCRTC();
       }
 
       s_state.sysclk_event.InvokeEarly();
@@ -328,8 +329,8 @@ u32 Timers::ReadRegister(u32 offset)
       if (timer_index < 2 && cs.external_counting_enabled)
       {
         // timers 0/1 depend on the GPU
-        if (timer_index == 0 || g_gpu->IsCRTCScanlinePending())
-          g_gpu->SynchronizeCRTC();
+        if (timer_index == 0 || g_gpu.IsCRTCScanlinePending())
+          g_gpu.SynchronizeCRTC();
       }
 
       s_state.sysclk_event.InvokeEarly();
@@ -364,8 +365,8 @@ void Timers::WriteRegister(u32 offset, u32 value)
   if (timer_index < 2 && cs.external_counting_enabled)
   {
     // timers 0/1 depend on the GPU
-    if (timer_index == 0 || g_gpu->IsCRTCScanlinePending())
-      g_gpu->SynchronizeCRTC();
+    if (timer_index == 0 || g_gpu.IsCRTCScanlinePending())
+      g_gpu.SynchronizeCRTC();
   }
 
   s_state.sysclk_event.InvokeEarly();
@@ -390,7 +391,39 @@ void Timers::WriteRegister(u32 offset, u32 value)
 
       DEBUG_LOG("Timer {} write mode register 0x{:04X}", timer_index, value);
       cs.mode.bits = (value & WRITE_MASK) | (cs.mode.bits & ~WRITE_MASK);
-      cs.use_external_clock = (cs.mode.clock_source & (timer_index == 2 ? 2 : 1)) != 0;
+
+      // Why is this extra assignment here? MSVC compiler bugs it seems.
+      // Without the copy in the local variable, when compiling with LTCG, it generates:
+      //
+      // 00007FF7BAF721E1 41 C1 EA 08          shr         r10d,8
+      // 00007FF7BAF721E5 41 83 E2 01          and         r10d,1
+      // 00007FF7BAF721E9 0F 95 C0             setne       al
+      //
+      // and without LTCG, or with the copy:
+      //
+      // 00007FF7C1859732 C1 EA 08             shr         edx,8
+      // 00007FF7C1859735 83 FB 02             cmp         ebx,2
+      // 00007FF7C1859738 0F 94 C0             sete        al
+      // 00007FF7C185973B FF C0                inc         eax
+      // 00007FF7C185973D 84 D0                test        al,dl
+      // 00007FF7C185973F 0F 95 C0             setne       al
+      //
+      // In other words, we get:
+      //   use_external_clock = (clock_source & 1) != 0
+      // and
+      //   use_external_clock = (clock_source & ((timer_index == 2) + 1)) != 0
+      //
+      // The entire "timer_index == 2" sub-expression is ignored. Furthermore, the
+      // and r10d, 1; setne al sequence doesn't make sense to me either, since r10d & 1 is going
+      // to always be equal to !ZF...
+      //
+      // I can't seem to make a minimal repro case for it, and if you do _anything_ inbetween
+      // the statements (e.g. printf), it doesn't generate the bad code. But at least this works
+      // around it for now.
+      //
+      const u8 clock_source = cs.mode.clock_source;
+      cs.use_external_clock = (clock_source & (timer_index == 2 ? 2 : 1)) != 0;
+
       cs.counter = 0;
       cs.irq_done = false;
       InterruptController::SetLineState(
@@ -488,7 +521,7 @@ void Timers::UpdateSysClkEvent()
   s_state.sysclk_event.Schedule(GetTicksUntilNextInterrupt());
 }
 
-void Timers::DrawDebugStateWindow()
+void Timers::DrawDebugStateWindow(float scale)
 {
   static constexpr u32 NUM_COLUMNS = 10;
   static constexpr std::array<const char*, NUM_COLUMNS> column_names = {
@@ -500,26 +533,17 @@ void Timers::DrawDebugStateWindow()
      {{"SysClk", "HBlank", "SysClk", "HBlank"}},
      {{"SysClk", "DotClk", "SysClk/8", "SysClk/8"}}}};
 
-  const float framebuffer_scale = ImGuiManager::GetGlobalScale();
-
-  ImGui::SetNextWindowSize(ImVec2(800.0f * framebuffer_scale, 115.0f * framebuffer_scale), ImGuiCond_FirstUseEver);
-  if (!ImGui::Begin("Timer State", nullptr))
-  {
-    ImGui::End();
-    return;
-  }
-
   ImGui::Columns(NUM_COLUMNS);
-  ImGui::SetColumnWidth(0, 20.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(1, 50.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(2, 50.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(3, 100.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(4, 80.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(5, 80.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(6, 80.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(7, 80.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(8, 80.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(9, 80.0f * framebuffer_scale);
+  ImGui::SetColumnWidth(0, 20.0f * scale);
+  ImGui::SetColumnWidth(1, 50.0f * scale);
+  ImGui::SetColumnWidth(2, 50.0f * scale);
+  ImGui::SetColumnWidth(3, 100.0f * scale);
+  ImGui::SetColumnWidth(4, 80.0f * scale);
+  ImGui::SetColumnWidth(5, 80.0f * scale);
+  ImGui::SetColumnWidth(6, 80.0f * scale);
+  ImGui::SetColumnWidth(7, 80.0f * scale);
+  ImGui::SetColumnWidth(8, 80.0f * scale);
+  ImGui::SetColumnWidth(9, 80.0f * scale);
 
   for (const char* title : column_names)
   {
@@ -557,5 +581,4 @@ void Timers::DrawDebugStateWindow()
   }
 
   ImGui::Columns(1);
-  ImGui::End();
 }

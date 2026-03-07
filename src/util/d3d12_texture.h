@@ -40,9 +40,12 @@ public:
   bool Update(u32 x, u32 y, u32 width, u32 height, const void* data, u32 pitch, u32 layer = 0, u32 level = 0) override;
   bool Map(void** map, u32* map_stride, u32 x, u32 y, u32 width, u32 height, u32 layer = 0, u32 level = 0) override;
   void Unmap() override;
+  void GenerateMipmaps() override;
   void MakeReadyForSampling() override;
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   void SetDebugName(std::string_view name) override;
+#endif
 
   void TransitionToState(D3D12_RESOURCE_STATES state);
   void CommitClear();
@@ -71,16 +74,15 @@ private:
     DSV
   };
 
-  D3D12Texture(u32 width, u32 height, u32 layers, u32 levels, u32 samples, Type type, Format format,
-               DXGI_FORMAT dxgi_format, ComPtr<ID3D12Resource> resource, ComPtr<D3D12MA::Allocation> allocation,
-               const D3D12DescriptorHandle& srv_descriptor, const D3D12DescriptorHandle& write_descriptor,
-               const D3D12DescriptorHandle& uav_descriptor, WriteDescriptorType wdtype,
-               D3D12_RESOURCE_STATES resource_state);
+  D3D12Texture(u32 width, u32 height, u32 layers, u32 levels, u32 samples, Type type, GPUTextureFormat format,
+               Flags flags, DXGI_FORMAT dxgi_format, ComPtr<ID3D12Resource> resource,
+               ComPtr<D3D12MA::Allocation> allocation, const D3D12DescriptorHandle& srv_descriptor,
+               const D3D12DescriptorHandle& write_descriptor, const D3D12DescriptorHandle& uav_descriptor,
+               WriteDescriptorType wdtype, D3D12_RESOURCE_STATES resource_state);
 
   ID3D12GraphicsCommandList4* GetCommandBufferForUpdate();
-  ID3D12Resource* AllocateUploadStagingBuffer(const void* data, u32 pitch, u32 upload_pitch, u32 width,
-                                              u32 height) const;
-  void CopyTextureDataForUpload(void* dst, const void* src, u32 width, u32 height, u32 pitch, u32 upload_pitch) const;
+  ID3D12Resource* AllocateUploadStagingBuffer(const void* data, u32 pitch, u32 upload_pitch, u32 width, u32 height,
+                                              u32 buffer_size) const;
   void ActuallyCommitClear(ID3D12GraphicsCommandList* cmdlist);
 
   ComPtr<ID3D12Resource> m_resource;
@@ -115,7 +117,11 @@ public:
 
   ALWAYS_INLINE const D3D12DescriptorHandle& GetDescriptor() const { return m_descriptor; }
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   void SetDebugName(std::string_view name) override;
+#endif
+
+  static D3D12_SAMPLER_DESC GetD3DSamplerDesc(const GPUSampler::Config& config);
 
 private:
   D3D12Sampler(D3D12DescriptorHandle descriptor);
@@ -133,14 +139,16 @@ public:
 
   ALWAYS_INLINE const D3D12DescriptorHandle& GetDescriptor() const { return m_descriptor; }
 
-  bool Create(D3D12Device& dev);
+  bool Create(D3D12Device& dev, Error* error);
   void Destroy(bool defer);
 
   // Inherited via GPUTextureBuffer
   void* Map(u32 required_elements) override;
   void Unmap(u32 used_elements) override;
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   void SetDebugName(std::string_view name) override;
+#endif
 
 private:
   D3D12StreamBuffer m_buffer;
@@ -155,7 +163,7 @@ public:
 
   ~D3D12DownloadTexture() override;
 
-  static std::unique_ptr<D3D12DownloadTexture> Create(u32 width, u32 height, GPUTexture::Format format);
+  static std::unique_ptr<D3D12DownloadTexture> Create(u32 width, u32 height, GPUTextureFormat format, Error* error);
 
   void CopyFromTexture(u32 dst_x, u32 dst_y, GPUTexture* src, u32 src_x, u32 src_y, u32 width, u32 height,
                        u32 src_layer, u32 src_level, bool use_transfer_pitch) override;
@@ -165,15 +173,16 @@ public:
 
   void Flush() override;
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   void SetDebugName(std::string_view name) override;
+#endif
 
 private:
-  D3D12DownloadTexture(u32 width, u32 height, GPUTexture::Format format, ComPtr<D3D12MA::Allocation> allocation,
-                       ComPtr<ID3D12Resource> buffer, size_t buffer_size);
+  D3D12DownloadTexture(u32 width, u32 height, GPUTextureFormat format, ComPtr<D3D12MA::Allocation> allocation,
+                       ComPtr<ID3D12Resource> buffer);
 
   ComPtr<D3D12MA::Allocation> m_allocation;
   ComPtr<ID3D12Resource> m_buffer;
 
   u64 m_copy_fence_value = 0;
-  size_t m_buffer_size = 0;
 };

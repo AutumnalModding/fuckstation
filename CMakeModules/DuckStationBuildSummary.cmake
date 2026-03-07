@@ -1,3 +1,8 @@
+message(STATUS "Build Type: ${CMAKE_BUILD_TYPE}")
+string(TOUPPER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE_UPPER)
+message(STATUS "C Flags: ${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${CMAKE_BUILD_TYPE_UPPER}}")
+message(STATUS "CXX Flags: ${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${CMAKE_BUILD_TYPE_UPPER}}")
+
 if(ENABLE_OPENGL)
   message(STATUS "Building with OpenGL support.")
 endif()
@@ -24,17 +29,31 @@ if(BUILD_TESTS)
   message(STATUS "Building unit tests.")
 endif()
 
-if(ALLOW_INSTALL)
-  message(WARNING "Install target is enabled. This will install all DuckStation files into:
-  ${CMAKE_INSTALL_PREFIX}
-It does **not** use the LSB subdirectories of bin, share, etc, so you should disable this option if it is set to /usr or /usr/local.")
-
-  if(INSTALL_SELF_CONTAINED)
-    message(STATUS "Creating self-contained install at ${CMAKE_INSTALL_PREFIX}")
-  else()
-    message(STATUS "Creating relative install at ${CMAKE_INSTALL_PREFIX}")
-    message(STATUS "  CMAKE_INSTALL_BINDIR: ${CMAKE_INSTALL_BINDIR}")
+# Refuse to build in hostile package environments. The code and build script licenses do not allow for
+# packages, and I'm sick of dealing with people complaining about things broken by packagers, and then
+# being attacked by package maintainers who violate their distribution's codes of conduct. Attempts to
+# request removal of these packages have been unsuccessful, so we have to resort to this.
+# NOTE: You do NOT have permission to distribute build scripts or patches that modify the build system
+# without explicit permission from the copyright holder.
+# DuckStation's code is public so it can be audited and learned from. Not to repackage.
+# This is why we can't have nice things.
+if(EXISTS /etc/os-release)
+  file(READ /etc/os-release OS_RELEASE_CONTENT)
+  if(OS_RELEASE_CONTENT MATCHES "ID=arch" OR OS_RELEASE_CONTENT MATCHES "ID_LIKE=arch" OR OS_RELEASE_CONTENT MATCHES "ID=nixos")
+    message(FATAL_ERROR "Unsupported environment.")
   endif()
+endif()
+if(DEFINED ENV{NIX_BUILD_TOP} OR DEFINED ENV{NIX_STORE} OR DEFINED ENV{IN_NIX_SHELL} OR EXISTS "/etc/NIXOS")
+  message(FATAL_ERROR "Unsupported environment.")
+endif()
+
+if(DEFINED HOST_MIN_PAGE_SIZE AND DEFINED HOST_MAX_PAGE_SIZE)
+  message(STATUS "Building with a dynamic page size of ${HOST_MIN_PAGE_SIZE} - ${HOST_MAX_PAGE_SIZE} bytes.")
+elseif(DEFINED HOST_PAGE_SIZE)
+  message(STATUS "Building with detected page size of ${HOST_PAGE_SIZE}")
+endif()
+if(DEFINED HOST_CACHE_LINE_SIZE)
+  message(STATUS "Building with detected cache line size of ${HOST_CACHE_LINE_SIZE}")
 endif()
 
 if(NOT IS_SUPPORTED_COMPILER)

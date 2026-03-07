@@ -1,12 +1,17 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
+#ifndef __APPLE__
+#error This file should only be included when compiling for MacOS.
+#endif
+
 #include "types.h"
 
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
 class Error;
 
@@ -15,16 +20,19 @@ class Error;
 #import <Cocoa/Cocoa.h>
 
 namespace CocoaTools {
+
 NSString* StringViewToNSString(std::string_view str);
 void NSErrorToErrorObject(Error* errptr, std::string_view message, NSError* error);
 
 /// Converts NSError to a human-readable string.
 std::string NSErrorToString(NSError* error);
+
 } // namespace CocoaTools
 
 #endif
 
 namespace CocoaTools {
+
 // Converts to Mach timebase.
 u64 ConvertMachTimeBaseToNanoseconds(u64 ns);
 u64 ConvertNanosecondsToMachTimeBase(u64 ns);
@@ -40,4 +48,20 @@ std::optional<std::string> GetNonTranslocatedBundlePath();
 
 /// Launch the given application once this one quits
 bool DelayedLaunch(std::string_view file, std::span<const std::string_view> args = {});
+
+/// Returns the size of a NSView in pixels.
+std::optional<std::pair<int, int>> GetViewSizeInPixels(const void* view);
+
+/// Returns the "real" scaling factor for a given view, on its current display.
+std::optional<double> GetViewRealScalingFactor(const void* view);
+
+/// Returns the refresh rate of the display the window is placed on.
+std::optional<float> GetViewRefreshRate(const void* view, Error* error);
+
+/// Creates metal layer on specified window surface.
+void* CreateMetalLayer(void* view, Error* error);
+
+/// Destroys metal layer on specified window surface.
+void DestroyMetalLayer(void* view, void* layer);
+
 } // namespace CocoaTools

@@ -1,0 +1,4 @@
+prebuilt/
+
+# Old Windows prebuilt directory, can be removed at some point in the future
+msvc/

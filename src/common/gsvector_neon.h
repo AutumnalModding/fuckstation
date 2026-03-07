@@ -6,9 +6,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 #define GSVECTOR_HAS_FAST_INT_SHUFFLE8 1
 #define GSVECTOR_HAS_SRLV 1
+
+#ifdef CPU_ARCH_ARM64
+// tbl2 with 128-bit vectors is not in A32.
+#define GSVECTOR_HAS_TBL2 1
+#endif
 
 class GSVector2;
 class GSVector2i;
@@ -194,11 +200,11 @@ public:
 
   ALWAYS_INLINE s32 minv_s32() const { return vminv_s32(v2s); }
 
-  ALWAYS_INLINE u32 minv_u32() const { return vminv_u32(v2s); }
+  ALWAYS_INLINE u32 minv_u32() const { return vminv_u32(vreinterpret_u32_s32(v2s)); }
 
   ALWAYS_INLINE s32 maxv_s32() const { return vmaxv_s32(v2s); }
 
-  ALWAYS_INLINE u32 maxv_u32() const { return vmaxv_u32(v2s); }
+  ALWAYS_INLINE u32 maxv_u32() const { return vmaxv_u32(vreinterpret_u32_s32(v2s)); }
 
 #else
 
@@ -284,7 +290,7 @@ public:
 
   ALWAYS_INLINE GSVector2i shuffle8(const GSVector2i& mask) const
   {
-    return GSVector2i(vreinterpret_s32_s8(vtbl1_s8(vreinterpret_s8_s32(v2s), vreinterpret_u8_s32(mask.v2s))));
+    return GSVector2i(vreinterpret_s32_s8(vtbl1_s8(vreinterpret_s8_s32(v2s), vreinterpret_s8_s32(mask.v2s))));
   }
 
   ALWAYS_INLINE GSVector2i ps16() const
@@ -299,7 +305,7 @@ public:
 
   ALWAYS_INLINE GSVector2i ps32() const
   {
-    return GSVector2i(vreinterpret_s32_s16(vqmovn_s16(vcombine_s32(v2s, vcreate_s32(0)))));
+    return GSVector2i(vreinterpret_s32_s16(vqmovn_s32(vcombine_s32(v2s, vcreate_s32(0)))));
   }
 
   ALWAYS_INLINE GSVector2i pu32() const
@@ -359,14 +365,31 @@ public:
 
 #endif
 
-  ALWAYS_INLINE GSVector2i i8to16() const
+  ALWAYS_INLINE GSVector2i s8to16() const
   {
-    return GSVector2i(vreinterpret_s32_s16(vget_low_s8(vmovl_s8(vreinterpret_s8_s32(v2s)))));
+    return GSVector2i(vreinterpret_s32_s16(vget_low_s16(vmovl_s8(vreinterpret_s8_s32(v2s)))));
   }
 
   ALWAYS_INLINE GSVector2i u8to16() const
   {
-    return GSVector2i(vreinterpret_s32_u16(vget_low_u8(vmovl_u8(vreinterpret_u8_s32(v2s)))));
+    return GSVector2i(vreinterpret_s32_u16(vget_low_u16(vmovl_u8(vreinterpret_u8_s32(v2s)))));
+  }
+
+  ALWAYS_INLINE GSVector2i s8to32() const
+  {
+    return GSVector2i(vget_low_s32(vmovl_s16(vget_low_s16(vmovl_s8(vreinterpret_s8_s32(v2s))))));
+  }
+
+  ALWAYS_INLINE GSVector2i u8to32() const
+  {
+    return GSVector2i(vreinterpret_s32_u32(vget_low_u32(vmovl_u16(vget_low_u16(vmovl_u8(vreinterpret_u8_s32(v2s)))))));
+  }
+
+  ALWAYS_INLINE GSVector2i s16to32() const { return GSVector2i(vget_low_s32(vmovl_s16(vreinterpret_s16_s32(v2s)))); }
+
+  ALWAYS_INLINE GSVector2i u16to32() const
+  {
+    return GSVector2i(vreinterpret_s32_u32(vget_low_u32(vmovl_u16(vreinterpret_u16_s32(v2s)))));
   }
 
   template<int i>
@@ -378,23 +401,23 @@ public:
   template<int i>
   ALWAYS_INLINE GSVector2i sll() const
   {
-    return GSVector2i(vreinterpret_s32_s8(vext_s8(vdup_n_s8(0), vreinterpret_s8_s32(v2s), 16 - i)));
+    return GSVector2i(vreinterpret_s32_s8(vext_s8(vdup_n_s8(0), vreinterpret_s8_s32(v2s), 8 - i)));
   }
 
   template<int i>
   ALWAYS_INLINE GSVector2i sll16() const
   {
-    return GSVector2i(vreinterpret_s32_s16(vshl_n_s16(vreinterpret_s16_s32(v2s), i)));
+    return GSVector2i(vreinterpret_s32_u16(vshl_n_u16(vreinterpret_u16_s32(v2s), i)));
   }
 
   ALWAYS_INLINE GSVector2i sll16(s32 i) const
   {
-    return GSVector2i(vreinterpret_s32_s16(vshl_s16(vreinterpret_s16_s32(v2s), vdup_n_s16(i))));
+    return GSVector2i(vreinterpret_s32_u16(vshl_u16(vreinterpret_u16_s32(v2s), vdup_n_s16(i))));
   }
 
   ALWAYS_INLINE GSVector2i sllv16(const GSVector2i& v) const
   {
-    return GSVector2i(vreinterpret_s32_s16(vshl_s16(vreinterpret_s16_s32(v2s), vreinterpret_s16_s32(v.v2s))));
+    return GSVector2i(vreinterpret_s32_u16(vshl_u16(vreinterpret_u16_s32(v2s), vreinterpret_s16_s32(v.v2s))));
   }
 
   template<int i>
@@ -405,7 +428,7 @@ public:
 
   ALWAYS_INLINE GSVector2i srl16(s32 i) const
   {
-    return GSVector2i(vreinterpret_s32_u16(vshl_u16(vreinterpret_u16_s32(v2s), vdup_n_u16(-i))));
+    return GSVector2i(vreinterpret_s32_u16(vshl_u16(vreinterpret_u16_s32(v2s), vdup_n_s16(-i))));
   }
 
   ALWAYS_INLINE GSVector2i srlv16(const GSVector2i& v) const
@@ -436,9 +459,15 @@ public:
     return GSVector2i(vshl_n_s32(v2s, i));
   }
 
-  ALWAYS_INLINE GSVector2i sll32(s32 i) const { return GSVector2i(vshl_s32(v2s, vdup_n_s32(i))); }
+  ALWAYS_INLINE GSVector2i sll32(s32 i) const
+  {
+    return GSVector2i(vreinterpret_s32_u32(vshl_u32(vreinterpret_u32_s32(v2s), vdup_n_s32(i))));
+  }
 
-  ALWAYS_INLINE GSVector2i sllv32(const GSVector2i& v) const { return GSVector2i(vshl_s32(v2s, v.v2s)); }
+  ALWAYS_INLINE GSVector2i sllv32(const GSVector2i& v) const
+  {
+    return GSVector2i(vreinterpret_s32_u32(vshl_u32(vreinterpret_u32_s32(v2s), v.v2s)));
+  }
 
   template<int i>
   ALWAYS_INLINE GSVector2i srl32() const
@@ -464,10 +493,7 @@ public:
 
   ALWAYS_INLINE GSVector2i sra32(s32 i) const { return GSVector2i(vshl_s32(v2s, vdup_n_s32(-i))); }
 
-  ALWAYS_INLINE GSVector2i srav32(const GSVector2i& v) const
-  {
-    return GSVector2i(vshl_s32(vreinterpret_u32_s32(v2s), vneg_s32(v.v2s)));
-  }
+  ALWAYS_INLINE GSVector2i srav32(const GSVector2i& v) const { return GSVector2i(vshl_s32(v2s, vneg_s32(v.v2s))); }
 
   ALWAYS_INLINE GSVector2i add8(const GSVector2i& v) const
   {
@@ -533,6 +559,16 @@ public:
     return GSVector2i(vreinterpret_s32_u16(vqsub_u16(vreinterpret_u16_s32(v2s), vreinterpret_u16_s32(v.v2s))));
   }
 
+  ALWAYS_INLINE GSVector2i avg8(const GSVector2i& v) const
+  {
+    return GSVector2i(vreinterpret_s32_u8(vrhadd_u8(vreinterpret_u8_s32(v2s), vreinterpret_u8_s32(v.v2s))));
+  }
+
+  ALWAYS_INLINE GSVector2i avg16(const GSVector2i& v) const
+  {
+    return GSVector2i(vreinterpret_s32_u16(vrhadd_u16(vreinterpret_u16_s32(v2s), vreinterpret_u16_s32(v.v2s))));
+  }
+
   ALWAYS_INLINE GSVector2i mul16l(const GSVector2i& v) const
   {
     return GSVector2i(vreinterpret_s32_s16(vmul_s16(vreinterpret_s16_s32(v2s), vreinterpret_s16_s32(v.v2s))));
@@ -568,47 +604,59 @@ public:
 
   ALWAYS_INLINE GSVector2i gt8(const GSVector2i& v) const
   {
-    return GSVector2i(vreinterpret_s32_s8(vcgt_s8(vreinterpret_s8_s32(v2s), vreinterpret_s8_s32(v.v2s))));
+    return GSVector2i(vreinterpret_s32_u8(vcgt_s8(vreinterpret_s8_s32(v2s), vreinterpret_s8_s32(v.v2s))));
   }
 
   ALWAYS_INLINE GSVector2i gt16(const GSVector2i& v) const
   {
-    return GSVector2i(vreinterpret_s32_s16(vcgt_s16(vreinterpret_s16_s32(v2s), vreinterpret_s16_s32(v.v2s))));
+    return GSVector2i(vreinterpret_s32_u16(vcgt_s16(vreinterpret_s16_s32(v2s), vreinterpret_s16_s32(v.v2s))));
   }
 
-  ALWAYS_INLINE GSVector2i gt32(const GSVector2i& v) const { return GSVector2i(vcgt_s32(v2s, v.v2s)); }
+  ALWAYS_INLINE GSVector2i gt32(const GSVector2i& v) const
+  {
+    return GSVector2i(vreinterpret_s32_u32(vcgt_s32(v2s, v.v2s)));
+  }
 
   ALWAYS_INLINE GSVector2i ge8(const GSVector2i& v) const
   {
-    return GSVector2i(vreinterpret_s32_s8(vcge_s8(vreinterpret_s8_s32(v2s), vreinterpret_s8_s32(v.v2s))));
+    return GSVector2i(vreinterpret_s32_u8(vcge_s8(vreinterpret_s8_s32(v2s), vreinterpret_s8_s32(v.v2s))));
   }
   ALWAYS_INLINE GSVector2i ge16(const GSVector2i& v) const
   {
-    return GSVector2i(vreinterpret_s32_s16(vcge_s16(vreinterpret_s16_s32(v2s), vreinterpret_s16_s32(v.v2s))));
+    return GSVector2i(vreinterpret_s32_u16(vcge_s16(vreinterpret_s16_s32(v2s), vreinterpret_s16_s32(v.v2s))));
   }
-  ALWAYS_INLINE GSVector2i ge32(const GSVector2i& v) const { return GSVector2i(vcge_s32(v2s, v.v2s)); }
+  ALWAYS_INLINE GSVector2i ge32(const GSVector2i& v) const
+  {
+    return GSVector2i(vreinterpret_s32_u32(vcge_s32(v2s, v.v2s)));
+  }
 
   ALWAYS_INLINE GSVector2i lt8(const GSVector2i& v) const
   {
-    return GSVector2i(vreinterpret_s32_s8(vclt_s8(vreinterpret_s8_s32(v2s), vreinterpret_s8_s32(v.v2s))));
+    return GSVector2i(vreinterpret_s32_u8(vclt_s8(vreinterpret_s8_s32(v2s), vreinterpret_s8_s32(v.v2s))));
   }
 
   ALWAYS_INLINE GSVector2i lt16(const GSVector2i& v) const
   {
-    return GSVector2i(vreinterpret_s32_s16(vclt_s16(vreinterpret_s16_s32(v2s), vreinterpret_s16_s32(v.v2s))));
+    return GSVector2i(vreinterpret_s32_u16(vclt_s16(vreinterpret_s16_s32(v2s), vreinterpret_s16_s32(v.v2s))));
   }
 
-  ALWAYS_INLINE GSVector2i lt32(const GSVector2i& v) const { return GSVector2i(vclt_s32(v2s, v.v2s)); }
+  ALWAYS_INLINE GSVector2i lt32(const GSVector2i& v) const
+  {
+    return GSVector2i(vreinterpret_s32_u32(vclt_s32(v2s, v.v2s)));
+  }
 
   ALWAYS_INLINE GSVector2i le8(const GSVector2i& v) const
   {
-    return GSVector2i(vreinterpret_s32_s8(vcle_s8(vreinterpret_s8_s32(v2s), vreinterpret_s8_s32(v.v2s))));
+    return GSVector2i(vreinterpret_s32_u8(vcle_s8(vreinterpret_s8_s32(v2s), vreinterpret_s8_s32(v.v2s))));
   }
   ALWAYS_INLINE GSVector2i le16(const GSVector2i& v) const
   {
-    return GSVector2i(vreinterpret_s32_s16(vcle_s16(vreinterpret_s16_s32(v2s), vreinterpret_s16_s32(v.v2s))));
+    return GSVector2i(vreinterpret_s32_u16(vcle_s16(vreinterpret_s16_s32(v2s), vreinterpret_s16_s32(v.v2s))));
   }
-  ALWAYS_INLINE GSVector2i le32(const GSVector2i& v) const { return GSVector2i(vcle_s32(v2s, v.v2s)); }
+  ALWAYS_INLINE GSVector2i le32(const GSVector2i& v) const
+  {
+    return GSVector2i(vreinterpret_s32_u32(vcle_s32(v2s, v.v2s)));
+  }
 
   ALWAYS_INLINE GSVector2i andnot(const GSVector2i& v) const { return GSVector2i(vbic_s32(v2s, v.v2s)); }
 
@@ -624,25 +672,12 @@ public:
 
   ALWAYS_INLINE bool alltrue() const
   {
-    // MSB should be set in all 8-bit lanes.
-#ifdef CPU_ARCH_ARM64
-    return (vminv_u8(vreinterpret_u8_s32(v2s)) & 0x80) == 0x80;
-#else
-    return ((vget_lane_u32(vreinterpret_u32_s32(v2s), 0) & vget_lane_u32(vreinterpret_u32_s32(v2s), 1) & 0x80808080u) ==
-            0x80808080u);
-#endif
+    return (vget_lane_u64(vreinterpret_u64_s32(v2s), 0) == UINT64_C(0xFFFFFFFFFFFFFFFF));
   }
 
-  ALWAYS_INLINE bool allfalse() const
-  {
-    // MSB should be clear in all 8-bit lanes.
-#ifdef CPU_ARCH_ARM64
-    return (vmaxv_u32(vreinterpret_u8_s32(v2s)) & 0x80) != 0x80;
-#else
-    return ((vget_lane_u32(vreinterpret_u32_s32(v2s), 0) & vget_lane_u32(vreinterpret_u32_s32(v2s), 1) & 0x80808080u) ==
-            0);
-#endif
-  }
+  ALWAYS_INLINE bool anytrue() const { return (vget_lane_u64(vreinterpret_u64_s32(v2s), 0) != UINT64_C(0)); }
+
+  ALWAYS_INLINE bool allfalse() const { return (vget_lane_u64(vreinterpret_u64_s32(v2s), 0) == UINT64_C(0)); }
 
   template<int i>
   ALWAYS_INLINE GSVector2i insert8(int a) const
@@ -683,14 +718,23 @@ public:
   ALWAYS_INLINE static GSVector2i load32(const void* p)
   {
     // should be ldr s0, [x0]
-    u32 val;
-    std::memcpy(&val, p, sizeof(u32));
-    return GSVector2i(vset_lane_u32(val, vdup_n_u32(0), 0));
+    s32 val;
+    std::memcpy(&val, p, sizeof(s32));
+    return GSVector2i(vset_lane_s32(val, vdup_n_s32(0), 0));
   }
 
-  ALWAYS_INLINE static GSVector2i zext32(s32 v) { return GSVector2i(vset_lane_s32(v, vdup_n_s32(0), 0)); }
+  ALWAYS_INLINE static GSVector2i set32(s32 v) { return GSVector2i(vset_lane_s32(v, vdup_n_s32(0), 0)); }
 
-  ALWAYS_INLINE static GSVector2i load(const void* p) { return GSVector2i(vld1_s32((const int32_t*)p)); }
+  template<bool aligned>
+  ALWAYS_INLINE static GSVector2i load(const void* p)
+  {
+#ifdef CPU_ARCH_ARM32
+    if constexpr (!aligned)
+      return GSVector2i(vreinterpret_s32_s8(vld1_s8((const int8_t*)p)));
+#endif
+
+    return GSVector2i(vld1_s32((const int32_t*)p));
+  }
 
   ALWAYS_INLINE static void store32(void* p, const GSVector2i& v)
   {
@@ -698,7 +742,19 @@ public:
     std::memcpy(p, &val, sizeof(s32));
   }
 
-  ALWAYS_INLINE static void store(void* p, const GSVector2i& v) { vst1_s32((int32_t*)p, v.v2s); }
+  template<bool aligned>
+  ALWAYS_INLINE static void store(void* p, const GSVector2i& v)
+  {
+#ifdef CPU_ARCH_ARM32
+    if constexpr (!aligned)
+    {
+      vst1_s8((int8_t*)p, vreinterpret_s8_s32(v.v2s));
+      return;
+    }
+#endif
+
+    vst1_s32((int32_t*)p, v.v2s);
+  }
 
   ALWAYS_INLINE void operator&=(const GSVector2i& v)
   {
@@ -846,7 +902,7 @@ public:
   template<int mask>
   ALWAYS_INLINE GSVector2 blend32(const GSVector2& a) const
   {
-    return GSVector2(__builtin_shufflevector(v2s, a.v2s, (mask & 1) ? 4 : 0, (mask & 2) ? 5 : 1));
+    return GSVector2(__builtin_shufflevector(v2s, a.v2s, (mask & 1) ? 2 : 0, (mask & 2) ? 3 : 1));
   }
 
   ALWAYS_INLINE GSVector2 blend32(const GSVector2& a, const GSVector2& mask) const
@@ -863,13 +919,18 @@ public:
 
   ALWAYS_INLINE int mask() const
   {
-    const uint32x2_t masks = vshr_n_u32(vreinterpret_u32_s32(v2s), 31);
+    const uint32x2_t masks = vshr_n_u32(vreinterpret_u32_f32(v2s), 31);
     return (vget_lane_u32(masks, 0) | (vget_lane_u32(masks, 1) << 1));
   }
 
-  ALWAYS_INLINE bool alltrue() const { return (vget_lane_u64(vreinterpret_u64_f32(v2s), 0) == 0xFFFFFFFFFFFFFFFFULL); }
+  ALWAYS_INLINE bool alltrue() const
+  {
+    return (vget_lane_u64(vreinterpret_u64_f32(v2s), 0) == UINT64_C(0xFFFFFFFFFFFFFFFF));
+  }
 
-  ALWAYS_INLINE bool allfalse() const { return (vget_lane_u64(vreinterpret_u64_f32(v2s), 0) == 0); }
+  ALWAYS_INLINE bool anytrue() const { return (vget_lane_u64(vreinterpret_u64_f32(v2s), 0) != UINT64_C(0)); }
+
+  ALWAYS_INLINE bool allfalse() const { return (vget_lane_u64(vreinterpret_u64_f32(v2s), 0) == UINT64_C(0)); }
 
   ALWAYS_INLINE GSVector2 replace_nan(const GSVector2& v) const { return v.blend32(*this, *this == *this); }
 
@@ -903,9 +964,30 @@ public:
 
   ALWAYS_INLINE static GSVector2 xffffffff() { return GSVector2(vreinterpret_f32_u32(vdup_n_u32(0xFFFFFFFFu))); }
 
-  ALWAYS_INLINE static GSVector2 load(const void* p) { return GSVector2(vld1_f32(static_cast<const float*>(p))); }
+  template<bool aligned>
+  ALWAYS_INLINE static GSVector2 load(const void* p)
+  {
+#ifdef CPU_ARCH_ARM32
+    if constexpr (!aligned)
+      return GSVector2(vreinterpret_f32_s8(vld1_s8((const int8_t*)p)));
+#endif
 
-  ALWAYS_INLINE static void store(void* p, const GSVector2& v) { vst1_f32(static_cast<float*>(p), v.v2s); }
+    return GSVector2(vld1_f32(static_cast<const float*>(p)));
+  }
+
+  template<bool aligned>
+  ALWAYS_INLINE static void store(void* p, const GSVector2& v)
+  {
+#ifdef CPU_ARCH_ARM32
+    if constexpr (!aligned)
+    {
+      vst1_s8(static_cast<int8_t*>(p), vreinterpret_s8_f32(v.v2s));
+      return;
+    }
+#endif
+
+    vst1_f32(static_cast<float*>(p), v.v2s);
+  }
 
   ALWAYS_INLINE GSVector2 operator-() const { return neg(); }
 
@@ -1108,12 +1190,13 @@ public:
   {
   }
 
+  ALWAYS_INLINE explicit GSVector4i(const GSVector2i& v) : v4s(vcombine_s32(v.v2s, vcreate_s32(0))) {}
+
   ALWAYS_INLINE explicit GSVector4i(s32 i) { *this = i; }
 
-  ALWAYS_INLINE explicit GSVector4i(int32x2_t m) : v4s(vcombine_s32(m, vcreate_s32(0))) {}
   ALWAYS_INLINE constexpr explicit GSVector4i(int32x4_t m) : v4s(m) {}
 
-  ALWAYS_INLINE explicit GSVector4i(const GSVector2& v);
+  ALWAYS_INLINE explicit GSVector4i(const GSVector2& v) : v4s(vcombine_s32(vcvt_s32_f32(v.v2s), vcreate_s32(0))) {}
   ALWAYS_INLINE explicit GSVector4i(const GSVector4& v);
 
   ALWAYS_INLINE static GSVector4i cast(const GSVector4& v);
@@ -1127,19 +1210,25 @@ public:
   ALWAYS_INLINE s32 width() const { return right - left; }
   ALWAYS_INLINE s32 height() const { return bottom - top; }
 
+  ALWAYS_INLINE GSVector2i rsize() const { return zwzw().sub32(xyxy()).xy(); }
+
   ALWAYS_INLINE bool rempty() const
   {
-#ifdef CPU_ARCH_ARM64
-    return (vminv_u32(vreinterpret_u32_s32(vget_low_s32(lt32(zwzw())))) == 0);
-#else
-    return (vget_lane_u64(vreinterpret_u64_u32(vreinterpret_u32_s32(vget_low_s32(lt32(zwzw())))), 0) == 0);
-#endif
+    // !any((x, y) < (z, w)) i.e. !not_empty
+    return (vget_lane_u64(vreinterpret_u64_u32(vclt_s32(vget_low_s32(v4s), vget_high_s32(v4s))), 0) !=
+            0xFFFFFFFFFFFFFFFFULL);
+  }
+
+  ALWAYS_INLINE bool rvalid() const
+  {
+    // !all((x, y) >= (z, w))
+    return (vget_lane_u64(vreinterpret_u64_u32(vcge_s32(vget_low_s32(v4s), vget_high_s32(v4s))), 0) == 0);
   }
 
   ALWAYS_INLINE GSVector4i runion(const GSVector4i& a) const { return min_s32(a).upl64(max_s32(a).srl<8>()); }
 
   ALWAYS_INLINE GSVector4i rintersect(const GSVector4i& a) const { return sat_s32(a); }
-  ALWAYS_INLINE bool rintersects(const GSVector4i& v) const { return !rintersect(v).rempty(); }
+  ALWAYS_INLINE bool rintersects(const GSVector4i& v) const { return rintersect(v).rvalid(); }
   ALWAYS_INLINE bool rcontains(const GSVector4i& v) const { return rintersect(v).eq(v); }
 
   ALWAYS_INLINE u32 rgba32() const { return static_cast<u32>(ps32().pu16().extract32<0>()); }
@@ -1251,15 +1340,16 @@ public:
   ALWAYS_INLINE GSVector4i madd_s16(const GSVector4i& v) const
   {
 #ifdef CPU_ARCH_ARM64
-    const int32x4_t acc =
-      vmlal_s16(vdupq_n_s32(0), vget_low_s16(vreinterpretq_s16_s32(v4s)), vget_low_s16(vreinterpretq_s16_s32(v.v4s)));
-    return GSVector4i(vmlal_high_s16(acc, vreinterpretq_s16_s32(v4s), vreinterpretq_s16_s32(v.v4s)));
+    const int32x4_t low =
+      vmull_s16(vget_low_s16(vreinterpretq_s16_s32(v4s)), vget_low_s16(vreinterpretq_s16_s32(v.v4s)));
+    const int32x4_t high = vmull_high_s16(vreinterpretq_s16_s32(v4s), vreinterpretq_s16_s32(v.v4s));
+    return GSVector4i(vpaddq_s32(low, high));
 #else
     // borrowed from sse2neon
     const int32x4_t low =
-      vmlal_s16(vdupq_n_s32(0), vget_low_s16(vreinterpretq_s16_s32(v4s)), vget_low_s16(vreinterpretq_s16_s32(v.v4s)));
+      vmull_s16(vget_low_s16(vreinterpretq_s16_s32(v4s)), vget_low_s16(vreinterpretq_s16_s32(v.v4s)));
     const int32x4_t high =
-      vmlal_s16(vdupq_n_s32(0), vget_high_s16(vreinterpretq_s16_s32(v4s)), vget_high_s16(vreinterpretq_s16_s32(v.v4s)));
+      vmull_s16(vget_high_s16(vreinterpretq_s16_s32(v4s)), vget_high_s16(vreinterpretq_s16_s32(v.v4s)));
     return GSVector4i(vcombine_s32(vpadd_s32(vget_low_s32(low), vget_high_s32(low)),
                                    vpadd_s32(vget_low_s32(high), vget_high_s32(high))));
 #endif
@@ -1297,11 +1387,11 @@ public:
 
   ALWAYS_INLINE s32 minv_s32() const { return vminvq_s32(v4s); }
 
-  ALWAYS_INLINE u32 minv_u32() const { return vminvq_u32(v4s); }
+  ALWAYS_INLINE u32 minv_u32() const { return vminvq_u32(vreinterpretq_u32_s32(v4s)); }
 
   ALWAYS_INLINE s32 maxv_s32() const { return vmaxvq_s32(v4s); }
 
-  ALWAYS_INLINE u32 maxv_u32() const { return vmaxvq_u32(v4s); }
+  ALWAYS_INLINE u32 maxv_u32() const { return vmaxvq_u32(vreinterpretq_u32_s32(v4s)); }
 
 #else
 
@@ -1350,7 +1440,7 @@ public:
   ALWAYS_INLINE u32 minv_u32() const
   {
     uint32x2_t vmin = vmin_u32(vget_low_u32(vreinterpretq_u32_s32(v4s)), vget_high_u32(vreinterpretq_u32_s32(v4s)));
-    return std::min<u32>(vget_lane_u32(vreinterpret_u32_s32(vmin), 0), vget_lane_u32(vreinterpret_u32_s32(vmin), 1));
+    return std::min<u32>(vget_lane_u32(vmin, 0), vget_lane_u32(vmin, 1));
   }
 
   ALWAYS_INLINE s32 maxv_s32() const
@@ -1362,7 +1452,7 @@ public:
   ALWAYS_INLINE u32 maxv_u32() const
   {
     uint32x2_t vmax = vmax_u32(vget_low_u32(vreinterpretq_u32_s32(v4s)), vget_high_u32(vreinterpretq_u32_s32(v4s)));
-    return std::max<u32>(vget_lane_u32(vreinterpret_u32_s32(vmax), 0), vget_lane_u32(vreinterpret_u32_s32(vmax), 1));
+    return std::max<u32>(vget_lane_u32(vmax, 0), vget_lane_u32(vmax, 1));
   }
 
 #endif
@@ -1378,23 +1468,18 @@ public:
   template<int mask>
   ALWAYS_INLINE GSVector4i blend16(const GSVector4i& a) const
   {
-    static constexpr const uint16_t _mask[8] = {
-      ((mask) & (1 << 0)) ? (uint16_t)-1 : 0x0, ((mask) & (1 << 1)) ? (uint16_t)-1 : 0x0,
-      ((mask) & (1 << 2)) ? (uint16_t)-1 : 0x0, ((mask) & (1 << 3)) ? (uint16_t)-1 : 0x0,
-      ((mask) & (1 << 4)) ? (uint16_t)-1 : 0x0, ((mask) & (1 << 5)) ? (uint16_t)-1 : 0x0,
-      ((mask) & (1 << 6)) ? (uint16_t)-1 : 0x0, ((mask) & (1 << 7)) ? (uint16_t)-1 : 0x0};
-    return GSVector4i(
-      vreinterpretq_s32_u16(vbslq_u16(vld1q_u16(_mask), vreinterpretq_u16_s32(a.v4s), vreinterpretq_u16_s32(v4s))));
+    return GSVector4i(vreinterpretq_s32_s16(__builtin_shufflevector(
+      vreinterpretq_s16_s32(v4s), vreinterpretq_s16_s32(a.v4s), ((mask & 0x01) == 0) ? 0 : 8,
+      ((mask & 0x02) == 0) ? 1 : 9, ((mask & 0x04) == 0) ? 2 : 10, ((mask & 0x08) == 0) ? 3 : 11,
+      ((mask & 0x10) == 0) ? 4 : 12, ((mask & 0x20) == 0) ? 5 : 13, ((mask & 0x40) == 0) ? 6 : 14,
+      ((mask & 0x80) == 0) ? 7 : 15)));
   }
 
   template<int mask>
   ALWAYS_INLINE GSVector4i blend32(const GSVector4i& v) const
   {
-    constexpr int bit3 = ((mask & 8) * 3) << 3;
-    constexpr int bit2 = ((mask & 4) * 3) << 2;
-    constexpr int bit1 = ((mask & 2) * 3) << 1;
-    constexpr int bit0 = (mask & 1) * 3;
-    return blend16<bit3 | bit2 | bit1 | bit0>(v);
+    return GSVector4i(__builtin_shufflevector(v4s, v.v4s, ((mask & 1) == 0) ? 0 : 4, ((mask & 2) == 0) ? 1 : 5,
+                                              ((mask & 4) == 0) ? 2 : 6, ((mask & 8) == 0) ? 3 : 7));
   }
 
   ALWAYS_INLINE GSVector4i blend(const GSVector4i& v, const GSVector4i& mask) const
@@ -1688,17 +1773,17 @@ public:
   template<int i>
   ALWAYS_INLINE GSVector4i sll16() const
   {
-    return GSVector4i(vreinterpretq_s32_s16(vshlq_n_s16(vreinterpretq_s16_s32(v4s), i)));
+    return GSVector4i(vreinterpretq_s32_u16(vshlq_n_u16(vreinterpretq_u16_s32(v4s), i)));
   }
 
   ALWAYS_INLINE GSVector4i sll16(s32 i) const
   {
-    return GSVector4i(vreinterpretq_s32_s16(vshlq_s16(vreinterpretq_s16_s32(v4s), vdupq_n_s16(i))));
+    return GSVector4i(vreinterpretq_s32_u16(vshlq_u16(vreinterpretq_u16_s32(v4s), vdupq_n_s16(i))));
   }
 
   ALWAYS_INLINE GSVector4i sllv16(const GSVector4i& v) const
   {
-    return GSVector4i(vreinterpretq_s32_s16(vshlq_s16(vreinterpretq_s16_s32(v4s), vreinterpretq_s16_s32(v.v4s))));
+    return GSVector4i(vreinterpretq_s32_u16(vshlq_u16(vreinterpretq_u16_s32(v4s), vreinterpretq_u16_s32(v.v4s))));
   }
 
   template<int i>
@@ -1709,13 +1794,13 @@ public:
 
   ALWAYS_INLINE GSVector4i srl16(s32 i) const
   {
-    return GSVector4i(vreinterpretq_s32_u16(vshlq_u16(vreinterpretq_u16_s32(v4s), vdupq_n_u16(-i))));
+    return GSVector4i(vreinterpretq_s32_u16(vshlq_u16(vreinterpretq_u16_s32(v4s), vdupq_n_s16(-i))));
   }
 
   ALWAYS_INLINE GSVector4i srlv16(const GSVector4i& v) const
   {
     return GSVector4i(
-      vreinterpretq_s32_s16(vshlq_s16(vreinterpretq_s16_s32(v4s), vnegq_s16(vreinterpretq_s16_s32(v.v4s)))));
+      vreinterpretq_s32_u16(vshlq_u16(vreinterpretq_u16_s32(v4s), vnegq_s16(vreinterpretq_s16_s32(v.v4s)))));
   }
 
   template<int i>
@@ -1742,9 +1827,15 @@ public:
     return GSVector4i(vshlq_n_s32(v4s, i));
   }
 
-  ALWAYS_INLINE GSVector4i sll32(s32 i) const { return GSVector4i(vshlq_s32(v4s, vdupq_n_s32(i))); }
+  ALWAYS_INLINE GSVector4i sll32(s32 i) const
+  {
+    return GSVector4i(vreinterpretq_s32_u32(vshlq_u32(vreinterpretq_u32_s32(v4s), vdupq_n_s32(i))));
+  }
 
-  ALWAYS_INLINE GSVector4i sllv32(const GSVector4i& v) const { return GSVector4i(vshlq_s32(v4s, v.v4s)); }
+  ALWAYS_INLINE GSVector4i sllv32(const GSVector4i& v) const
+  {
+    return GSVector4i(vreinterpretq_s32_u32(vshlq_u32(vreinterpretq_u32_s32(v4s), v.v4s)));
+  }
 
   template<int i>
   ALWAYS_INLINE GSVector4i srl32() const
@@ -1770,46 +1861,23 @@ public:
 
   ALWAYS_INLINE GSVector4i sra32(s32 i) const { return GSVector4i(vshlq_s32(v4s, vdupq_n_s32(-i))); }
 
-  ALWAYS_INLINE GSVector4i srav32(const GSVector4i& v) const
-  {
-    return GSVector4i(vshlq_s32(vreinterpretq_u32_s32(v4s), vnegq_s32(v.v4s)));
-  }
+  ALWAYS_INLINE GSVector4i srav32(const GSVector4i& v) const { return GSVector4i(vshlq_s32(v4s, vnegq_s32(v.v4s))); }
 
   template<int i>
   ALWAYS_INLINE GSVector4i sll64() const
   {
-    return GSVector4i(vreinterpretq_s32_s64(vshlq_n_s64(vreinterpretq_s64_s32(v4s), i)));
+    return GSVector4i(vreinterpretq_s32_u64(vshlq_n_u64(vreinterpretq_u64_s32(v4s), i)));
   }
 
   ALWAYS_INLINE GSVector4i sll64(s32 i) const
   {
-    return GSVector4i(vreinterpretq_s32_s64(vshlq_s64(vreinterpretq_s64_s32(v4s), vdupq_n_s16(i))));
+    return GSVector4i(vreinterpretq_s32_u64(vshlq_u64(vreinterpretq_u64_s32(v4s), vdupq_n_s64(i))));
   }
 
   ALWAYS_INLINE GSVector4i sllv64(const GSVector4i& v) const
   {
-    return GSVector4i(vreinterpretq_s32_s64(vshlq_s64(vreinterpretq_s64_s32(v4s), vreinterpretq_s64_s32(v.v4s))));
+    return GSVector4i(vreinterpretq_s32_u64(vshlq_u64(vreinterpretq_u64_s32(v4s), vreinterpretq_s64_s32(v.v4s))));
   }
-
-  template<int i>
-  ALWAYS_INLINE GSVector4i sra64() const
-  {
-    return GSVector4i(vreinterpretq_s32_s64(vshrq_n_s64(vreinterpretq_s64_s32(v4s), i)));
-  }
-
-  ALWAYS_INLINE GSVector4i sra64(s32 i) const
-  {
-    return GSVector4i(vreinterpretq_s32_s64(vshlq_s64(vreinterpretq_s64_s32(v4s), vdupq_n_s16(-i))));
-  }
-
-#ifdef CPU_ARCH_ARM64
-  // not on arm32, hopefully we can do without
-  ALWAYS_INLINE GSVector4i srav64(const GSVector4i& v) const
-  {
-    return GSVector4i(
-      vreinterpretq_s32_s64(vshlq_s64(vreinterpretq_s64_s32(v4s), vnegq_s64(vreinterpretq_s64_s32(v.v4s)))));
-  }
-#endif
 
   template<int i>
   ALWAYS_INLINE GSVector4i srl64() const
@@ -1819,7 +1887,7 @@ public:
 
   ALWAYS_INLINE GSVector4i srl64(s32 i) const
   {
-    return GSVector4i(vreinterpretq_s32_u64(vshlq_u64(vreinterpretq_u64_s32(v4s), vdupq_n_u16(-i))));
+    return GSVector4i(vreinterpretq_s32_u64(vshlq_u64(vreinterpretq_u64_s32(v4s), vdupq_n_s64(-i))));
   }
 
 #ifdef CPU_ARCH_ARM64
@@ -1856,14 +1924,14 @@ public:
   {
     // can't use vpaddq_s16() here, because we need saturation.
     // return GSVector4i(vreinterpretq_s32_s16(vpaddq_s16(vreinterpretq_s16_s32(v4s), vreinterpretq_s16_s32(v.v4s))));
+#ifdef CPU_ARCH_ARM64
     const int16x8_t a = vreinterpretq_s16_s32(v4s);
     const int16x8_t b = vreinterpretq_s16_s32(v.v4s);
-#ifdef CPU_ARCH_ARM64
-    return GSVector4i(vqaddq_s16(vuzp1q_s16(a, b), vuzp2q_s16(a, b)));
+    return GSVector4i(vreinterpretq_s32_s16(vqaddq_s16(vuzp1q_s16(a, b), vuzp2q_s16(a, b))));
 #else
     // sse2neon again
-    int16x8_t ab0246 = vcombine_s16(vmovn_s32(a), vmovn_s32(b));
-    int16x8_t ab1357 = vcombine_s16(vshrn_n_s32(a, 16), vshrn_n_s32(b, 16));
+    int16x8_t ab0246 = vcombine_s16(vmovn_s32(v4s), vmovn_s32(v.v4s));
+    int16x8_t ab1357 = vcombine_s16(vshrn_n_s32(v4s, 16), vshrn_n_s32(v.v4s, 16));
     return GSVector4i(vreinterpretq_s32_s16(vqaddq_s16(ab0246, ab1357)));
 #endif
   }
@@ -1991,47 +2059,59 @@ public:
 
   ALWAYS_INLINE GSVector4i gt8(const GSVector4i& v) const
   {
-    return GSVector4i(vreinterpretq_s32_s8(vcgtq_s8(vreinterpretq_s8_s32(v4s), vreinterpretq_s8_s32(v.v4s))));
+    return GSVector4i(vreinterpretq_s32_u8(vcgtq_s8(vreinterpretq_s8_s32(v4s), vreinterpretq_s8_s32(v.v4s))));
   }
 
   ALWAYS_INLINE GSVector4i gt16(const GSVector4i& v) const
   {
-    return GSVector4i(vreinterpretq_s32_s16(vcgtq_s16(vreinterpretq_s16_s32(v4s), vreinterpretq_s16_s32(v.v4s))));
+    return GSVector4i(vreinterpretq_s32_u16(vcgtq_s16(vreinterpretq_s16_s32(v4s), vreinterpretq_s16_s32(v.v4s))));
   }
 
-  ALWAYS_INLINE GSVector4i gt32(const GSVector4i& v) const { return GSVector4i(vcgtq_s32(v4s, v.v4s)); }
+  ALWAYS_INLINE GSVector4i gt32(const GSVector4i& v) const
+  {
+    return GSVector4i(vreinterpretq_s32_u32(vcgtq_s32(v4s, v.v4s)));
+  }
 
   ALWAYS_INLINE GSVector4i ge8(const GSVector4i& v) const
   {
-    return GSVector4i(vreinterpretq_s32_s8(vcgeq_s8(vreinterpretq_s8_s32(v4s), vreinterpretq_s8_s32(v.v4s))));
+    return GSVector4i(vreinterpretq_s32_u8(vcgeq_s8(vreinterpretq_s8_s32(v4s), vreinterpretq_s8_s32(v.v4s))));
   }
   ALWAYS_INLINE GSVector4i ge16(const GSVector4i& v) const
   {
-    return GSVector4i(vreinterpretq_s32_s16(vcgeq_s16(vreinterpretq_s16_s32(v4s), vreinterpretq_s16_s32(v.v4s))));
+    return GSVector4i(vreinterpretq_s32_u16(vcgeq_s16(vreinterpretq_s16_s32(v4s), vreinterpretq_s16_s32(v.v4s))));
   }
-  ALWAYS_INLINE GSVector4i ge32(const GSVector4i& v) const { return GSVector4i(vcgeq_s32(v4s, v.v4s)); }
+  ALWAYS_INLINE GSVector4i ge32(const GSVector4i& v) const
+  {
+    return GSVector4i(vreinterpretq_s32_u32(vcgeq_s32(v4s, v.v4s)));
+  }
 
   ALWAYS_INLINE GSVector4i lt8(const GSVector4i& v) const
   {
-    return GSVector4i(vreinterpretq_s32_s8(vcltq_s8(vreinterpretq_s8_s32(v4s), vreinterpretq_s8_s32(v.v4s))));
+    return GSVector4i(vreinterpretq_s32_u8(vcltq_s8(vreinterpretq_s8_s32(v4s), vreinterpretq_s8_s32(v.v4s))));
   }
 
   ALWAYS_INLINE GSVector4i lt16(const GSVector4i& v) const
   {
-    return GSVector4i(vreinterpretq_s32_s16(vcltq_s16(vreinterpretq_s16_s32(v4s), vreinterpretq_s16_s32(v.v4s))));
+    return GSVector4i(vreinterpretq_s32_u16(vcltq_s16(vreinterpretq_s16_s32(v4s), vreinterpretq_s16_s32(v.v4s))));
   }
 
-  ALWAYS_INLINE GSVector4i lt32(const GSVector4i& v) const { return GSVector4i(vcltq_s32(v4s, v.v4s)); }
+  ALWAYS_INLINE GSVector4i lt32(const GSVector4i& v) const
+  {
+    return GSVector4i(vreinterpretq_s32_u32(vcltq_s32(v4s, v.v4s)));
+  }
 
   ALWAYS_INLINE GSVector4i le8(const GSVector4i& v) const
   {
-    return GSVector4i(vreinterpretq_s32_s8(vcleq_s8(vreinterpretq_s8_s32(v4s), vreinterpretq_s8_s32(v.v4s))));
+    return GSVector4i(vreinterpretq_s32_u8(vcleq_s8(vreinterpretq_s8_s32(v4s), vreinterpretq_s8_s32(v.v4s))));
   }
   ALWAYS_INLINE GSVector4i le16(const GSVector4i& v) const
   {
-    return GSVector4i(vreinterpretq_s32_s16(vcleq_s16(vreinterpretq_s16_s32(v4s), vreinterpretq_s16_s32(v.v4s))));
+    return GSVector4i(vreinterpretq_s32_u16(vcleq_s16(vreinterpretq_s16_s32(v4s), vreinterpretq_s16_s32(v.v4s))));
   }
-  ALWAYS_INLINE GSVector4i le32(const GSVector4i& v) const { return GSVector4i(vcleq_s32(v4s, v.v4s)); }
+  ALWAYS_INLINE GSVector4i le32(const GSVector4i& v) const
+  {
+    return GSVector4i(vreinterpretq_s32_u32(vcleq_s32(v4s, v.v4s)));
+  }
 
   ALWAYS_INLINE GSVector4i andnot(const GSVector4i& v) const { return GSVector4i(vbicq_s32(v4s, v.v4s)); }
 
@@ -2047,23 +2127,29 @@ public:
 
   ALWAYS_INLINE bool alltrue() const
   {
-    // MSB should be set in all 8-bit lanes.
 #ifdef CPU_ARCH_ARM64
-    return (vminvq_u8(vreinterpretq_u8_s32(v4s)) & 0x80) == 0x80;
+    return (vminvq_u32(vreinterpretq_u32_s32(v4s)) == UINT32_C(0xFFFFFFFF));
 #else
-    const uint32x2_t res = vreinterpret_u32_s32(vand_s32(vget_low_s32(v4s), vget_high_s32(v4s)));
-    return ((vget_lane_u32(res, 0) & vget_lane_u32(res, 1) & 0x80808080u) == 0x80808080u);
+    return (vget_lane_u64(vreinterpret_u64_s32(vand_s32(vget_low_s32(v4s), vget_high_s32(v4s))), 0) ==
+            UINT64_C(0xFFFFFFFFFFFFFFFF));
+#endif
+  }
+
+  ALWAYS_INLINE bool anytrue() const
+  {
+#ifdef CPU_ARCH_ARM64
+    return (vmaxvq_u32(vreinterpretq_u32_s32(v4s)) != UINT32_C(0));
+#else
+    return (vget_lane_u64(vreinterpret_u64_s32(vorr_s32(vget_low_s32(v4s), vget_high_s32(v4s))), 0) != UINT64_C(0));
 #endif
   }
 
   ALWAYS_INLINE bool allfalse() const
   {
-    // MSB should be clear in all 8-bit lanes.
 #ifdef CPU_ARCH_ARM64
-    return (vmaxvq_u32(vreinterpretq_u8_s32(v4s)) & 0x80) != 0x80;
+    return (vmaxvq_u32(vreinterpretq_u32_s32(v4s)) == UINT32_C(0));
 #else
-    const uint32x2_t res = vreinterpret_u32_s32(vand_s32(vget_low_s32(v4s), vget_high_s32(v4s)));
-    return ((vget_lane_u32(res, 0) & vget_lane_u32(res, 1) & 0x80808080u) == 0);
+    return (vget_lane_u64(vreinterpret_u64_s32(vorr_s32(vget_low_s32(v4s), vget_high_s32(v4s))), 0) == UINT64_C(0));
 #endif
   }
 
@@ -2115,6 +2201,15 @@ public:
     return vgetq_lane_s64(vreinterpretq_s64_s32(v4s), i);
   }
 
+#ifdef CPU_ARCH_ARM64
+  ALWAYS_INLINE GSVector4i tbl2(const GSVector4i& a, const GSVector4i& b, const GSVector4i& idx)
+  {
+    return GSVector4i(vreinterpretq_s32_u8(
+      vqtbx2q_u8(vreinterpretq_u8_s32(v4s), uint8x16x2_t{vreinterpretq_u8_s32(a.v4s), vreinterpretq_u8_s32(b.v4s)},
+                 vreinterpretq_u8_s32(idx.v4s))));
+  }
+#endif
+
   ALWAYS_INLINE static GSVector4i loadnt(const void* p)
   {
 #if __has_builtin(__builtin_nontemporal_store)
@@ -2127,20 +2222,34 @@ public:
   ALWAYS_INLINE static GSVector4i load32(const void* p)
   {
     // should be ldr s0, [x0]
-    u32 val;
-    std::memcpy(&val, p, sizeof(u32));
-    return GSVector4i(vsetq_lane_u32(val, vdupq_n_u32(0), 0));
+    s32 val;
+    std::memcpy(&val, p, sizeof(s32));
+    return GSVector4i(vsetq_lane_s32(val, vdupq_n_s32(0), 0));
   }
 
   ALWAYS_INLINE static GSVector4i zext32(s32 v) { return GSVector4i(vsetq_lane_s32(v, vdupq_n_s32(0), 0)); }
 
+  template<bool aligned>
   ALWAYS_INLINE static GSVector4i loadl(const void* p)
   {
+#ifdef CPU_ARCH_ARM32
+    if constexpr (!aligned)
+      return GSVector4i(vcombine_s32(vreinterpret_s32_s8(vld1_s8((int8_t*)p)), vcreate_s32(0)));
+#endif
+
     return GSVector4i(vcombine_s32(vld1_s32((const int32_t*)p), vcreate_s32(0)));
   }
 
+  ALWAYS_INLINE static GSVector4i loadl(const GSVector2i& v) { return GSVector4i(vcombine_s32(v.v2s, vcreate_s32(0))); }
+
+  template<bool aligned>
   ALWAYS_INLINE static GSVector4i loadh(const void* p)
   {
+#ifdef CPU_ARCH_ARM32
+    if constexpr (!aligned)
+      return GSVector4i(vreinterpretq_s32_s8(vcombine_s8(vdup_n_s8(0), vld1_s8((int8_t*)p))));
+#endif
+
     return GSVector4i(vreinterpretq_s32_s64(vcombine_s64(vdup_n_s64(0), vld1_s64((int64_t*)p))));
   }
 
@@ -2149,6 +2258,11 @@ public:
   template<bool aligned>
   ALWAYS_INLINE static GSVector4i load(const void* p)
   {
+#ifdef CPU_ARCH_ARM32
+    if constexpr (!aligned)
+      return GSVector4i(vreinterpretq_s32_s8(vld1q_s8((int8_t*)p)));
+#endif
+
     return GSVector4i(vreinterpretq_s32_s64(vld1q_s64((int64_t*)p)));
   }
 
@@ -2167,19 +2281,45 @@ public:
     std::memcpy(p, &val, sizeof(u32));
   }
 
+  template<bool aligned>
   ALWAYS_INLINE static void storel(void* p, const GSVector4i& v)
   {
+#ifdef CPU_ARCH_ARM32
+    if constexpr (!aligned)
+    {
+      vst1_s8((int8_t*)p, vget_low_s8(vreinterpretq_s8_s32(v.v4s)));
+      return;
+    }
+#endif
+
     vst1_s64((int64_t*)p, vget_low_s64(vreinterpretq_s64_s32(v.v4s)));
   }
 
+  template<bool aligned>
   ALWAYS_INLINE static void storeh(void* p, const GSVector4i& v)
   {
+#ifdef CPU_ARCH_ARM32
+    if constexpr (!aligned)
+    {
+      vst1_s8((int8_t*)p, vget_high_s8(vreinterpretq_s8_s32(v.v4s)));
+      return;
+    }
+#endif
+
     vst1_s64((int64_t*)p, vget_high_s64(vreinterpretq_s64_s32(v.v4s)));
   }
 
   template<bool aligned>
   ALWAYS_INLINE static void store(void* p, const GSVector4i& v)
   {
+#ifdef CPU_ARCH_ARM32
+    if constexpr (!aligned)
+    {
+      vst1q_s8((int8_t*)p, vreinterpretq_s8_s32(v.v4s));
+      return;
+    }
+#endif
+
     vst1q_s64((int64_t*)p, vreinterpretq_s64_s32(v.v4s));
   }
 
@@ -2239,6 +2379,10 @@ public:
   {
     return GSVector4i(vcombine_s32(xy.v2s, zw.v2s));
   }
+
+  ALWAYS_INLINE static GSVector4i xyxy(const GSVector2i& xyzw) { return GSVector4i(vcombine_s32(xyzw.v2s, xyzw.v2s)); }
+
+  static GSVector4i rfit(const GSVector4i& fit_rect, const GSVector2i& image_size);
 
   ALWAYS_INLINE GSVector2i xy() const { return GSVector2i(vget_low_s32(v4s)); }
 
@@ -2335,20 +2479,29 @@ public:
   GSVector4() = default;
 
   constexpr static GSVector4 cxpr(float x, float y, float z, float w) { return GSVector4(cxpr_init, x, y, z, w); }
-
   constexpr static GSVector4 cxpr(float x) { return GSVector4(cxpr_init, x, x, x, x); }
 
   constexpr static GSVector4 cxpr(int x, int y, int z, int w) { return GSVector4(cxpr_init, x, y, z, w); }
-
   constexpr static GSVector4 cxpr(int x) { return GSVector4(cxpr_init, x, x, x, x); }
 
   constexpr static GSVector4 cxpr64(u64 x, u64 y) { return GSVector4(cxpr_init, x, y); }
-
   constexpr static GSVector4 cxpr64(u64 x) { return GSVector4(cxpr_init, x, x); }
 
   constexpr static GSVector4 cxpr64(double x, double y) { return GSVector4(cxpr_init, x, y); }
-
   constexpr static GSVector4 cxpr64(double x) { return GSVector4(cxpr_init, x, x); }
+
+  constexpr static GSVector4 cxpr_rgba32(u32 rgba)
+  {
+    return GSVector4(cxpr_init, static_cast<float>(rgba & 0xff), static_cast<float>((rgba >> 8) & 0xff),
+                     static_cast<float>((rgba >> 16) & 0xff), static_cast<float>((rgba >> 24) & 0xff));
+  }
+
+  constexpr static GSVector4 cxpr_unorm8(u32 rgba)
+  {
+    return GSVector4(cxpr_init, static_cast<float>(rgba & 0xff) / 255.0f,
+                     static_cast<float>((rgba >> 8) & 0xff) / 255.0f, static_cast<float>((rgba >> 16) & 0xff) / 255.0f,
+                     static_cast<float>((rgba >> 24) & 0xff) / 255.0f);
+  }
 
   ALWAYS_INLINE GSVector4(float x, float y, float z, float w)
   {
@@ -2489,6 +2642,71 @@ public:
 
 #endif
 
+  ALWAYS_INLINE float dot(const GSVector4& v) const
+  {
+#ifdef CPU_ARCH_ARM64
+    return vaddvq_f32(vmulq_f32(v4s, v.v4s));
+#else
+    const float32x4_t dp = vmulq_f32(v4s, v.v4s);
+    float32x2_t tmp = vadd_f32(vget_low_f32(dp), vget_high_f32(dp)); // (x+z, y+w)
+    return vget_lane_f32(vadd_f32(tmp, vdup_lane_f32(tmp, 1)), 0);
+#endif
+  }
+
+  ALWAYS_INLINE float addv() const
+  {
+#ifdef CPU_ARCH_ARM64
+    return vaddvq_f32(v4s);
+#else
+    float32x2_t tmp = vadd_f32(vget_low_f32(v4s), vget_high_f32(v4s)); // (x+z, y+w)
+    return vget_lane_f32(vadd_f32(tmp, vdup_lane_f32(tmp, 1)), 0);
+#endif
+  }
+
+  ALWAYS_INLINE float minv() const
+  {
+#ifdef CPU_ARCH_ARM64
+    return vminvq_f32(v4s);
+#else
+    float32x2_t tmp = vmin_f32(vget_low_f32(v4s), vget_high_f32(v4s)); // (x+z, y+w)
+    return vget_lane_f32(vmin_f32(tmp, vdup_lane_f32(tmp, 1)), 0);
+#endif
+  }
+
+  ALWAYS_INLINE float maxv() const
+  {
+#ifdef CPU_ARCH_ARM64
+    return vmaxvq_f32(v4s);
+#else
+    float32x2_t tmp = vmax_f32(vget_low_f32(v4s), vget_high_f32(v4s)); // (x+z, y+w)
+    return vget_lane_f32(vmax_f32(tmp, vdup_lane_f32(tmp, 1)), 0);
+#endif
+  }
+
+  ALWAYS_INLINE float width() const { return right - left; }
+  ALWAYS_INLINE float height() const { return bottom - top; }
+
+  ALWAYS_INLINE GSVector2 rsize() const { return (zw() - xy()); }
+
+  ALWAYS_INLINE bool rempty() const
+  {
+    // !any((x, y) < (z, w)) i.e. !not_empty
+    return (vget_lane_u64(vreinterpret_u64_f32(vclt_f32(vget_low_f32(v4s), vget_high_f32(v4s))), 0) !=
+            0xFFFFFFFFFFFFFFFFULL);
+  }
+
+  ALWAYS_INLINE bool rvalid() const
+  {
+    // !all((x, y) >= (z, w))
+    return (vget_lane_u64(vreinterpret_u64_f32(vcge_f32(vget_low_f32(v4s), vget_high_f32(v4s))), 0) == 0);
+  }
+
+  ALWAYS_INLINE GSVector4 runion(const GSVector4 v) const { return min(v).blend32<0xc>(max(v)); }
+
+  ALWAYS_INLINE GSVector4 rintersect(const GSVector4& a) const { return sat(a); }
+  ALWAYS_INLINE bool rintersects(const GSVector4& v) const { return rintersect(v).rvalid(); }
+  ALWAYS_INLINE bool rcontains(const GSVector4& v) const { return rintersect(v).eq(v); }
+
   ALWAYS_INLINE GSVector4 sat(const GSVector4& a, const GSVector4& b) const { return max(a).min(b); }
 
   ALWAYS_INLINE GSVector4 sat(const GSVector4& a) const
@@ -2576,7 +2794,7 @@ public:
 
   ALWAYS_INLINE GSVector4 h2l(const GSVector4& a) const
   {
-    return GSVector4(vcombine_f32(vget_high_f32(v4s), vget_high_f32(a.v4s)));
+    return GSVector4(vcombine_f32(vget_high_f32(a.v4s), vget_high_f32(v4s)));
   }
 
   ALWAYS_INLINE GSVector4 andnot(const GSVector4& v) const
@@ -2599,13 +2817,36 @@ public:
 
   ALWAYS_INLINE bool alltrue() const
   {
-    // return mask() == 0xf;
-    return ~(vgetq_lane_u64(vreinterpretq_u64_f32(v4s), 0) & vgetq_lane_u64(vreinterpretq_u64_f32(v4s), 1)) == 0;
+#ifdef CPU_ARCH_ARM64
+    return (vminvq_u32(vreinterpretq_u32_f32(v4s)) == UINT32_C(0xFFFFFFFF));
+#else
+
+    return (vget_lane_u64(vreinterpret_u64_u32(vand_u32(vget_low_u32(vreinterpretq_u32_f32(v4s)),
+                                                        vget_high_u32(vreinterpretq_u32_f32(v4s)))),
+                          0) == UINT64_C(0xFFFFFFFFFFFFFFFF));
+#endif
+  }
+
+  ALWAYS_INLINE bool anytrue() const
+  {
+#ifdef CPU_ARCH_ARM64
+    return (vmaxvq_u32(vreinterpretq_u32_f32(v4s)) != UINT32_C(0));
+#else
+    return (vget_lane_u64(vreinterpret_u64_u32(vorr_u32(vget_low_u32(vreinterpretq_u32_f32(v4s)),
+                                                        vget_high_u32(vreinterpretq_u32_f32(v4s)))),
+                          0) != UINT64_C(0));
+#endif
   }
 
   ALWAYS_INLINE bool allfalse() const
   {
-    return (vgetq_lane_u64(vreinterpretq_u64_f32(v4s), 0) | vgetq_lane_u64(vreinterpretq_u64_f32(v4s), 1)) == 0;
+#ifdef CPU_ARCH_ARM64
+    return (vmaxvq_u32(vreinterpretq_u32_f32(v4s)) == UINT32_C(0));
+#else
+    return (vget_lane_u64(vreinterpret_u64_u32(vorr_u32(vget_low_u32(vreinterpretq_u32_f32(v4s)),
+                                                        vget_high_u32(vreinterpretq_u32_f32(v4s)))),
+                          0) == UINT64_C(0));
+#endif
   }
 
   ALWAYS_INLINE GSVector4 replace_nan(const GSVector4& v) const { return v.blend32(*this, *this == *this); }
@@ -2621,9 +2862,15 @@ public:
   }
 
   template<int i>
-  ALWAYS_INLINE int extract32() const
+  ALWAYS_INLINE GSVector4 insert32(float v) const
   {
-    return vgetq_lane_s32(vreinterpretq_s32_f32(v4s), i);
+    return GSVector4(vsetq_lane_f32(v, v4s, i));
+  }
+
+  template<int i>
+  ALWAYS_INLINE float extract32() const
+  {
+    return vgetq_lane_f32(v4s, i);
   }
 
   template<int dst>
@@ -2652,42 +2899,84 @@ public:
 
   ALWAYS_INLINE static GSVector4 xffffffff() { return GSVector4(vreinterpretq_f32_u32(vdupq_n_u32(0xFFFFFFFFu))); }
 
+  template<bool aligned>
   ALWAYS_INLINE static GSVector4 loadl(const void* p)
   {
+#ifdef CPU_ARCH_ARM32
+    if constexpr (!aligned)
+      return GSVector4(vcombine_f32(vreinterpret_f32_s8(vld1_s8((int8_t*)p)), vcreate_f32(0)));
+#endif
+
     return GSVector4(vcombine_f32(vld1_f32((const float*)p), vcreate_f32(0)));
   }
+
+  template<bool aligned>
+  ALWAYS_INLINE static GSVector4 loadh(const void* p)
+  {
+#ifdef CPU_ARCH_ARM32
+    if constexpr (!aligned)
+      return GSVector4(vreinterpretq_s32_s8(vcombine_s8(vdup_n_s8(0), vld1_s8((int8_t*)p))));
+#endif
+
+    return GSVector4(vreinterpretq_f32_s64(vcombine_s64(vdup_n_s64(0), vld1_s64((int64_t*)p))));
+  }
+
+  ALWAYS_INLINE static GSVector4 loadh(const GSVector2& v) { return GSVector4(vcombine_f32(vcreate_f32(0), v.v2s)); }
 
   ALWAYS_INLINE static GSVector4 load(float f) { return GSVector4(vsetq_lane_f32(f, vmovq_n_f32(0.0f), 0)); }
 
   template<bool aligned>
   ALWAYS_INLINE static GSVector4 load(const void* p)
   {
+#ifdef CPU_ARCH_ARM32
+    if constexpr (!aligned)
+      return GSVector4(vreinterpretq_f32_s8(vld1q_s8((int8_t*)p)));
+#endif
+
     return GSVector4(vld1q_f32((const float*)p));
   }
 
   ALWAYS_INLINE static void storent(void* p, const GSVector4& v) { vst1q_f32((float*)p, v.v4s); }
 
+  template<bool aligned>
   ALWAYS_INLINE static void storel(void* p, const GSVector4& v)
   {
-#ifdef CPU_ARCH_ARM64
-    vst1_f64((double*)p, vget_low_f64(vreinterpretq_f64_f32(v.v4s)));
-#else
-    vst1_s64((s64*)p, vget_low_s64(vreinterpretq_s64_f32(v.v4s)));
+#ifdef CPU_ARCH_ARM32
+    if constexpr (!aligned)
+    {
+      vst1_s8((int8_t*)p, vreinterpret_s8_f32(vget_low_f32(v.v4s)));
+      return;
+    }
 #endif
+
+    vst1_f32((float*)p, vget_low_f32(v.v4s));
   }
 
+  template<bool aligned>
   ALWAYS_INLINE static void storeh(void* p, const GSVector4& v)
   {
-#ifdef CPU_ARCH_ARM64
-    vst1_f64((double*)p, vget_high_f64(vreinterpretq_f64_f32(v.v4s)));
-#else
-    vst1_s64((s64*)p, vget_high_s64(vreinterpretq_s64_f32(v.v4s)));
+#ifdef CPU_ARCH_ARM32
+    if constexpr (!aligned)
+    {
+      vst1_s8((int8_t*)p, vreinterpret_s8_f32(vget_high_f32(v.v4s)));
+      return;
+    }
 #endif
+
+    vst1_f32((float*)p, vget_high_f32(v.v4s));
   }
 
   template<bool aligned>
   ALWAYS_INLINE static void store(void* p, const GSVector4& v)
   {
+#ifdef CPU_ARCH_ARM32
+    if constexpr (!aligned)
+    {
+      vst1q_s8((int8_t*)p, vreinterpretq_s8_f32(v.v4s));
+      return;
+    }
+#endif
+
     vst1q_f32((float*)p, v.v4s);
   }
 
@@ -2822,6 +3111,18 @@ public:
     return GSVector4(vreinterpretq_f32_u32(vcleq_f32(v1.v4s, v2.v4s)));
   }
 
+  ALWAYS_INLINE bool eq(const GSVector4& v) const
+  {
+#ifdef CPU_ARCH_ARM64
+    const uint32x4_t res = vceqq_f32(v4s, v.v4s);
+    return (vminvq_u32(res) != 0);
+#else
+    const uint32x4_t res = vmvnq_u32(vceqq_f32(v4s, v.v4s));
+    const uint32x2_t paired = vorr_u32(vget_low_u32(res), vget_high_u32(res));
+    return (vget_lane_u64(paired, 0) == 0);
+#endif
+  }
+
   ALWAYS_INLINE GSVector4 mul64(const GSVector4& v) const
   {
 #ifdef CPU_ARCH_ARM64
@@ -2861,7 +3162,7 @@ public:
   ALWAYS_INLINE GSVector4 gt64(const GSVector4& v) const
   {
 #ifdef CPU_ARCH_ARM64
-    return GSVector4(vreinterpretq_f32_f64(vcgtq_f64(vreinterpretq_f64_f32(v4s), vreinterpretq_f64_f32(v.v4s))));
+    return GSVector4(vreinterpretq_f32_u64(vcgtq_f64(vreinterpretq_f64_f32(v4s), vreinterpretq_f64_f32(v.v4s))));
 #else
     GSVector4 ret;
     ret.U64[0] = (F64[0] > v.F64[0]) ? 0xFFFFFFFFFFFFFFFFULL : 0;
@@ -2873,7 +3174,7 @@ public:
   ALWAYS_INLINE GSVector4 eq64(const GSVector4& v) const
   {
 #ifdef CPU_ARCH_ARM64
-    return GSVector4(vreinterpretq_f32_f64(vceqq_f64(vreinterpretq_f64_f32(v4s), vreinterpretq_f64_f32(v.v4s))));
+    return GSVector4(vreinterpretq_f32_u64(vceqq_f64(vreinterpretq_f64_f32(v4s), vreinterpretq_f64_f32(v.v4s))));
 #else
     GSVector4 ret;
     ret.U64[0] = (F64[0] == v.F64[0]) ? 0xFFFFFFFFFFFFFFFFULL : 0;
@@ -2885,7 +3186,7 @@ public:
   ALWAYS_INLINE GSVector4 lt64(const GSVector4& v) const
   {
 #ifdef CPU_ARCH_ARM64
-    return GSVector4(vreinterpretq_f32_f64(vcgtq_f64(vreinterpretq_f64_f32(v4s), vreinterpretq_f64_f32(v.v4s))));
+    return GSVector4(vreinterpretq_f32_u64(vcltq_f64(vreinterpretq_f64_f32(v4s), vreinterpretq_f64_f32(v.v4s))));
 #else
     GSVector4 ret;
     ret.U64[0] = (F64[0] < v.F64[0]) ? 0xFFFFFFFFFFFFFFFFULL : 0;
@@ -2897,7 +3198,7 @@ public:
   ALWAYS_INLINE GSVector4 ge64(const GSVector4& v) const
   {
 #ifdef CPU_ARCH_ARM64
-    return GSVector4(vreinterpretq_f32_f64(vcgeq_f64(vreinterpretq_f64_f32(v4s), vreinterpretq_f64_f32(v.v4s))));
+    return GSVector4(vreinterpretq_f32_u64(vcgeq_f64(vreinterpretq_f64_f32(v4s), vreinterpretq_f64_f32(v.v4s))));
 #else
     GSVector4 ret;
     ret.U64[0] = (F64[0] >= v.F64[0]) ? 0xFFFFFFFFFFFFFFFFULL : 0;
@@ -2909,7 +3210,7 @@ public:
   ALWAYS_INLINE GSVector4 le64(const GSVector4& v) const
   {
 #ifdef CPU_ARCH_ARM64
-    return GSVector4(vreinterpretq_f32_f64(vcleq_f64(vreinterpretq_f64_f32(v4s), vreinterpretq_f64_f32(v.v4s))));
+    return GSVector4(vreinterpretq_f32_u64(vcleq_f64(vreinterpretq_f64_f32(v4s), vreinterpretq_f64_f32(v.v4s))));
 #else
     GSVector4 ret;
     ret.U64[0] = (F64[0] <= v.F64[0]) ? 0xFFFFFFFFFFFFFFFFULL : 0;
@@ -2952,7 +3253,7 @@ public:
   ALWAYS_INLINE GSVector4 sqr64() const
   {
 #ifdef CPU_ARCH_ARM64
-    return GSVector4(vreinterpretq_f32_f64(vsqrtq_f64(vreinterpretq_f64_f32(v4s))));
+    return GSVector4(vreinterpretq_f32_f64(vmulq_f64(vreinterpretq_f64_f32(v4s), vreinterpretq_f64_f32(v4s))));
 #else
     return GSVector4::f64(F64[0] * F64[0], F64[1] * F64[1]);
 #endif
@@ -2997,6 +3298,17 @@ public:
 #endif
     return GSVector4i(vsetq_lane_s32(high, vsetq_lane_s32(low, vdupq_n_s32(0), 0), 1));
   }
+
+  ALWAYS_INLINE GSVector2 xy() const { return GSVector2(vget_low_f32(v4s)); }
+
+  ALWAYS_INLINE GSVector2 zw() const { return GSVector2(vget_high_f32(v4s)); }
+
+  ALWAYS_INLINE static GSVector4 xyxy(const GSVector2& l, const GSVector2& h)
+  {
+    return GSVector4(vcombine_f32(l.v2s, h.v2s));
+  }
+
+  ALWAYS_INLINE static GSVector4 xyxy(const GSVector2& l) { return GSVector4(vcombine_f32(l.v2s, l.v2s)); }
 
 #define VECTOR4_SHUFFLE_4(xs, xn, ys, yn, zs, zn, ws, wn)                                                              \
   ALWAYS_INLINE GSVector4 xs##ys##zs##ws() const                                                                       \

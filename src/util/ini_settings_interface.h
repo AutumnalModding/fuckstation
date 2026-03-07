@@ -3,25 +3,52 @@
 
 #pragma once
 #include "common/settings_interface.h"
+#include "common/string_pool.h"
 
-// being a pain here...
-#ifdef _WIN32
-#include "common/windows_headers.h"
-#endif
-#include "SimpleIni.h"
+#include <string_view>
+#include <vector>
 
 class INISettingsInterface final : public SettingsInterface
 {
 public:
-  INISettingsInterface(std::string filename);
+  struct PoolString
+  {
+    u32 offset;
+    u32 length;
+  };
+
+  struct KeyValuePair
+  {
+    PoolString key;
+    PoolString value;
+  };
+  using KeyValueList = std::vector<KeyValuePair>;
+
+  struct Section
+  {
+    PoolString name;
+    KeyValueList entries;
+  };
+  using SectionList = std::vector<Section>;
+
+  INISettingsInterface();
+  INISettingsInterface(std::string path);
   ~INISettingsInterface() override;
 
-  const std::string& GetFileName() const { return m_filename; }
+  ALWAYS_INLINE bool IsDirty() const { return m_dirty; }
+  ALWAYS_INLINE const std::string& GetPath() const { return m_path; }
+  void SetPath(std::string path);
 
   bool Load(Error* error = nullptr);
-  bool Save(Error* error = nullptr) override;
+  bool Load(std::string new_path, Error* error = nullptr);
+  bool LoadFromString(std::string_view data);
+  bool Save(Error* error = nullptr);
+  std::string SaveToString() const;
 
-  void Clear() override;
+  void Clear();
+  void ClearPathAndContents();
+  void CompactStrings();
+
   bool IsEmpty() override;
 
   bool GetIntValue(const char* section, const char* key, s32* value) const override;
@@ -61,7 +88,25 @@ public:
   using SettingsInterface::GetUIntValue;
 
 private:
-  std::string m_filename;
-  CSimpleIniA m_ini;
+  std::string_view GetPoolStringView(const PoolString& ps) const;
+  PoolString AddPoolString(std::string_view str);
+
+  SectionList::const_iterator FindSection(std::string_view name) const;
+  SectionList::iterator FindSection(std::string_view name);
+  Section& GetOrCreateSection(std::string_view name);
+
+  KeyValueList::const_iterator FindKey(const Section& section, std::string_view key) const;
+  KeyValueList::iterator FindKey(Section& section, std::string_view key);
+  KeyValueList::const_iterator FindKeyEnd(const Section& section, std::string_view key) const;
+  KeyValueList::iterator FindKeyEnd(Section& section, std::string_view key);
+
+  void InsertKeyValue(Section& section, std::string_view key, std::string_view value);
+
+  // Returns a pointer to the raw value string for the first match, or nullptr.
+  const KeyValuePair* FindFirstKeyValue(std::string_view section, std::string_view key) const;
+
+  std::string m_path;
+  BumpUniqueStringPool m_string_pool;
+  SectionList m_sections;
   bool m_dirty = false;
 };

@@ -1,7 +1,8 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "aboutdialog.h"
+#include "qthost.h"
 #include "qtutils.h"
 
 #include "core/settings.h"
@@ -17,19 +18,23 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QTextBrowser>
 
+#include "moc_aboutdialog.cpp"
+
 AboutDialog::AboutDialog(QWidget* parent /* = nullptr */) : QDialog(parent)
 {
   m_ui.setupUi(this);
+  m_ui.icon->setPixmap(QtHost::GetAppLogo());
 
   setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
   setFixedSize(geometry().width(), geometry().height());
 
-  m_ui.scmversion->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  QFont title_font(m_ui.title->font());
+  title_font.setPixelSize(20);
+  m_ui.title->setFont(title_font);
+
   m_ui.scmversion->setText(
     tr("%1 (%2)").arg(QLatin1StringView(g_scm_tag_str)).arg(QLatin1StringView(g_scm_branch_str)));
 
-  m_ui.description->setTextInteractionFlags(Qt::TextBrowserInteraction);
-  m_ui.description->setOpenExternalLinks(true);
   m_ui.description->setText(QStringLiteral(R"(
 <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0//EN" "http://www.w3.org/TR/REC-html40/strict.dtd">
 <html><head><meta name="qrichtext" content="1" /><style type="text/css">
@@ -38,33 +43,32 @@ p, li { white-space: pre-wrap; }
 <p style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">%1</p>
 <p style=" margin-top:12px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;"><span style=" font-weight:600;">%2</span>:</p>
 <p style=" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">  Connor McLaughlin &lt;stenzek@gmail.com&gt;</p>
-<p style=" margin-top:0px; margin-bottom:12px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">  and other <a href="https://github.com/stenzek/duckstation/blob/master/CONTRIBUTORS.md">contributors</a></p>
-<p style=" margin-top:12px; margin-bottom:12px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">%3 <a href="https://icons8.com/icon/74847/platforms.undefined.short-title"><span style=" text-decoration: underline; color:#0057ae;">icons8</span></a></p>
-<p style=" margin-top:12px; margin-bottom:12px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;"><a href="https://github.com/stenzek/duckstation/blob/master/LICENSE"><span style=" text-decoration: underline; color:#0057ae;">%4</span></a> | <a href="https://github.com/stenzek/duckstation"><span style=" text-decoration: underline; color:#0057ae;">GitHub</span></a> | <a href="https://www.duckstation.org/discord.html"><span style=" text-decoration: underline; color:#0057ae;">Discord</span></a></p></body></html>
+<p style=" margin-top:0px; margin-bottom:12px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">  <a href="https://github.com/stenzek/duckstation/blob/master/CONTRIBUTORS.md"><span style=" text-decoration: none;">%3</span></a></p>
+<p style=" margin-top:12px; margin-bottom:12px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;">%4 <a href="https://icons8.com/icon/74847/platforms.undefined.short-title"><span style=" text-decoration: none;">icons8</span></a></p>
+<p style=" margin-top:12px; margin-bottom:12px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;"><a href="https://github.com/stenzek/duckstation/blob/master/LICENSE"><span style=" text-decoration: none;">%5</span></a> | <a href="https://github.com/stenzek/duckstation"><span style=" text-decoration: none;">GitHub</span></a> | <a href="https://www.duckstation.org/discord.html"><span style=" text-decoration: none;">Discord</span></a></p></body></html>
 )")
                               .arg(tr("DuckStation is a free simulator/emulator of the Sony PlayStation<span "
                                       "style=\"vertical-align:super;\">TM</span> console, focusing on playability, "
                                       "speed, and long-term maintainability."))
                               .arg(tr("Authors"))
+                              .arg(tr("and other contributors"))
                               .arg(tr("Icon by"))
                               .arg(tr("License")));
+
+  connect(m_ui.buttonBox, &QDialogButtonBox::accepted, this, &QDialog::accept);
 }
 
 AboutDialog::~AboutDialog() = default;
 
-void AboutDialog::showThirdPartyNotices(QWidget* parent)
+void AboutDialog::openThirdPartyNotices(QWidget* parent)
 {
-  QDialog dialog(parent);
-  dialog.setMinimumSize(700, 400);
-  dialog.setWindowTitle(tr("DuckStation Third-Party Notices"));
+  QDialog* const dialog = new QDialog(parent);
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
+  dialog->setMinimumSize(700, 400);
+  dialog->setWindowTitle(tr("DuckStation Third-Party Notices"));
 
-  QIcon icon;
-  icon.addFile(QString::fromUtf8(":/icons/duck.png"), QSize(), QIcon::Normal, QIcon::Off);
-  dialog.setWindowIcon(icon);
-
-  QVBoxLayout* layout = new QVBoxLayout(&dialog);
-
-  QTextBrowser* tb = new QTextBrowser(&dialog);
+  QVBoxLayout* const layout = new QVBoxLayout(dialog);
+  QTextBrowser* const tb = new QTextBrowser(dialog);
   tb->setAcceptRichText(true);
   tb->setReadOnly(true);
   tb->setOpenExternalLinks(true);
@@ -80,9 +84,9 @@ void AboutDialog::showThirdPartyNotices(QWidget* parent)
   }
   layout->addWidget(tb, 1);
 
-  QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
-  connect(bb->button(QDialogButtonBox::Close), &QPushButton::clicked, &dialog, &QDialog::done);
+  QDialogButtonBox* const bb = new QDialogButtonBox(QDialogButtonBox::Ok, dialog);
+  connect(bb, &QDialogButtonBox::accepted, dialog, &QDialog::accept);
   layout->addWidget(bb, 0);
 
-  dialog.exec();
+  dialog->open();
 }

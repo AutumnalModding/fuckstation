@@ -34,7 +34,7 @@ void CDROMAsyncReader::StopThread()
     return;
 
   {
-    std::unique_lock<std::mutex> lock(m_mutex);
+    std::unique_lock lock(m_mutex);
     m_shutdown_flag.store(true);
     m_do_read_cv.notify_one();
   }
@@ -60,7 +60,7 @@ std::unique_ptr<CDImage> CDROMAsyncReader::RemoveMedia()
   return std::move(m_media);
 }
 
-bool CDROMAsyncReader::Precache(ProgressCallback* callback)
+bool CDROMAsyncReader::Precache(ProgressCallback* callback, Error* error)
 {
   WaitForIdle();
 
@@ -70,13 +70,11 @@ bool CDROMAsyncReader::Precache(ProgressCallback* callback)
   else if (m_media->IsPrecached())
     return true;
 
-  EmptyBuffers();
-
-  const CDImage::PrecacheResult res = m_media->Precache(callback);
+  const CDImage::PrecacheResult res = m_media->Precache(callback, error);
   if (res == CDImage::PrecacheResult::Unsupported)
   {
     // fall back to copy precaching
-    std::unique_ptr<CDImage> memory_image = CDImage::CreateMemoryImage(m_media.get(), callback);
+    std::unique_ptr<CDImage> memory_image = CDImage::CreateMemoryImage(m_media.get(), callback, error);
     if (memory_image)
     {
       const CDImage::LBA lba = m_media->GetPositionOnDisc();
@@ -135,7 +133,7 @@ void CDROMAsyncReader::QueueReadSector(CDImage::LBA lba)
 
   // we need to toss away our readahead and start fresh
   DEBUG_LOG("Readahead buffer miss, queueing seek to {}", lba);
-  std::unique_lock<std::mutex> lock(m_mutex);
+  std::unique_lock lock(m_mutex);
   m_next_position_set.store(true);
   m_next_position = lba;
   m_do_read_cv.notify_one();
@@ -189,10 +187,10 @@ bool CDROMAsyncReader::WaitForReadToComplete()
     return m_buffers[m_buffer_front.load()].result;
   }
 
-  Common::Timer wait_timer;
+  Timer wait_timer;
   DEBUG_LOG("Sector read pending, waiting");
 
-  std::unique_lock<std::mutex> lock(m_mutex);
+  std::unique_lock lock(m_mutex);
   m_notify_read_complete_cv.wait(
     lock, [this]() { return (m_buffer_count.load() > 0 || m_seek_error.load()) && !m_next_position_set.load(); });
   if (m_seek_error.load()) [[unlikely]]
@@ -215,7 +213,7 @@ void CDROMAsyncReader::WaitForIdle()
   if (!IsUsingThread())
     return;
 
-  std::unique_lock<std::mutex> lock(m_mutex);
+  std::unique_lock lock(m_mutex);
   m_notify_read_complete_cv.wait(lock, [this]() { return (!m_is_reading.load() && !m_next_position_set.load()); });
 }
 
@@ -228,7 +226,7 @@ void CDROMAsyncReader::EmptyBuffers()
 
 bool CDROMAsyncReader::ReadSectorIntoBuffer(std::unique_lock<std::mutex>& lock)
 {
-  Common::Timer timer;
+  Timer timer;
 
   const u32 slot = m_buffer_back.load();
   m_buffer_back.store((slot + 1) % static_cast<u32>(m_buffers.size()));
@@ -261,7 +259,7 @@ bool CDROMAsyncReader::ReadSectorIntoBuffer(std::unique_lock<std::mutex>& lock)
 
 void CDROMAsyncReader::ReadSectorNonThreaded(CDImage::LBA lba)
 {
-  Common::Timer timer;
+  Timer timer;
 
   m_buffers.resize(1);
   m_seek_error.store(false);

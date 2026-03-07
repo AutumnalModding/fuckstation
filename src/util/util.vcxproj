@@ -1,8 +1,14 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="..\..\dep\msvc\vsprops\Configurations.props" />
+  <Import Project="..\..\dep\vsprops\Configurations.props" />
   <ItemGroup>
+    <ClInclude Include="animated_image.h" />
     <ClInclude Include="compress_helpers.h" />
+    <ClInclude Include="core_audio_stream.h" />
+    <ClInclude Include="dyn_shaderc.h" />
+    <ClInclude Include="dyn_spirv_cross.h" />
+    <ClInclude Include="elf_file.h" />
+    <ClInclude Include="gpu_types.h" />
     <ClInclude Include="image.h" />
     <ClInclude Include="imgui_animated.h" />
     <ClInclude Include="audio_stream.h" />
@@ -25,13 +31,8 @@
     <ClInclude Include="gpu_framebuffer_manager.h" />
     <ClInclude Include="gpu_shader_cache.h" />
     <ClInclude Include="gpu_texture.h" />
-    <ClInclude Include="host.h" />
     <ClInclude Include="http_downloader.h" />
-    <ClInclude Include="http_downloader_curl.h">
-      <ExcludedFromBuild>true</ExcludedFromBuild>
-    </ClInclude>
-    <ClInclude Include="http_downloader_winhttp.h" />
-    <ClInclude Include="imgui_fullscreen.h" />
+    <ClInclude Include="imgui_gsvector.h" />
     <ClInclude Include="imgui_manager.h" />
     <ClInclude Include="ini_settings_interface.h" />
     <ClInclude Include="input_manager.h" />
@@ -56,8 +57,14 @@
     <ClInclude Include="opengl_context_egl_wayland.h">
       <ExcludedFromBuild>true</ExcludedFromBuild>
     </ClInclude>
-    <ClInclude Include="opengl_context_egl_x11.h">
+    <ClInclude Include="opengl_context_egl_xcb.h">
       <ExcludedFromBuild>true</ExcludedFromBuild>
+    </ClInclude>
+    <ClInclude Include="opengl_context_egl_xlib.h">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+    </ClInclude>
+    <ClInclude Include="opengl_context_sdl.h">
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClInclude>
     <ClInclude Include="opengl_context_wgl.h">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
@@ -78,45 +85,53 @@
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClInclude>
     <ClInclude Include="page_fault_handler.h" />
-    <ClInclude Include="cd_subchannel_replacement.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="platform_misc.h" />
     <ClInclude Include="postprocessing.h" />
     <ClInclude Include="postprocessing_shader.h" />
     <ClInclude Include="postprocessing_shader_fx.h" />
     <ClInclude Include="postprocessing_shader_glsl.h" />
+    <ClInclude Include="postprocessing_shader_slang.h" />
+    <ClInclude Include="sdl_video_helpers.h" />
     <ClInclude Include="sdl_input_source.h" />
     <ClInclude Include="shadergen.h" />
     <ClInclude Include="shiftjis.h" />
     <ClInclude Include="sockets.h" />
+    <ClInclude Include="spirv_module.h" />
     <ClInclude Include="state_wrapper.h" />
+    <ClInclude Include="texture_decompress.h" />
+    <ClInclude Include="translation.h" />
     <ClInclude Include="vulkan_builders.h" />
     <ClInclude Include="vulkan_device.h" />
-    <ClInclude Include="vulkan_entry_points.h" />
+    <ClInclude Include="vulkan_headers.h" />
     <ClInclude Include="vulkan_loader.h" />
     <ClInclude Include="vulkan_pipeline.h" />
     <ClInclude Include="vulkan_stream_buffer.h" />
     <ClInclude Include="vulkan_swap_chain.h" />
     <ClInclude Include="vulkan_texture.h" />
-    <ClInclude Include="wav_writer.h" />
+    <ClInclude Include="wav_reader_writer.h" />
     <ClInclude Include="win32_raw_input_source.h" />
     <ClInclude Include="window_info.h" />
+    <ClInclude Include="x11_tools.h">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+    </ClInclude>
     <ClInclude Include="xinput_source.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="animated_image.cpp" />
     <ClCompile Include="audio_stream.cpp" />
     <ClCompile Include="cd_image.cpp" />
-    <ClCompile Include="cd_image_bin.cpp" />
+    <ClCompile Include="cd_image_ccd.cpp" />
     <ClCompile Include="cd_image_chd.cpp" />
     <ClCompile Include="cd_image_cue.cpp" />
     <ClCompile Include="cd_image_device.cpp" />
-    <ClCompile Include="cd_image_ecm.cpp" />
     <ClCompile Include="cd_image_hasher.cpp" />
     <ClCompile Include="cd_image_m3u.cpp" />
     <ClCompile Include="cd_image_mds.cpp" />
     <ClCompile Include="cd_image_memory.cpp" />
     <ClCompile Include="cd_image_pbp.cpp" />
     <ClCompile Include="compress_helpers.cpp" />
+    <ClCompile Include="core_audio_stream.cpp" />
     <ClCompile Include="cubeb_audio_stream.cpp" />
     <ClCompile Include="cue_parser.cpp" />
     <ClCompile Include="cd_image_ppf.cpp" />
@@ -132,23 +147,21 @@
     <ClCompile Include="d3d12_texture.cpp" />
     <ClCompile Include="d3d_common.cpp" />
     <ClCompile Include="dinput_source.cpp" />
+    <ClCompile Include="elf_file.cpp" />
     <ClCompile Include="gpu_device.cpp" />
     <ClCompile Include="gpu_shader_cache.cpp" />
     <ClCompile Include="gpu_texture.cpp" />
-    <ClCompile Include="host.cpp" />
     <ClCompile Include="http_downloader.cpp" />
     <ClCompile Include="http_downloader_curl.cpp">
       <ExcludedFromBuild>true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="http_downloader_winhttp.cpp" />
     <ClCompile Include="image.cpp" />
-    <ClCompile Include="imgui_fullscreen.cpp" />
     <ClCompile Include="imgui_manager.cpp" />
     <ClCompile Include="ini_settings_interface.cpp" />
     <ClCompile Include="input_manager.cpp" />
     <ClCompile Include="input_source.cpp" />
     <ClCompile Include="iso_reader.cpp" />
-    <ClCompile Include="cd_subchannel_replacement.cpp" />
     <ClCompile Include="media_capture.cpp" />
     <ClCompile Include="opengl_context.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
@@ -159,8 +172,14 @@
     <ClCompile Include="opengl_context_egl_wayland.cpp">
       <ExcludedFromBuild>true</ExcludedFromBuild>
     </ClCompile>
-    <ClCompile Include="opengl_context_egl_x11.cpp">
+    <ClCompile Include="opengl_context_egl_xcb.cpp">
       <ExcludedFromBuild>true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="opengl_context_egl_xlib.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="opengl_context_sdl.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="opengl_context_wgl.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
@@ -180,18 +199,21 @@
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader>Create</PrecompiledHeader>
     </ClCompile>
-    <ClCompile Include="platform_misc_win32.cpp" />
     <ClCompile Include="postprocessing.cpp" />
     <ClCompile Include="postprocessing_shader.cpp" />
     <ClCompile Include="postprocessing_shader_fx.cpp" />
     <ClCompile Include="postprocessing_shader_glsl.cpp" />
+    <ClCompile Include="postprocessing_shader_slang.cpp" />
     <ClCompile Include="sdl_audio_stream.cpp" />
     <ClCompile Include="sdl_input_source.cpp" />
     <ClCompile Include="shadergen.cpp" />
     <ClCompile Include="shiftjis.cpp" />
     <ClCompile Include="page_fault_handler.cpp" />
     <ClCompile Include="sockets.cpp" />
+    <ClCompile Include="spirv_module.cpp" />
     <ClCompile Include="state_wrapper.cpp" />
+    <ClCompile Include="texture_decompress.cpp" />
+    <ClCompile Include="translation.cpp" />
     <ClCompile Include="vulkan_builders.cpp" />
     <ClCompile Include="vulkan_device.cpp" />
     <ClCompile Include="vulkan_loader.cpp" />
@@ -199,9 +221,12 @@
     <ClCompile Include="vulkan_stream_buffer.cpp" />
     <ClCompile Include="vulkan_swap_chain.cpp" />
     <ClCompile Include="vulkan_texture.cpp" />
-    <ClCompile Include="wav_writer.cpp" />
+    <ClCompile Include="wav_reader_writer.cpp" />
     <ClCompile Include="win32_raw_input_source.cpp" />
     <ClCompile Include="window_info.cpp" />
+    <ClCompile Include="x11_tools.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="xinput_source.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -216,6 +241,9 @@
     </ProjectReference>
     <ProjectReference Include="..\..\dep\libchdr\libchdr.vcxproj">
       <Project>{425d6c99-d1c8-43c2-b8ac-4d7b1d941017}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\..\dep\lzma\lzma.vcxproj">
+      <Project>{dd944834-7899-4c1c-a4c1-064b5009d239}</Project>
     </ProjectReference>
     <ProjectReference Include="..\..\dep\reshadefx\reshadefx.vcxproj">
       <Project>{27b8d4bb-4f01-4432-bc14-9bf6ca458eee}</Project>
@@ -246,16 +274,16 @@
   <PropertyGroup Label="Globals">
     <ProjectGuid>{57F6206D-F264-4B07-BAF8-11B9BBE1F455}</ProjectGuid>
   </PropertyGroup>
-  <Import Project="..\..\dep\msvc\vsprops\StaticLibrary.props" />
+  <Import Project="..\..\dep\vsprops\StaticLibrary.props" />
   <Import Project="util.props" />
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)dep\reshadefx\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)dep\reshadefx\include;$(SolutionDir)dep\lzma\include</AdditionalIncludeDirectories>
       <ObjectFileName>$(IntDir)/%(RelativeDir)/</ObjectFileName>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <ForcedIncludeFiles>pch.h</ForcedIncludeFiles>
     </ClCompile>
   </ItemDefinitionGroup>
-  <Import Project="..\..\dep\msvc\vsprops\Targets.props" />
+  <Import Project="..\..\dep\vsprops\Targets.props" />
 </Project>

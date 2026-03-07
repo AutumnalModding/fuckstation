@@ -1,9 +1,10 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="..\..\dep\msvc\vsprops\Configurations.props" />
+  <Import Project="..\..\dep\vsprops\Configurations.props" />
   <ItemGroup>
     <ClInclude Include="align.h" />
     <ClInclude Include="assert.h" />
+    <ClInclude Include="bcdutils.h" />
     <ClInclude Include="bitfield.h" />
     <ClInclude Include="bitutils.h" />
     <ClInclude Include="crash_handler.h" />
@@ -23,10 +24,12 @@
     <ClInclude Include="heap_array.h" />
     <ClInclude Include="intrin.h" />
     <ClInclude Include="layered_settings_interface.h" />
+    <ClInclude Include="string_pool.h" />
+    <ClInclude Include="time_helpers.h" />
     <ClInclude Include="log.h" />
+    <ClInclude Include="log_channels.h" />
     <ClInclude Include="lru_cache.h" />
     <ClInclude Include="memmap.h" />
-    <ClInclude Include="memory_settings_interface.h" />
     <ClInclude Include="md5_digest.h" />
     <ClInclude Include="path.h" />
     <ClInclude Include="perf_scope.h" />
@@ -35,17 +38,22 @@
     <ClInclude Include="scoped_guard.h" />
     <ClInclude Include="settings_interface.h" />
     <ClInclude Include="sha1_digest.h" />
+    <ClInclude Include="sha256_digest.h" />
     <ClInclude Include="small_string.h" />
     <ClInclude Include="heterogeneous_containers.h" />
     <ClInclude Include="binary_reader_writer.h" />
     <ClInclude Include="string_util.h" />
+    <ClInclude Include="thirdparty\aes.h" />
     <ClInclude Include="thirdparty\SmallVector.h" />
     <ClInclude Include="thirdparty\StackWalker.h" />
+    <ClInclude Include="thirdparty\usb_key_code_data.h" />
     <ClInclude Include="threading.h" />
+    <ClInclude Include="task_queue.h" />
     <ClInclude Include="timer.h" />
     <ClInclude Include="types.h" />
     <ClInclude Include="minizip_helpers.h" />
     <ClInclude Include="windows_headers.h" />
+    <ClInclude Include="xorshift_prng.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="assert.cpp" />
@@ -58,17 +66,21 @@
     <ClCompile Include="layered_settings_interface.cpp" />
     <ClCompile Include="log.cpp" />
     <ClCompile Include="memmap.cpp" />
-    <ClCompile Include="memory_settings_interface.cpp" />
     <ClCompile Include="md5_digest.cpp" />
     <ClCompile Include="perf_scope.cpp" />
     <ClCompile Include="progress_callback.cpp" />
+    <ClCompile Include="settings_interface.cpp" />
     <ClCompile Include="sha1_digest.cpp" />
+    <ClCompile Include="sha256_digest.cpp" />
     <ClCompile Include="small_string.cpp" />
     <ClCompile Include="binary_reader_writer.cpp" />
+    <ClCompile Include="string_pool.cpp" />
     <ClCompile Include="string_util.cpp" />
+    <ClCompile Include="thirdparty\aes.cpp" />
     <ClCompile Include="thirdparty\SmallVector.cpp" />
     <ClCompile Include="thirdparty\StackWalker.cpp" />
     <ClCompile Include="threading.cpp" />
+    <ClCompile Include="task_queue.cpp" />
     <ClCompile Include="timer.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -93,6 +105,12 @@
       <Project>{8be398e6-b882-4248-9065-fecc8728e038}</Project>
     </ProjectReference>
   </ItemGroup>
+  <ItemGroup>
+    <None Include="thirdparty\usb_key_code_data.inl" />
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="CMakeLists.txt" />
+  </ItemGroup>
   <ImportGroup Label="ExtensionTargets">
     <Import Project="$(VCTargetsPath)\BuildCustomizations\marmasm.targets" />
     <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.targets" />
@@ -104,12 +122,13 @@
     <Import Project="$(VCTargetsPath)\BuildCustomizations\marmasm.props" />
     <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.props" />
   </ImportGroup>
-  <Import Project="..\..\dep\msvc\vsprops\StaticLibrary.props" />
+  <Import Project="..\..\dep\vsprops\StaticLibrary.props" />
   <Import Project="common.props" />
   <ItemDefinitionGroup>
     <ClCompile>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)dep\fast_float\include;</AdditionalIncludeDirectories>
       <ObjectFileName>$(IntDir)/%(RelativeDir)/</ObjectFileName>
     </ClCompile>
   </ItemDefinitionGroup>
-  <Import Project="..\..\dep\msvc\vsprops\Targets.props" />
+  <Import Project="..\..\dep\vsprops\Targets.props" />
 </Project>

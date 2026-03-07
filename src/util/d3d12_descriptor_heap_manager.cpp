@@ -42,7 +42,7 @@ bool D3D12DescriptorHeapManager::Create(ID3D12Device* device, D3D12_DESCRIPTOR_H
 
 void D3D12DescriptorHeapManager::Destroy()
 {
-#ifdef _DEBUG
+#if defined(_DEBUG) || defined(_DEVEL)
   for (BitSetType& bs : m_free_slots)
   {
     DebugAssert(bs.all());
@@ -83,7 +83,6 @@ bool D3D12DescriptorHeapManager::Allocate(D3D12DescriptorHandle* handle)
     return true;
   }
 
-  Panic("Out of fixed descriptors");
   return false;
 }
 

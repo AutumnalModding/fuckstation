@@ -7,15 +7,19 @@
 
 #include "core/game_list.h"
 #include "core/host.h"
+#include "core/input_types.h"
 #include "core/system.h"
 #include "core/types.h"
 
 #include "util/gpu_device.h"
+#include "util/imgui_manager.h"
 #include "util/input_manager.h"
 
 #include <QtCore/QByteArray>
+#include <QtCore/QList>
 #include <QtCore/QMetaType>
 #include <QtCore/QObject>
+#include <QtCore/QPair>
 #include <QtCore/QSemaphore>
 #include <QtCore/QString>
 #include <QtCore/QThread>
@@ -29,9 +33,8 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
-
-class ByteStream;
 
 class QActionGroup;
 class QEventLoop;
@@ -42,10 +45,18 @@ class QTranslator;
 
 class INISettingsInterface;
 
+enum class RenderAPI : u8;
 class GPUDevice;
+
+class GPUBackend;
 
 class MainWindow;
 class DisplayWidget;
+class InputDeviceListModel;
+
+namespace Host {
+enum class NumberFormatType : u8;
+}
 
 namespace Achievements {
 enum class LoginRequestReason;
@@ -54,189 +65,160 @@ enum class LoginRequestReason;
 Q_DECLARE_METATYPE(std::optional<bool>);
 Q_DECLARE_METATYPE(std::shared_ptr<SystemBootParameters>);
 
-class EmuThread : public QThread
+class CoreThread : public QThread
 {
   Q_OBJECT
 
 public:
-  /// This class is a scoped lock on the system, which prevents it from running while
-  /// the object exists. Its purpose is to be used for blocking/modal popup boxes,
-  /// where the VM needs to exit fullscreen temporarily.
-  class SystemLock
-  {
-  public:
-    SystemLock(SystemLock&& lock);
-    SystemLock(const SystemLock&) = delete;
-    ~SystemLock();
+  CoreThread();
+  ~CoreThread();
 
-    /// Cancels any pending unpause/fullscreen transition.
-    /// Call when you're going to destroy the system anyway.
-    void cancelResume();
-
-  private:
-    SystemLock(bool was_paused, bool was_fullscreen);
-    friend EmuThread;
-
-    bool m_was_paused;
-    bool m_was_fullscreen;
-  };
-
-public:
-  explicit EmuThread(QThread* ui_thread);
-  ~EmuThread();
-
-  static void start();
-  static void stop();
-
-  ALWAYS_INLINE bool isOnThread() const { return QThread::currentThread() == this; }
-  ALWAYS_INLINE bool isOnUIThread() const { return QThread::currentThread() == m_ui_thread; }
+  void start();
+  void stop();
 
   ALWAYS_INLINE QEventLoop* getEventLoop() const { return m_event_loop; }
 
-  ALWAYS_INLINE bool isFullscreen() const { return m_is_fullscreen; }
-  ALWAYS_INLINE bool isRenderingToMain() const { return m_is_rendering_to_main; }
-  ALWAYS_INLINE bool isSurfaceless() const { return m_is_surfaceless; }
-  ALWAYS_INLINE bool isRunningFullscreenUI() const { return m_run_fullscreen_ui; }
+  ALWAYS_INLINE InputDeviceListModel* getInputDeviceListModel() const { return m_input_device_list_model.get(); }
+  ALWAYS_INLINE bool isFullscreenUIStarted() const { return m_is_fullscreen_ui_started; }
 
-  std::optional<WindowInfo> acquireRenderWindow(bool recreate_window);
-  void connectDisplaySignals(DisplayWidget* widget);
+  std::optional<WindowInfo> acquireRenderWindow(RenderAPI render_api, bool fullscreen, bool exclusive_fullscreen,
+                                                Error* error);
+  void connectRenderWindowSignals(DisplayWidget* widget);
   void releaseRenderWindow();
 
   void startBackgroundControllerPollTimer();
   void stopBackgroundControllerPollTimer();
+  void updateBackgroundControllerPollInterval();
   void wakeThread();
 
-  bool shouldRenderToMain() const;
-  void loadSettings(SettingsInterface& si);
-  void checkForSettingsChanges(const Settings& old_settings);
-
-  void bootOrLoadState(std::string path);
-
-  void updatePerformanceCounters();
+  void updatePerformanceCounters(const GPUBackend* gpu_backend);
   void resetPerformanceCounters();
 
-  /// Locks the system by pausing it, while a popup dialog is displayed.
-  /// This version is **only** for the system thread. UI thread should use the MainWindow variant.
-  SystemLock pauseAndLockSystem();
+  /// Queues an input event for an additional render window to the emu thread.
+  void queueAuxiliaryRenderWindowInputEvent(Host::AuxiliaryRenderWindowUserData userdata,
+                                            Host::AuxiliaryRenderWindowEvent event,
+                                            Host::AuxiliaryRenderWindowEventParam param1 = {},
+                                            Host::AuxiliaryRenderWindowEventParam param2 = {},
+                                            Host::AuxiliaryRenderWindowEventParam param3 = {});
 
 Q_SIGNALS:
   void errorReported(const QString& title, const QString& message);
-  bool messageConfirmed(const QString& title, const QString& message);
   void statusMessage(const QString& message);
-  void debuggerMessageReported(const QString& message);
-  void settingsResetToDefault(bool system, bool controller);
-  void onInputDevicesEnumerated(const std::vector<std::pair<std::string, std::string>>& devices);
-  void onInputDeviceConnected(const std::string& identifier, const std::string& device_name);
-  void onInputDeviceDisconnected(const std::string& identifier);
-  void onVibrationMotorsEnumerated(const QList<InputBindingKey>& motors);
+  void settingsResetToDefault(bool host, bool system, bool controller);
   void systemStarting();
   void systemStarted();
+  void systemStopping();
   void systemDestroyed();
   void systemPaused();
   void systemResumed();
-  void gameListRefreshed();
-  std::optional<WindowInfo> onAcquireRenderWindowRequested(bool recreate_window, bool fullscreen, bool render_to_main,
-                                                           bool surfaceless, bool use_main_window_pos);
+  void systemGameChanged(const QString& path, const QString& game_serial, const QString& game_title);
+  void systemUndoStateAvailabilityChanged(bool available, quint64 timestamp);
+  void gameListRowsChanged(const QList<int>& rows_changed);
+  std::optional<WindowInfo> onAcquireRenderWindowRequested(RenderAPI render_api, bool fullscreen,
+                                                           bool exclusive_fullscreen, Error* error);
   void onResizeRenderWindowRequested(qint32 width, qint32 height);
   void onReleaseRenderWindowRequested();
-  void focusDisplayWidgetRequested();
-  void runningGameChanged(const QString& filename, const QString& game_serial, const QString& game_title);
   void inputProfileLoaded();
   void mouseModeRequested(bool relative, bool hide_cursor);
-  void fullscreenUIStateChange(bool running);
+  void fullscreenUIStartedOrStopped(bool running);
   void achievementsLoginRequested(Achievements::LoginRequestReason reason);
-  void achievementsRefreshed(quint32 id, const QString& game_info_string);
-  void achievementsChallengeModeChanged(bool enabled);
-  void cheatEnabled(quint32 index, bool enabled);
+  void achievementsLoginSuccess(const QString& username, quint32 points, quint32 sc_points, quint32 unread_messages);
+  void achievementsActiveChanged(bool active);
+  void achievementsHardcoreModeChanged(bool enabled);
   void mediaCaptureStarted();
   void mediaCaptureStopped();
 
-  /// Big Picture UI requests.
-  void onCoverDownloaderOpenRequested();
+  bool onCreateAuxiliaryRenderWindow(RenderAPI render_api, qint32 x, qint32 y, quint32 width, quint32 height,
+                                     const QString& title, const QString& icon_name,
+                                     Host::AuxiliaryRenderWindowUserData userdata,
+                                     Host::AuxiliaryRenderWindowHandle* handle, WindowInfo* wi, Error* error);
+  void onDestroyAuxiliaryRenderWindow(Host::AuxiliaryRenderWindowHandle handle, QPoint* pos, QSize* size);
 
-public Q_SLOTS:
-  void setDefaultSettings(bool system = true, bool controller = true);
+public:
+  void setDefaultSettings(bool host, bool system, bool controller);
   void applySettings(bool display_osd_messages = false);
   void reloadGameSettings(bool display_osd_messages = false);
+  void reloadInputProfile(bool display_osd_messages = false);
+  void reloadCheats(bool reload_files, bool reload_enabled_list, bool verbose, bool verbose_if_changed);
   void updateEmuFolders();
   void updateControllerSettings();
-  void reloadInputSources();
   void reloadInputBindings();
-  void reloadInputDevices();
-  void closeInputSources();
-  void enumerateInputDevices();
-  void enumerateVibrationMotors();
   void startFullscreenUI();
   void stopFullscreenUI();
+  void exitFullscreenUI();
   void bootSystem(std::shared_ptr<SystemBootParameters> params);
-  void resumeSystemFromMostRecentState();
-  void shutdownSystem(bool save_state, bool check_memcard_busy);
+  void bootOrSwitchNonDisc(const QString& path);
+  void shutdownSystem(bool save_state, bool check_safety);
   void resetSystem(bool check_memcard_busy);
-  void setSystemPaused(bool paused, bool wait_until_paused = false);
-  void changeDisc(const QString& new_disc_filename, bool reset_system, bool check_memcard_busy);
+  void setSystemPaused(bool paused);
+  void changeDisc(const QString& new_disc_path, bool reset_system, bool check_memcard_busy);
   void changeDiscFromPlaylist(quint32 index);
-  void loadState(const QString& filename);
+  void loadState(const QString& path);
   void loadState(bool global, qint32 slot);
-  void saveState(const QString& filename, bool block_until_done = false);
-  void saveState(bool global, qint32 slot, bool block_until_done = false);
+  void saveState(const QString& path);
+  void saveState(bool global, qint32 slot);
   void undoLoadState();
   void setAudioOutputVolume(int volume, int fast_forward_volume);
   void setAudioOutputMuted(bool muted);
-  void startDumpingAudio();
-  void stopDumpingAudio();
   void singleStepCPU();
-  void dumpRAM(const QString& filename);
-  void dumpVRAM(const QString& filename);
-  void dumpSPURAM(const QString& filename);
+  void dumpRAM(const QString& path);
+  void dumpVRAM(const QString& path);
+  void dumpSPURAM(const QString& path);
   void saveScreenshot();
-  void redrawDisplayWindow();
+  void applicationStateChanged(Qt::ApplicationState state);
+  void redrawRenderWindow();
   void toggleFullscreen();
-  void setFullscreen(bool fullscreen, bool allow_render_to_main);
-  void setSurfaceless(bool surfaceless);
+  void setFullscreen(bool fullscreen);
+  void setFullscreenWithCompletionHandler(bool fullscreen, std::function<void()> completion_handler);
+  void recreateRenderWindow();
   void requestDisplaySize(float scale);
-  void setCheatEnabled(quint32 index, bool enabled);
-  void applyCheat(quint32 index);
+  void applyCheat(const QString& name);
   void reloadPostProcessingShaders();
-  void updatePostProcessingSettings();
-  void clearInputBindStateFromSource(InputBindingKey key);
-
-private Q_SLOTS:
-  void stopInThread();
-  void onDisplayWindowMouseButtonEvent(int button, bool pressed);
-  void onDisplayWindowMouseWheelEvent(const QPoint& delta_angle);
-  void onDisplayWindowResized(int width, int height, float scale);
-  void onDisplayWindowKeyEvent(int key, bool pressed);
-  void onDisplayWindowTextEntered(const QString& text);
-  void doBackgroundControllerPoll();
-  void runOnEmuThread(std::function<void()> callback);
+  void updatePostProcessingSettings(bool display, bool internal, bool force_reload);
+  void reloadTextureReplacements();
+  void captureGPUFrameDump();
+  void startControllerTest();
+  void openGamePropertiesForCurrentGame(const QString& category = {});
+  void setVideoThreadRunIdle(bool active);
+  void updateFullscreenUITheme();
+  void runOnCoreThread(const std::function<void()>& callback);
 
 protected:
   void run() override;
 
 private:
-  using InputButtonHandler = std::function<void(bool)>;
-  using InputAxisHandler = std::function<void(float)>;
+  int getBackgroundControllerPollInterval() const;
+  void stopInThread();
+  void onRenderWindowMouseMoveAbsoluteEvent(float x, float y);
+  void onRenderWindowMouseMoveRelativeEvent(float dx, float dy);
+  void onRenderWindowMouseButtonEvent(int button, bool pressed);
+  void onRenderWindowMouseWheelEvent(float dx, float dy);
+  void onRenderWindowResized(int width, int height, float scale, float refresh_rate);
+  void onRenderWindowKeyEvent(int key, bool pressed);
+  void onRenderWindowTextEntered(const QString& text);
+  void doBackgroundControllerPoll();
+  void processAuxiliaryRenderWindowInputEvent(void* userdata, quint32 event, quint32 param1, quint32 param2,
+                                              quint32 param3);
 
   void createBackgroundControllerPollTimer();
   void destroyBackgroundControllerPollTimer();
-  void setInitialState(std::optional<bool> override_fullscreen);
-  void confirmActionIfMemoryCardBusy(const QString& action, bool cancel_resume_on_accept,
-                                     std::function<void(bool)> callback) const;
+
+  void bootOrLoadState(std::string path);
+
+  void confirmActionWithSafetyCheck(const QString& action, bool check_achievements, bool cancel_resume_on_accept,
+                                    std::function<void(bool)> callback) const;
+
+  static void videoThreadEntryPoint();
 
   QThread* m_ui_thread;
   QSemaphore m_started_semaphore;
   QEventLoop* m_event_loop = nullptr;
   QTimer* m_background_controller_polling_timer = nullptr;
+  std::unique_ptr<InputDeviceListModel> m_input_device_list_model;
 
   bool m_shutdown_flag = false;
-  bool m_run_fullscreen_ui = false;
-  bool m_is_rendering_to_main = false;
-  bool m_is_fullscreen = false;
-  bool m_is_exclusive_fullscreen = false;
-  bool m_lost_exclusive_fullscreen = false;
-  bool m_is_surfaceless = false;
-  bool m_save_state_on_shutdown = false;
-
+  bool m_video_thread_run_idle = false;
+  bool m_is_fullscreen_ui_started = false;
   bool m_was_paused_by_focus_loss = false;
 
   float m_last_speed = std::numeric_limits<float>::infinity();
@@ -248,14 +230,82 @@ private:
   bool m_last_hardware_renderer = false;
 };
 
-extern EmuThread* g_emu_thread;
+class InputDeviceListModel final : public QAbstractListModel
+{
+  Q_OBJECT
+
+public:
+  struct Device
+  {
+    InputBindingKey key;
+    QString identifier;
+    QString display_name;
+  };
+
+  using DeviceList = QList<Device>;
+  using EffectList = QList<QPair<InputBindingInfo::Type, InputBindingKey>>;
+
+  explicit InputDeviceListModel(QObject* parent = nullptr);
+  ~InputDeviceListModel() override;
+
+  // Safe to access on UI thread.
+  ALWAYS_INLINE const DeviceList& getDeviceList() const { return m_devices; }
+  ALWAYS_INLINE const EffectList& getEffectList() const { return m_effects; }
+
+  /// Returns the device name for the specified key, or an empty string if not found.
+  QString getDeviceName(const InputBindingKey& key);
+
+  /// Returns whether any effects are available for the specified type.
+  bool hasEffectsOfType(InputBindingInfo::Type type);
+
+  int rowCount(const QModelIndex& parent = QModelIndex()) const override;
+  QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override;
+
+  // NOTE: Should only be called on core thread.
+  void enumerateDevices();
+
+  void onDeviceConnected(const InputBindingKey& key, const QString& identifier, const QString& device_name,
+                         const EffectList& effects);
+  void onDeviceDisconnected(const InputBindingKey& key, const QString& identifier);
+
+  static QIcon getIconForKey(const InputBindingKey& key);
+
+private:
+  void resetLists(const DeviceList& devices, const EffectList& motors);
+
+  DeviceList m_devices;
+  EffectList m_effects;
+};
+
+class QtAsyncTask : public QObject
+{
+  Q_OBJECT
+
+public:
+  using CompletionCallback = std::function<void()>;
+  using WorkCallback = std::function<CompletionCallback()>;
+
+  ~QtAsyncTask();
+
+  static void create(QObject* owner, WorkCallback callback);
+
+Q_SIGNALS:
+  void completed(QtAsyncTask* self);
+
+private:
+  explicit QtAsyncTask(WorkCallback callback);
+
+  std::variant<WorkCallback, CompletionCallback> m_callback;
+};
+
+extern CoreThread* g_core_thread;
 
 namespace QtHost {
+/// Returns the locale to use for date/time formatting, etc.
+const QLocale& GetApplicationLocale();
+
 /// Default theme name for the platform.
 const char* GetDefaultThemeName();
-
-/// Default language for the platform.
-const char* GetDefaultLanguage();
 
 /// Sets application theme according to settings.
 void UpdateApplicationTheme();
@@ -263,20 +313,26 @@ void UpdateApplicationTheme();
 /// Returns true if the application theme is using dark colours.
 bool IsDarkApplicationTheme();
 
+/// Returns true if the application theme is using stylesheet overrides.
+bool HasGlobalStylesheet();
+
 /// Sets the icon theme, based on the current style (light/dark).
-void SetIconThemeFromStyle();
+void UpdateThemeOnStyleChange();
+
+/// Returns true if the specified theme name uses style sheets.
+bool IsStylesheetTheme(std::string_view theme_name);
+
+/// Returns a list of custom themes available on the system.
+QStringList GetCustomThemeList();
 
 /// Sets batch mode (exit after game shutdown).
 bool InBatchMode();
 
-/// Sets NoGUI mode (implys batch mode, does not display main window, exits on shutdown).
+/// Sets NoGUI mode (implies batch mode, does not display main window, exits on shutdown).
 bool InNoGUIMode();
 
-/// Executes a function on the UI thread.
-void RunOnUIThread(const std::function<void()>& func, bool block = false);
-
-/// Default language for the platform.
-const char* GetDefaultLanguage();
+/// Returns true if display widgets need to wrapped in a container, thanks to Wayland stupidity.
+bool IsDisplayWidgetContainerNeeded();
 
 /// Call when the language changes.
 void UpdateApplicationLanguage(QWidget* dialog_parent);
@@ -290,21 +346,35 @@ QString GetAppConfigSuffix();
 /// Returns the main application icon.
 const QIcon& GetAppIcon();
 
+/// Returns a higher resolution logo for the application.
+QPixmap GetAppLogo();
+
 /// Returns the base path for resources. This may be : prefixed, if we're using embedded resources.
 QString GetResourcesBasePath();
 
-/// Returns the base settings interface. Should lock before manipulating.
-INISettingsInterface* GetBaseSettingsInterface();
+/// Returns the path to the specified resource.
+std::string GetResourcePath(std::string_view name, bool allow_override);
+QString GetResourceQPath(std::string_view name, bool allow_override);
+
+/// Reads an embedded resource file to a string.
+std::optional<std::string> ReadResourceFileToString(std::string_view name, bool allow_override, Error* error);
+
+/// Returns the font family for the bundled Roboto font.
+const QStringList& GetRobotoFontFamilies();
+
+/// Returns the font for the bundled fixed-width font.
+const QFont& GetFixedFont();
 
 /// Saves a game settings interface.
 bool SaveGameSettings(SettingsInterface* sif, bool delete_if_empty);
 
-/// Downloads the specified URL to the provided path.
-bool DownloadFile(QWidget* parent, const QString& title, std::string url, const char* path);
+/// Formats a number according to the current locale.
+QString FormatNumber(Host::NumberFormatType type, s64 value);
+QString FormatNumber(Host::NumberFormatType type, double value);
 
-/// Downloads the specified URL, and extracts the specified file from a zip to a provided path.
-bool DownloadFileFromZip(QWidget* parent, const QString& title, std::string url, const char* zip_filename,
-                         const char* output_path);
+/// Downloads the specified URL to the provided path.
+void DownloadFile(QWidget* parent, std::string url, std::string path,
+                  std::function<void(bool result, std::string path, const Error& error)> completion_callback);
 
 /// Thread-safe settings access.
 void QueueSettingsSave();
@@ -314,7 +384,14 @@ bool ShouldShowDebugOptions();
 
 /// VM state, safe to access on UI thread.
 bool IsSystemValid();
+bool IsSystemValidOrStarting();
 bool IsSystemPaused();
+
+/// Returns true if fullscreen UI is requested.
+bool IsFullscreenUIStarted();
+
+/// Returns true if any lock is in place.
+bool IsSystemLocked();
 
 /// Accessors for game information.
 const QString& GetCurrentGameTitle();

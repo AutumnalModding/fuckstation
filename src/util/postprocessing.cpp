@@ -1,21 +1,26 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "postprocessing.h"
 #include "gpu_device.h"
-#include "host.h"
 #include "imgui_manager.h"
 #include "postprocessing_shader.h"
 #include "postprocessing_shader_fx.h"
 #include "postprocessing_shader_glsl.h"
+#include "postprocessing_shader_slang.h"
+#include "shadergen.h"
+#include "translation.h"
 
 // TODO: Remove me
+#include "core/core.h"
+#include "core/fullscreenui.h"
 #include "core/host.h"
-#include "core/host_interface_progress_callback.h"
 #include "core/settings.h"
 
-#include "IconsFontAwesome5.h"
+#include "IconsEmoji.h"
+#include "IconsFontAwesome.h"
 #include "common/assert.h"
+#include "common/bitutils.h"
 #include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
@@ -28,10 +33,8 @@
 
 LOG_CHANNEL(PostProcessing);
 
-// TODO: ProgressCallbacks for shader compiling, it can be a bit slow.
-// TODO: buffer width/height is wrong on resize, need to change it somehow.
-
 namespace PostProcessing {
+
 template<typename T>
 static u32 ParseVector(std::string_view line, ShaderOption::ValueVector* values);
 
@@ -41,22 +44,9 @@ static TinyString GetStageConfigSection(const char* section, u32 index);
 static void CopyStageConfig(SettingsInterface& si, const char* section, u32 old_index, u32 new_index);
 static void SwapStageConfig(SettingsInterface& si, const char* section, u32 lhs_index, u32 rhs_index);
 static std::unique_ptr<Shader> TryLoadingShader(const std::string& shader_name, bool only_config, Error* error);
-static SettingsInterface& GetLoadSettingsInterface(const char* section);
 
-template<typename T>
-ALWAYS_INLINE void ForAllChains(const T& F)
-{
-  F(DisplayChain);
-  F(InternalChain);
-}
+Timer::Value Chain::s_start_time;
 
-Chain DisplayChain(Config::DISPLAY_CHAIN_SECTION);
-Chain InternalChain(Config::INTERNAL_CHAIN_SECTION);
-
-static Common::Timer s_timer;
-
-static std::unordered_map<u64, std::unique_ptr<GPUSampler>> s_samplers;
-static std::unique_ptr<GPUTexture> s_dummy_texture;
 } // namespace PostProcessing
 
 template<typename T>
@@ -66,7 +56,7 @@ u32 PostProcessing::ParseVector(std::string_view line, ShaderOption::ValueVector
   size_t start = 0;
   while (index < PostProcessing::ShaderOption::MAX_VECTOR_COMPONENTS)
   {
-    while (start < line.size() && std::isspace(line[start]))
+    while (start < line.size() && StringUtil::IsWhitespace(line[start]))
       start++;
 
     if (start >= line.size())
@@ -102,6 +92,13 @@ u32 PostProcessing::ParseVector(std::string_view line, ShaderOption::ValueVector
 u32 PostProcessing::ShaderOption::ParseFloatVector(std::string_view line, ValueVector* values)
 {
   return ParseVector<float>(line, values);
+}
+
+bool PostProcessing::ShaderOption::ShouldHide() const
+{
+  // Typical for reshade shaders to have help text in ui_text, and a radio button with no valid range.
+  return (ui_name.empty() || (StringUtil::StripWhitespace(ui_name).empty() &&
+                              std::memcmp(min_value.data(), max_value.data(), sizeof(min_value)) == 0));
 }
 
 u32 PostProcessing::ShaderOption::ParseIntVector(std::string_view line, ValueVector* values)
@@ -141,9 +138,9 @@ TinyString PostProcessing::ValueToString(ShaderOption::Type type, u32 vector_siz
   return ret;
 }
 
-std::vector<std::pair<std::string, std::string>> PostProcessing::GetAvailableShaderNames()
+std::vector<std::pair<std::string, PostProcessing::ShaderType>> PostProcessing::GetAvailableShaderNames()
 {
-  std::vector<std::pair<std::string, std::string>> names;
+  std::vector<std::pair<std::string, ShaderType>> names;
 
   FileSystem::FindResultsArray results;
   FileSystem::FindFiles(Path::Combine(EmuFolders::Resources, "shaders").c_str(), "*.glsl",
@@ -152,8 +149,6 @@ std::vector<std::pair<std::string, std::string>> PostProcessing::GetAvailableSha
                         FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_RECURSIVE | FILESYSTEM_FIND_RELATIVE_PATHS |
                           FILESYSTEM_FIND_KEEP_ARRAY,
                         &results);
-  std::sort(results.begin(), results.end(),
-            [](const auto& lhs, const auto& rhs) { return lhs.FileName < rhs.FileName; });
 
   for (FILESYSTEM_FIND_DATA& fd : results)
   {
@@ -166,11 +161,8 @@ std::vector<std::pair<std::string, std::string>> PostProcessing::GetAvailableSha
     StringUtil::ReplaceAll(&fd.FileName, '\\', '/');
 #endif
 
-    if (std::none_of(names.begin(), names.end(), [&fd](const auto& other) { return fd.FileName == other.second; }))
-    {
-      std::string display_name = fmt::format(TRANSLATE_FS("PostProcessing", "{} [GLSL]"), fd.FileName);
-      names.emplace_back(std::move(display_name), std::move(fd.FileName));
-    }
+    if (std::ranges::none_of(names, [&fd](const auto& other) { return fd.FileName == other.first; }))
+      names.emplace_back(std::move(fd.FileName), ShaderType::GLSL);
   }
 
   FileSystem::FindFiles(Path::Combine(EmuFolders::Shaders, "reshade" FS_OSPATH_SEPARATOR_STR "Shaders").c_str(), "*.fx",
@@ -179,6 +171,28 @@ std::vector<std::pair<std::string, std::string>> PostProcessing::GetAvailableSha
     Path::Combine(EmuFolders::Resources, "shaders" FS_OSPATH_SEPARATOR_STR "reshade" FS_OSPATH_SEPARATOR_STR "Shaders")
       .c_str(),
     "*.fx",
+    FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_RECURSIVE | FILESYSTEM_FIND_RELATIVE_PATHS | FILESYSTEM_FIND_KEEP_ARRAY,
+    &results);
+
+  for (FILESYSTEM_FIND_DATA& fd : results)
+  {
+    size_t pos = fd.FileName.rfind('.');
+    if (pos != std::string::npos && pos > 0)
+      fd.FileName.erase(pos);
+
+#ifdef _WIN32
+    // swap any backslashes for forward slashes so the config is cross-platform
+    StringUtil::ReplaceAll(&fd.FileName, '\\', '/');
+#endif
+
+    if (std::ranges::none_of(names, [&fd](const auto& other) { return fd.FileName == other.first; }))
+      names.emplace_back(std::move(fd.FileName), ShaderType::Reshade);
+  }
+
+  FileSystem::FindFiles(Path::Combine(EmuFolders::Shaders, "slang").c_str(), "*.slangp",
+                        FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_RECURSIVE | FILESYSTEM_FIND_RELATIVE_PATHS, &results);
+  FileSystem::FindFiles(
+    Path::Combine(EmuFolders::Resources, "shaders" FS_OSPATH_SEPARATOR_STR "slang").c_str(), "*.slangp",
     FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_RECURSIVE | FILESYSTEM_FIND_RELATIVE_PATHS | FILESYSTEM_FIND_KEEP_ARRAY,
     &results);
   std::sort(results.begin(), results.end(),
@@ -195,19 +209,34 @@ std::vector<std::pair<std::string, std::string>> PostProcessing::GetAvailableSha
     StringUtil::ReplaceAll(&fd.FileName, '\\', '/');
 #endif
 
-    if (std::none_of(names.begin(), names.end(), [&fd](const auto& other) { return fd.FileName == other.second; }))
-    {
-      std::string display_name = fmt::format(TRANSLATE_FS("PostProcessing", "{} [ReShade]"), fd.FileName);
-      names.emplace_back(std::move(display_name), std::move(fd.FileName));
-    }
+    if (std::ranges::none_of(names, [&fd](const auto& other) { return fd.FileName == other.first; }))
+      names.emplace_back(std::move(fd.FileName), ShaderType::Slang);
   }
 
   std::sort(names.begin(), names.end(),
-            [](const std::pair<std::string, std::string>& lhs, const std::pair<std::string, std::string>& rhs) {
-              return (StringUtil::Strcasecmp(lhs.first.c_str(), rhs.first.c_str()) < 0);
+            [](const std::pair<std::string, ShaderType>& lhs, const std::pair<std::string, ShaderType>& rhs) {
+              return (StringUtil::CompareNoCase(lhs.first, rhs.first) < 0);
             });
 
   return names;
+}
+
+std::string_view PostProcessing::GetShaderTypeDisplayName(ShaderType type)
+{
+  switch (type)
+  {
+    case ShaderType::GLSL:
+      return TRANSLATE_SV("PostProcessing", "GLSL");
+
+    case ShaderType::Reshade:
+      return TRANSLATE_SV("PostProcessing", "ReShade");
+
+    case ShaderType::Slang:
+      return TRANSLATE_SV("PostProcessing", "Slang");
+
+    default:
+      return "Unknown";
+  }
 }
 
 TinyString PostProcessing::GetStageConfigSection(const char* section, u32 index)
@@ -242,6 +271,16 @@ void PostProcessing::SwapStageConfig(SettingsInterface& si, const char* section,
 
   for (const auto& [key, value] : lhs_kvs)
     si.SetStringValue(rhs_section, key.c_str(), value.c_str());
+}
+
+bool PostProcessing::Config::IsEnabled(const SettingsInterface& si, const char* section)
+{
+  return si.GetBoolValue(section, "Enabled", false);
+}
+
+bool PostProcessing::Config::IsStageEnabled(const SettingsInterface& si, const char* section, u32 index)
+{
+  return si.GetBoolValue(GetStageConfigSection(section, index), "StageEnabled", true);
 }
 
 u32 PostProcessing::Config::GetStageCount(const SettingsInterface& si, const char* section)
@@ -285,6 +324,11 @@ std::vector<PostProcessing::ShaderOption> PostProcessing::Config::GetShaderOptio
   return ret;
 }
 
+void PostProcessing::Config::SetStageEnabled(SettingsInterface& si, const char* section, u32 index, bool enabled)
+{
+  si.SetBoolValue(GetStageConfigSection(section, index), "StageEnabled", enabled);
+}
+
 bool PostProcessing::Config::AddStage(SettingsInterface& si, const char* section, const std::string& shader_name,
                                       Error* error)
 {
@@ -297,6 +341,7 @@ bool PostProcessing::Config::AddStage(SettingsInterface& si, const char* section
 
   const TinyString stage_section = GetStageConfigSection(section, index);
   si.SetStringValue(stage_section, "ShaderName", shader->GetName().c_str());
+  SetStageEnabled(si, section, index, true);
 
 #if 0
   // Leave options unset for now.
@@ -319,8 +364,14 @@ void PostProcessing::Config::RemoveStage(SettingsInterface& si, const char* sect
   for (u32 i = index; i < (stage_count - 1); i++)
     CopyStageConfig(si, section, i + 1, i);
 
-  si.ClearSection(GetStageConfigSection(section, stage_count - 1));
-  si.SetUIntValue(section, "StageCount", stage_count - 1);
+  const u32 new_stage_count = stage_count - 1;
+  si.ClearSection(GetStageConfigSection(section, new_stage_count));
+
+  // if game settings and no stages left, wipe the field out so we can potentially remove the file
+  if (&si != Core::GetBaseSettingsLayer() && new_stage_count == 0)
+    si.DeleteValue(section, "StageCount");
+  else
+    si.SetUIntValue(section, "StageCount", new_stage_count);
 }
 
 void PostProcessing::Config::MoveStageUp(SettingsInterface& si, const char* section, u32 index)
@@ -360,52 +411,69 @@ void PostProcessing::Config::ClearStages(SettingsInterface& si, const char* sect
   const u32 count = GetStageCount(si, section);
   for (s32 i = static_cast<s32>(count - 1); i >= 0; i--)
     si.ClearSection(GetStageConfigSection(section, static_cast<u32>(i)));
-  si.SetUIntValue(section, "StageCount", 0);
+
+  // if game settings, wipe the field out so we can potentially remove the file
+  if (&si != Core::GetBaseSettingsLayer())
+    si.DeleteValue(section, "StageCount");
+  else
+    si.SetUIntValue(section, "StageCount", 0);
 }
 
 PostProcessing::Chain::Chain(const char* section) : m_section(section)
 {
+  if (s_start_time == 0) [[unlikely]]
+    s_start_time = Timer::GetCurrentValue();
 }
 
 PostProcessing::Chain::~Chain() = default;
+
+GPUTexture* PostProcessing::Chain::GetTextureUnusedAtEndOfChain() const
+{
+  const size_t num_active_stages = std::ranges::count_if(
+    m_stages, [](const std::unique_ptr<Shader>& shader) { return (shader && shader->IsEnabled()); });
+  return (num_active_stages % 2) ? m_output_texture.get() :
+                                   (m_intermediate_texture ? m_intermediate_texture.get() : m_input_texture.get());
+}
 
 bool PostProcessing::Chain::IsActive() const
 {
   return m_enabled && !m_stages.empty();
 }
 
-bool PostProcessing::Chain::IsInternalChain() const
-{
-  return (this == &InternalChain);
-}
-
 void PostProcessing::Chain::ClearStagesWithError(const Error& error)
 {
   std::string msg = error.GetDescription();
-  Host::AddIconOSDMessage(
-    "PostProcessLoadFail", ICON_FA_EXCLAMATION_TRIANGLE,
-    fmt::format(TRANSLATE_FS("OSDMessage", "Failed to load post-processing chain: {}"),
-                msg.empty() ? TRANSLATE_SV("PostProcessing", "Unknown Error") : std::string_view(msg)),
-    Host::OSD_ERROR_DURATION);
+  if (msg.empty())
+    msg = TRANSLATE_SV("PostProcessing", "Unknown Error");
+
+  Host::AddIconOSDMessage(OSDMessageType::Error, "PostProcessLoadFail", ICON_FA_TRIANGLE_EXCLAMATION,
+                          TRANSLATE_STR("OSDMessage", "Failed to load post-processing chain."), std::move(msg));
+  DestroyTextures();
   m_stages.clear();
 }
 
-void PostProcessing::Chain::LoadStages()
+void PostProcessing::Chain::LoadStages(std::unique_lock<std::mutex>& settings_lock, const SettingsInterface& si,
+                                       bool preload_swap_chain_size)
 {
-  auto lock = Host::GetSettingsLock();
-  SettingsInterface& si = GetLoadSettingsInterface(m_section);
+  m_stages.clear();
+  DestroyTextures();
 
-  m_enabled = si.GetBoolValue(m_section, "Enabled", false);
+  m_enabled = Config::IsEnabled(si, m_section);
   m_wants_depth_buffer = false;
+  m_wants_unscaled_input = false;
 
   const u32 stage_count = Config::GetStageCount(si, m_section);
   if (stage_count == 0)
     return;
 
   Error error;
-  HostInterfaceProgressCallback progress;
+  FullscreenUI::LoadingScreenProgressCallback progress;
+  progress.SetTitle("Loading Post-Processing Shaders...");
   progress.SetProgressRange(stage_count);
 
+  u32 enabled_stage_count = 0;
+  u32 first_enabled_stage = std::numeric_limits<u32>::max();
+  u32 last_enabled_stage = std::numeric_limits<u32>::max();
   for (u32 i = 0; i < stage_count; i++)
   {
     std::string stage_name = Config::GetStageShaderName(si, m_section, i);
@@ -416,7 +484,7 @@ void PostProcessing::Chain::LoadStages()
       return;
     }
 
-    lock.unlock();
+    settings_lock.unlock();
     progress.FormatStatusText("Loading shader {}...", stage_name);
 
     std::unique_ptr<Shader> shader = TryLoadingShader(stage_name, false, &error);
@@ -426,41 +494,67 @@ void PostProcessing::Chain::LoadStages()
       return;
     }
 
-    lock.lock();
-    shader->LoadOptions(si, GetStageConfigSection(m_section, i));
-    m_stages.push_back(std::move(shader));
-
     progress.IncrementProgressValue();
+
+    settings_lock.lock();
+    shader->LoadOptions(si, GetStageConfigSection(m_section, i));
+
+    const bool stage_enabled = Config::IsStageEnabled(si, m_section, i);
+    shader->SetEnabled(stage_enabled);
+    shader->SetFinalStage(false);
+    enabled_stage_count += BoolToUInt32(stage_enabled);
+    if (stage_enabled)
+    {
+      first_enabled_stage = std::min(first_enabled_stage, i);
+      last_enabled_stage = i;
+    }
+
+    m_stages.push_back(std::move(shader));
   }
 
   if (stage_count > 0)
-    DEV_LOG("Loaded {} post-processing stages.", stage_count);
+  {
+    DEV_LOG("Loaded {} post-processing stages ({} enabled).", stage_count, enabled_stage_count);
+    if (enabled_stage_count == 0)
+    {
+      WARNING_LOG("All post-processing stages are currently disabled.");
+      m_enabled = false;
+    }
+    else
+    {
+      m_stages[last_enabled_stage]->SetFinalStage(true);
+    }
+  }
 
   // precompile shaders
-  if (!IsInternalChain() && g_gpu_device && g_gpu_device->GetWindowFormat() != GPUTexture::Format::Unknown)
+  if (preload_swap_chain_size && g_gpu_device && g_gpu_device->HasMainSwapChain())
   {
-    CheckTargets(g_gpu_device->GetWindowFormat(), g_gpu_device->GetWindowWidth(), g_gpu_device->GetWindowHeight(),
-                 &progress);
+    const GPUSwapChain* swap_chain = g_gpu_device->GetMainSwapChain();
+    CheckTargets(swap_chain->GetWidth(), swap_chain->GetHeight(), swap_chain->GetFormat(), swap_chain->GetWidth(),
+                 swap_chain->GetHeight(), swap_chain->GetWidth(), swap_chain->GetHeight(), &progress);
   }
 
   // must be down here, because we need to compile first, triggered by CheckTargets()
   for (std::unique_ptr<Shader>& shader : m_stages)
-    m_wants_depth_buffer |= shader->WantsDepthBuffer();
+    m_wants_depth_buffer |= (shader->IsEnabled() && shader->WantsDepthBuffer());
   m_needs_depth_buffer = m_enabled && m_wants_depth_buffer;
   if (m_wants_depth_buffer)
-    DEV_LOG("Depth buffer is needed.");
+    DEV_COLOR_LOG(StrongOrange, "Depth buffer is needed.");
+
+  m_wants_unscaled_input =
+    (first_enabled_stage < m_stages.size() && m_stages[first_enabled_stage]->WantsUnscaledInput());
+  if (m_wants_unscaled_input)
+    DEV_COLOR_LOG(StrongOrange, "Shader chain wants unscaled input.");
+
+  // can't close/redraw with settings lock held because big picture
+  settings_lock.unlock();
+  progress.Close();
+  settings_lock.lock();
 }
 
-void PostProcessing::Chain::ClearStages()
+void PostProcessing::Chain::UpdateSettings(std::unique_lock<std::mutex>& settings_lock, const SettingsInterface& si)
 {
-  decltype(m_stages)().swap(m_stages);
-}
-
-void PostProcessing::Chain::UpdateSettings(std::unique_lock<std::mutex>& settings_lock)
-{
-  SettingsInterface& si = GetLoadSettingsInterface(m_section);
-
-  m_enabled = si.GetBoolValue(m_section, "Enabled", false);
+  m_enabled = Config::IsEnabled(si, m_section);
 
   const u32 stage_count = Config::GetStageCount(si, m_section);
   if (stage_count == 0)
@@ -473,12 +567,19 @@ void PostProcessing::Chain::UpdateSettings(std::unique_lock<std::mutex>& setting
 
   m_stages.resize(stage_count);
 
-  HostInterfaceProgressCallback progress;
+  FullscreenUI::LoadingScreenProgressCallback progress;
+  progress.SetTitle("Loading Post-Processing Shaders...");
   progress.SetProgressRange(stage_count);
 
-  const GPUTexture::Format prev_format = m_target_format;
+  const GPUTextureFormat prev_format = m_target_format;
   m_wants_depth_buffer = false;
+  m_wants_unscaled_input = false;
 
+  const u32 prev_enabled_stage_count = static_cast<u32>(std::ranges::count_if(
+    m_stages, [](const std::unique_ptr<Shader>& shader) { return (shader && shader->IsEnabled()); }));
+  u32 enabled_stage_count = 0;
+  u32 first_enabled_stage = std::numeric_limits<u32>::max();
+  u32 last_enabled_stage = 0;
   for (u32 i = 0; i < stage_count; i++)
   {
     std::string stage_name = Config::GetStageShaderName(si, m_section, i);
@@ -495,7 +596,7 @@ void PostProcessing::Chain::UpdateSettings(std::unique_lock<std::mutex>& setting
         m_stages[i].reset();
 
       // Force recompile.
-      m_target_format = GPUTexture::Format::Unknown;
+      m_target_format = GPUTextureFormat::Unknown;
 
       settings_lock.unlock();
 
@@ -515,187 +616,270 @@ void PostProcessing::Chain::UpdateSettings(std::unique_lock<std::mutex>& setting
     }
 
     m_stages[i]->LoadOptions(si, GetStageConfigSection(m_section, i));
+
+    const bool stage_enabled = Config::IsStageEnabled(si, m_section, i);
+    m_stages[i]->SetEnabled(stage_enabled);
+    m_stages[i]->SetFinalStage(false);
+    enabled_stage_count += BoolToUInt32(stage_enabled);
+    if (stage_enabled)
+    {
+      first_enabled_stage = std::min(first_enabled_stage, i);
+      last_enabled_stage = i;
+    }
   }
 
-  if (prev_format != GPUTexture::Format::Unknown)
-    CheckTargets(prev_format, m_target_width, m_target_height, &progress);
+  if (prev_format != GPUTextureFormat::Unknown)
+  {
+    // if the number of enabled stages changed, this will affect the target size for unscaled shaders
+    const u32 prev_source_width = m_source_width;
+    const u32 prev_source_height = m_source_height;
+    if (enabled_stage_count != prev_enabled_stage_count)
+      m_source_width = m_source_height = 0;
+
+    CheckTargets(prev_source_width, prev_source_height, prev_format, m_target_width, m_target_height, m_viewport_width,
+                 m_viewport_height, &progress);
+  }
 
   if (stage_count > 0)
   {
-    s_timer.Reset();
-    DEV_LOG("Loaded {} post-processing stages.", stage_count);
+    s_start_time = Timer::GetCurrentValue();
+    DEV_LOG("Loaded {} post-processing stages ({} enabled).", stage_count, enabled_stage_count);
+    if (enabled_stage_count == 0)
+    {
+      WARNING_LOG("All post-processing stages are currently disabled.");
+      m_enabled = false;
+    }
+    else
+    {
+      m_stages[last_enabled_stage]->SetFinalStage(true);
+    }
   }
 
   // must be down here, because we need to compile first, triggered by CheckTargets()
   for (std::unique_ptr<Shader>& shader : m_stages)
-    m_wants_depth_buffer |= shader->WantsDepthBuffer();
+    m_wants_depth_buffer |= (shader->IsEnabled() && shader->WantsDepthBuffer());
   m_needs_depth_buffer = m_enabled && m_wants_depth_buffer;
   if (m_wants_depth_buffer)
     DEV_LOG("Depth buffer is needed.");
+
+  m_wants_unscaled_input =
+    (first_enabled_stage < m_stages.size() && m_stages[first_enabled_stage]->WantsUnscaledInput());
+  if (m_wants_unscaled_input)
+    DEV_COLOR_LOG(StrongOrange, "Shader chain wants unscaled input.");
+
+  // can't close/redraw with settings lock held because big picture
+  settings_lock.unlock();
+  progress.Close();
+  settings_lock.lock();
 }
 
 void PostProcessing::Chain::Toggle()
 {
   if (m_stages.empty())
   {
-    Host::AddIconOSDMessage("PostProcessing", ICON_FA_PAINT_ROLLER,
-                            TRANSLATE_STR("OSDMessage", "No post-processing shaders are selected."),
-                            Host::OSD_QUICK_DURATION);
+    Host::AddIconOSDMessage(OSDMessageType::Quick, "PostProcessing", ICON_FA_PAINT_ROLLER,
+                            TRANSLATE_STR("OSDMessage", "No post-processing shaders are selected."));
     return;
   }
 
   const bool new_enabled = !m_enabled;
-  Host::AddIconOSDMessage("PostProcessing", ICON_FA_PAINT_ROLLER,
+  Host::AddIconOSDMessage(OSDMessageType::Quick, "PostProcessing", ICON_FA_PAINT_ROLLER,
                           new_enabled ? TRANSLATE_STR("OSDMessage", "Post-processing is now enabled.") :
-                                        TRANSLATE_STR("OSDMessage", "Post-processing is now disabled."),
-                          Host::OSD_QUICK_DURATION);
+                                        TRANSLATE_STR("OSDMessage", "Post-processing is now disabled."));
   m_enabled = new_enabled;
   m_needs_depth_buffer = new_enabled && m_wants_depth_buffer;
   if (m_enabled)
-    s_timer.Reset();
+    s_start_time = Timer::GetCurrentValue();
 }
 
-bool PostProcessing::Chain::CheckTargets(GPUTexture::Format target_format, u32 target_width, u32 target_height,
+bool PostProcessing::Chain::CheckTargets(u32 source_width, u32 source_height, GPUTextureFormat target_format,
+                                         u32 target_width, u32 target_height, u32 viewport_width, u32 viewport_height,
                                          ProgressCallback* progress /* = nullptr */)
 {
-  if (m_target_format == target_format && m_target_width == target_width && m_target_height == target_height)
-    return true;
-
-  // In case any allocs fail.
-  DestroyTextures();
-
-  if (!(m_input_texture = g_gpu_device->FetchTexture(target_width, target_height, 1, 1, 1,
-                                                     GPUTexture::Type::RenderTarget, target_format)) ||
-      !(m_output_texture = g_gpu_device->FetchTexture(target_width, target_height, 1, 1, 1,
-                                                      GPUTexture::Type::RenderTarget, target_format)))
+  // might not have a source, this is okay
+  if (!m_wants_unscaled_input || source_width == 0 || source_height == 0)
   {
+    source_width = target_width;
+    source_height = target_height;
+    viewport_width = target_width;
+    viewport_height = target_height;
+  }
+
+  if (m_target_width == target_width && m_target_height == target_height && m_source_width == source_width &&
+      m_source_height == source_height && m_viewport_width == viewport_width && m_viewport_height == viewport_height &&
+      m_target_format == target_format)
+  {
+    return true;
+  }
+
+  Error error;
+
+  if (!g_gpu_device->ResizeTexture(&m_input_texture, source_width, source_height, GPUTexture::Type::RenderTarget,
+                                   target_format, GPUTexture::Flags::None, false, &error) ||
+      (m_wants_unscaled_input && !g_gpu_device->ResizeTexture(&m_intermediate_texture, target_width, target_height,
+                                                              GPUTexture::Type::RenderTarget, target_format,
+                                                              GPUTexture::Flags::None, false, &error)) ||
+      !g_gpu_device->ResizeTexture(&m_output_texture, target_width, target_height, GPUTexture::Type::RenderTarget,
+                                   target_format, GPUTexture::Flags::None, false, &error))
+  {
+    ERROR_LOG("Failed to resize input/output textures: {}", error.GetDescription());
     DestroyTextures();
     return false;
   }
 
-  if (!progress)
-    progress = ProgressCallback::NullProgressCallback;
+  // free intermediate texture if it's unnecssary
+  if (!m_wants_unscaled_input && m_intermediate_texture)
+    g_gpu_device->RecycleTexture(std::move(m_intermediate_texture));
 
-  progress->SetProgressRange(static_cast<u32>(m_stages.size()));
-  progress->SetProgressValue(0);
+  // we change source after the first pass, so save the original values here
+  m_source_width = source_width;
+  m_source_height = source_height;
+  m_viewport_width = viewport_width;
+  m_viewport_height = viewport_height;
 
+  // shortcut if only the source size changed
+  u32 first_enabled_stage = std::numeric_limits<u32>::max();
   m_wants_depth_buffer = false;
-
-  for (size_t i = 0; i < m_stages.size(); i++)
+  m_wants_unscaled_input = false;
+  if (m_target_width != target_width || m_target_height != target_height || m_target_format != target_format)
   {
-    Shader* const shader = m_stages[i].get();
+    if (!progress)
+      progress = ProgressCallback::NullProgressCallback;
 
-    progress->FormatStatusText("Compiling {}...", shader->GetName());
+    progress->SetProgressRange(static_cast<u32>(m_stages.size()));
+    progress->SetProgressValue(0);
 
-    if (!shader->CompilePipeline(target_format, target_width, target_height, progress) ||
-        !shader->ResizeOutput(target_format, target_width, target_height))
+    for (size_t i = 0; i < m_stages.size(); i++)
     {
-      ERROR_LOG("Failed to compile one or more post-processing shaders, disabling.");
-      Host::AddIconOSDMessage(
-        "PostProcessLoadFail", ICON_FA_EXCLAMATION_TRIANGLE,
-        fmt::format("Failed to compile post-processing shader '{}'. Disabling post-processing.", shader->GetName()));
-      m_enabled = false;
-      return false;
-    }
+      Shader* const shader = m_stages[i].get();
 
-    progress->SetProgressValue(static_cast<u32>(i + 1));
-    m_wants_depth_buffer |= shader->WantsDepthBuffer();
+      progress->FormatStatusText("Compiling {}...", shader->GetName());
+
+      if (!shader->CompilePipeline(target_format, target_width, target_height, &error, progress) ||
+          (shader->IsEnabled() && !shader->ResizeTargets(source_width, source_height, target_format, target_width,
+                                                         target_height, viewport_width, viewport_height, &error)))
+      {
+        ERROR_LOG("Failed to compile post-processing shader '{}':\n{}", shader->GetName(), error.GetDescription());
+        Host::AddIconOSDMessage(
+          OSDMessageType::Error, "PostProcessLoadFail", ICON_EMOJI_WARNING,
+          fmt::format(TRANSLATE_FS("PostProcessing", "Failed to compile post-processing shader '{}'."),
+                      shader->GetName()));
+        m_enabled = false;
+        DestroyTextures();
+        return false;
+      }
+
+      progress->SetProgressValue(static_cast<u32>(i + 1));
+
+      // Don't adjust target size until first enabled shader.
+      if (!shader->IsEnabled())
+        continue;
+
+      first_enabled_stage = std::min(first_enabled_stage, static_cast<u32>(i));
+      m_wants_depth_buffer |= shader->WantsDepthBuffer();
+
+      // First shader outputs at target size, so the input is now target size.
+      source_width = target_width;
+      source_height = target_height;
+      viewport_width = target_width;
+      viewport_height = target_height;
+    }
+  }
+  else
+  {
+    m_wants_depth_buffer = false;
+
+    for (size_t i = 0; i < m_stages.size(); i++)
+    {
+      const std::unique_ptr<Shader>& shader = m_stages[i];
+
+      // Don't allocate targets until first enabled shader.
+      if (!shader->IsEnabled())
+        continue;
+
+      if (!shader->ResizeTargets(source_width, source_height, target_format, target_width, target_height,
+                                 viewport_width, viewport_height, &error))
+      {
+        ERROR_LOG("Failed to resize post-processing shader '{}':\n{}", shader->GetName(), error.GetDescription());
+        Host::AddIconOSDMessage(
+          OSDMessageType::Error, "PostProcessLoadFail", ICON_EMOJI_WARNING,
+          fmt::format(TRANSLATE_FS("PostProcessing", "Failed to resize post-processing shader '{}'."),
+                      shader->GetName()),
+          error.TakeDescription());
+        m_enabled = false;
+        DestroyTextures();
+        return false;
+      }
+
+      first_enabled_stage = std::min(first_enabled_stage, static_cast<u32>(i));
+      m_wants_depth_buffer |= shader->WantsDepthBuffer();
+
+      // First shader outputs at target size, so the input is now target size.
+      source_width = target_width;
+      source_height = target_height;
+      viewport_width = target_width;
+      viewport_height = target_height;
+    }
   }
 
-  m_target_format = target_format;
+  m_wants_unscaled_input =
+    (first_enabled_stage < m_stages.size() && m_stages[first_enabled_stage]->WantsUnscaledInput());
+
   m_target_width = target_width;
   m_target_height = target_height;
+  m_target_format = target_format;
   m_needs_depth_buffer = m_enabled && m_wants_depth_buffer;
   return true;
 }
 
 void PostProcessing::Chain::DestroyTextures()
 {
-  m_target_format = GPUTexture::Format::Unknown;
+  m_target_format = GPUTextureFormat::Unknown;
   m_target_width = 0;
   m_target_height = 0;
 
   g_gpu_device->RecycleTexture(std::move(m_output_texture));
+  g_gpu_device->RecycleTexture(std::move(m_intermediate_texture));
   g_gpu_device->RecycleTexture(std::move(m_input_texture));
 }
 
-GPUDevice::PresentResult PostProcessing::Chain::Apply(GPUTexture* input_color, GPUTexture* input_depth,
-                                                      GPUTexture* final_target, GSVector4i final_rect, s32 orig_width,
-                                                      s32 orig_height, s32 native_width, s32 native_height)
+GPUPresentResult PostProcessing::Chain::Apply(GPUTexture* input_color, GPUTexture* input_depth,
+                                              GPUTexture* final_target, const GSVector4i& final_rect, s32 orig_width,
+                                              s32 orig_height, s32 native_width, s32 native_height)
 {
   GL_SCOPE_FMT("{} Apply", m_section);
 
+  GPUTexture* original_color = input_color;
   GPUTexture* output = m_output_texture.get();
   input_color->MakeReadyForSampling();
   if (input_depth)
     input_depth->MakeReadyForSampling();
 
+  const float time = static_cast<float>(Timer::ConvertValueToSeconds(Timer::GetCurrentValue() - s_start_time));
   for (const std::unique_ptr<Shader>& stage : m_stages)
   {
-    const bool is_final = (stage.get() == m_stages.back().get());
+    if (!stage->IsEnabled())
+      continue;
 
-    if (const GPUDevice::PresentResult pres =
-          stage->Apply(input_color, input_depth, is_final ? final_target : output, final_rect, orig_width, orig_height,
-                       native_width, native_height, m_target_width, m_target_height);
-        pres != GPUDevice::PresentResult::OK)
+    if (const GPUPresentResult pres = stage->Apply(
+          original_color, input_color, input_depth, stage->IsFinalStage() ? final_target : output, final_rect,
+          orig_width, orig_height, native_width, native_height, m_target_width, m_target_height, time);
+        pres != GPUPresentResult::OK)
     {
       return pres;
     }
 
-    if (!is_final)
+    if (!stage->IsFinalStage())
     {
       output->MakeReadyForSampling();
       input_color = output;
-      output = (output == m_output_texture.get()) ? m_input_texture.get() : m_output_texture.get();
+      output = (output == m_output_texture.get()) ?
+                 (m_intermediate_texture ? m_intermediate_texture.get() : m_input_texture.get()) :
+                 m_output_texture.get();
     }
   }
 
-  return GPUDevice::PresentResult::OK;
-}
-
-void PostProcessing::Initialize()
-{
-  DisplayChain.LoadStages();
-  InternalChain.LoadStages();
-  s_timer.Reset();
-}
-
-void PostProcessing::UpdateSettings()
-{
-  auto lock = Host::GetSettingsLock();
-  ForAllChains([&lock](Chain& chain) { chain.UpdateSettings(lock); });
-}
-
-void PostProcessing::Shutdown()
-{
-  g_gpu_device->RecycleTexture(std::move(s_dummy_texture));
-  s_samplers.clear();
-  ForAllChains([](Chain& chain) {
-    chain.ClearStages();
-    chain.DestroyTextures();
-  });
-}
-
-bool PostProcessing::ReloadShaders()
-{
-  if (!DisplayChain.HasStages() && !InternalChain.HasStages())
-  {
-    Host::AddIconOSDMessage("PostProcessing", ICON_FA_PAINT_ROLLER,
-                            TRANSLATE_STR("OSDMessage", "No post-processing shaders are selected."),
-                            Host::OSD_QUICK_DURATION);
-    return false;
-  }
-
-  ForAllChains([](Chain& chain) {
-    chain.ClearStages();
-    chain.DestroyTextures();
-    chain.LoadStages();
-  });
-  s_timer.Reset();
-
-  Host::AddIconOSDMessage("PostProcessing", ICON_FA_PAINT_ROLLER,
-                          TRANSLATE_STR("OSDMessage", "Post-processing shaders reloaded."), Host::OSD_QUICK_DURATION);
-  return true;
+  return GPUPresentResult::OK;
 }
 
 std::unique_ptr<PostProcessing::Shader> PostProcessing::TryLoadingShader(const std::string& shader_name,
@@ -703,6 +887,9 @@ std::unique_ptr<PostProcessing::Shader> PostProcessing::TryLoadingShader(const s
 {
   std::string filename;
   std::optional<std::string> resource_str;
+  Error local_error;
+  if (!error)
+    error = &local_error;
 
   // Try reshade first.
   filename = Path::Combine(
@@ -711,85 +898,82 @@ std::unique_ptr<PostProcessing::Shader> PostProcessing::TryLoadingShader(const s
   if (FileSystem::FileExists(filename.c_str()))
   {
     std::unique_ptr<ReShadeFXShader> shader = std::make_unique<ReShadeFXShader>();
-    if (shader->LoadFromFile(std::string(shader_name), filename.c_str(), only_config, error))
-      return shader;
+    if (!shader->LoadFromFile(shader_name, filename.c_str(), only_config, error))
+    {
+      ERROR_LOG("Failed to load shader '{}': {}", shader_name, error->GetDescription());
+      shader.reset();
+    }
+    return shader;
+  }
+
+  filename = Path::Combine(EmuFolders::Shaders, fmt::format("slang" FS_OSPATH_SEPARATOR_STR "{}.slangp", shader_name));
+  if (FileSystem::FileExists(filename.c_str()))
+  {
+    std::unique_ptr<SlangShader> shader = std::make_unique<SlangShader>();
+    if (!shader->LoadFromFile(shader_name, filename.c_str(), error))
+    {
+      ERROR_LOG("Failed to load shader '{}': {}", shader_name, error->GetDescription());
+      shader.reset();
+    }
+
+    return shader;
   }
 
   filename = Path::Combine(EmuFolders::Shaders, fmt::format("{}.glsl", shader_name));
   if (FileSystem::FileExists(filename.c_str()))
   {
     std::unique_ptr<GLSLShader> shader = std::make_unique<GLSLShader>();
-    if (shader->LoadFromFile(std::string(shader_name), filename.c_str(), error))
-      return shader;
+    if (!shader->LoadFromFile(shader_name, filename.c_str(), error))
+    {
+      ERROR_LOG("Failed to load shader '{}': {}", shader_name, error->GetDescription());
+      shader.reset();
+    }
+
+    return shader;
   }
 
-  filename =
-    fmt::format("shaders/reshade" FS_OSPATH_SEPARATOR_STR "Shaders" FS_OSPATH_SEPARATOR_STR "{}.fx", shader_name);
-  resource_str = Host::ReadResourceFileToString(filename.c_str(), true);
+  filename = fmt::format("shaders/reshade/Shaders/{}.fx", shader_name);
+  resource_str = Host::ReadResourceFileToString(filename.c_str(), true, error);
   if (resource_str.has_value())
   {
     std::unique_ptr<ReShadeFXShader> shader = std::make_unique<ReShadeFXShader>();
-    if (shader->LoadFromString(std::string(shader_name), std::move(filename), std::move(resource_str.value()),
-                               only_config, error))
+    if (!shader->LoadFromString(shader_name, std::move(filename), std::move(resource_str.value()), only_config, error))
     {
-      return shader;
+      ERROR_LOG("Failed to load shader '{}': {}", shader_name, error->GetDescription());
+      shader.reset();
     }
+
+    return shader;
   }
 
-  filename = fmt::format("shaders" FS_OSPATH_SEPARATOR_STR "{}.glsl", shader_name);
-  resource_str = Host::ReadResourceFileToString(filename.c_str(), true);
+  filename = fmt::format("shaders/slang/{}.slangp", shader_name);
+  resource_str = Host::ReadResourceFileToString(filename.c_str(), true, error);
+  if (resource_str.has_value())
+  {
+    std::unique_ptr<SlangShader> shader = std::make_unique<SlangShader>();
+    if (!shader->LoadFromString(shader_name, filename, std::move(resource_str.value()), error))
+    {
+      ERROR_LOG("Failed to load shader '{}': {}", shader_name, error->GetDescription());
+      shader.reset();
+    }
+
+    return shader;
+  }
+
+  filename = fmt::format("shaders/{}.glsl", shader_name);
+  resource_str = Host::ReadResourceFileToString(filename.c_str(), true, error);
   if (resource_str.has_value())
   {
     std::unique_ptr<GLSLShader> shader = std::make_unique<GLSLShader>();
-    if (shader->LoadFromString(std::string(shader_name), std::move(resource_str.value()), error))
-      return shader;
+    if (!shader->LoadFromString(shader_name, std::move(resource_str.value()), error))
+    {
+      ERROR_LOG("Failed to load shader '{}': {}", shader_name, error->GetDescription());
+      shader.reset();
+    }
+
+    return shader;
   }
 
-  ERROR_LOG("Failed to load shader '{}'", shader_name);
+  Error::SetStringFmt(error, "Failed to locate shader '{}'", shader_name);
   return {};
-}
-
-SettingsInterface& PostProcessing::GetLoadSettingsInterface(const char* section)
-{
-  // If PostProcessing/Enable is set in the game settings interface, use that.
-  // Otherwise, use the base settings.
-
-  SettingsInterface* game_si = Host::Internal::GetGameSettingsLayer();
-  if (game_si && game_si->ContainsValue(section, "Enabled"))
-    return *game_si;
-  else
-    return *Host::Internal::GetBaseSettingsLayer();
-}
-
-const Common::Timer& PostProcessing::GetTimer()
-{
-  return s_timer;
-}
-
-GPUSampler* PostProcessing::GetSampler(const GPUSampler::Config& config)
-{
-  auto it = s_samplers.find(config.key);
-  if (it != s_samplers.end())
-    return it->second.get();
-
-  std::unique_ptr<GPUSampler> sampler = g_gpu_device->CreateSampler(config);
-  if (!sampler)
-    ERROR_LOG("Failed to create GPU sampler with config={:X}", config.key);
-
-  it = s_samplers.emplace(config.key, std::move(sampler)).first;
-  return it->second.get();
-}
-
-GPUTexture* PostProcessing::GetDummyTexture()
-{
-  if (s_dummy_texture)
-    return s_dummy_texture.get();
-
-  const u32 zero = 0;
-  s_dummy_texture = g_gpu_device->FetchTexture(1, 1, 1, 1, 1, GPUTexture::Type::Texture, GPUTexture::Format::RGBA8,
-                                               &zero, sizeof(zero));
-  if (!s_dummy_texture)
-    ERROR_LOG("Failed to create dummy texture.");
-
-  return s_dummy_texture.get();
 }

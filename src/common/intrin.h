@@ -14,9 +14,9 @@
 #define CPU_ARCH_SIMD 1
 #define CPU_ARCH_SSE 1
 #include <emmintrin.h>
-#include <tmmintrin.h>
-#include <smmintrin.h>
 #include <immintrin.h>
+#include <smmintrin.h>
+#include <tmmintrin.h>
 
 #if defined(__AVX2__)
 #define CPU_ARCH_AVX 1
@@ -44,8 +44,19 @@
 #include <malloc.h> // alloca
 #endif
 
+/// Helper to disable loop vectorization.
+#if defined(__clang__)
+#define DONT_VECTORIZE_THIS_LOOP _Pragma("clang loop vectorize(disable)")
+#elif defined(_MSC_VER)
+#define DONT_VECTORIZE_THIS_LOOP __pragma(loop(no_vector))
+#elif defined(__GNUC__)
+#define DONT_VECTORIZE_THIS_LOOP _Pragma("GCC novector")
+#else
+#define DONT_VECTORIZE_THIS_LOOP
+#endif
+
 /// Only currently using 128-bit vectors at max.
-static constexpr u32 VECTOR_ALIGNMENT = 16;
+inline constexpr u32 VECTOR_ALIGNMENT = 16;
 
 /// Aligns allocation/pitch size to preferred host size.
 template<typename T>
@@ -95,4 +106,41 @@ ALWAYS_INLINE_RELEASE static void MemsetPtrs(T* ptr, T value, u32 count)
 
   for (u32 i = 0; i < remaining_count; i++)
     *(dest++) = value;
+}
+
+ALWAYS_INLINE static void MultiPause()
+{
+#if defined(CPU_ARCH_X86) || defined(CPU_ARCH_X64)
+  _mm_pause();
+  _mm_pause();
+  _mm_pause();
+  _mm_pause();
+  _mm_pause();
+  _mm_pause();
+  _mm_pause();
+  _mm_pause();
+#elif defined(CPU_ARCH_ARM64) && defined(_MSC_VER) && !defined(__clang__)
+  __isb(_ARM64_BARRIER_SY);
+  __isb(_ARM64_BARRIER_SY);
+  __isb(_ARM64_BARRIER_SY);
+  __isb(_ARM64_BARRIER_SY);
+  __isb(_ARM64_BARRIER_SY);
+  __isb(_ARM64_BARRIER_SY);
+  __isb(_ARM64_BARRIER_SY);
+  __isb(_ARM64_BARRIER_SY);
+#elif defined(CPU_ARCH_ARM64) || defined(CPU_ARCH_ARM32)
+  __asm__ __volatile__("isb");
+  __asm__ __volatile__("isb");
+  __asm__ __volatile__("isb");
+  __asm__ __volatile__("isb");
+  __asm__ __volatile__("isb");
+  __asm__ __volatile__("isb");
+  __asm__ __volatile__("isb");
+  __asm__ __volatile__("isb");
+#elif defined(CPU_ARCH_RISCV64)
+  // Probably wrong... pause is optional :/
+  asm volatile("fence" ::: "memory");
+#else
+#pragma warning("Missing implementation")
+#endif
 }

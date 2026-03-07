@@ -57,16 +57,6 @@ bool PostProcessing::GLSLShader::LoadFromString(std::string name, std::string co
   return true;
 }
 
-bool PostProcessing::GLSLShader::IsValid() const
-{
-  return !m_name.empty() && !m_code.empty();
-}
-
-bool PostProcessing::GLSLShader::WantsDepthBuffer() const
-{
-  return false;
-}
-
 u32 PostProcessing::GLSLShader::GetUniformsSize() const
 {
   // lazy packing. todo improve.
@@ -121,19 +111,22 @@ void PostProcessing::GLSLShader::FillUniformBuffer(void* buffer, s32 viewport_x,
   }
 }
 
-bool PostProcessing::GLSLShader::CompilePipeline(GPUTexture::Format format, u32 width, u32 height,
+bool PostProcessing::GLSLShader::CompilePipeline(GPUTextureFormat format, u32 width, u32 height, Error* error,
                                                  ProgressCallback* progress)
 {
-  if (m_pipeline)
-    m_pipeline.reset();
+  if (m_output_format == format)
+    return true;
+
+  m_pipeline.reset();
+  m_output_format = GPUTextureFormat::Unknown;
 
   PostProcessingGLSLShaderGen shadergen(g_gpu_device->GetRenderAPI(), g_gpu_device->GetFeatures().dual_source_blend,
                                         g_gpu_device->GetFeatures().framebuffer_fetch);
 
-  std::unique_ptr<GPUShader> vs = g_gpu_device->CreateShader(GPUShaderStage::Vertex, shadergen.GetLanguage(),
-                                                             shadergen.GeneratePostProcessingVertexShader(*this));
-  std::unique_ptr<GPUShader> fs = g_gpu_device->CreateShader(GPUShaderStage::Fragment, shadergen.GetLanguage(),
-                                                             shadergen.GeneratePostProcessingFragmentShader(*this));
+  std::unique_ptr<GPUShader> vs = g_gpu_device->CreateShader(
+    GPUShaderStage::Vertex, shadergen.GetLanguage(), shadergen.GeneratePostProcessingVertexShader(*this), error);
+  std::unique_ptr<GPUShader> fs = g_gpu_device->CreateShader(
+    GPUShaderStage::Fragment, shadergen.GetLanguage(), shadergen.GeneratePostProcessingFragmentShader(*this), error);
   if (!vs || !fs)
     return false;
 
@@ -144,14 +137,12 @@ bool PostProcessing::GLSLShader::CompilePipeline(GPUTexture::Format format, u32 
   plconfig.rasterization = GPUPipeline::RasterizationState::GetNoCullState();
   plconfig.depth = GPUPipeline::DepthState::GetNoTestsState();
   plconfig.blend = GPUPipeline::BlendState::GetNoBlendingState();
-  plconfig.samples = 1;
-  plconfig.per_sample_shading = false;
   plconfig.render_pass_flags = GPUPipeline::NoRenderPassFlags;
   plconfig.vertex_shader = vs.get();
   plconfig.fragment_shader = fs.get();
   plconfig.geometry_shader = nullptr;
 
-  if (!(m_pipeline = g_gpu_device->CreatePipeline(plconfig)))
+  if (!(m_pipeline = g_gpu_device->CreatePipeline(plconfig, error)))
     return false;
 
   if (!m_sampler)
@@ -160,49 +151,52 @@ bool PostProcessing::GLSLShader::CompilePipeline(GPUTexture::Format format, u32 
     config.address_u = GPUSampler::AddressMode::ClampToBorder;
     config.address_v = GPUSampler::AddressMode::ClampToBorder;
     config.border_color = 0xFF000000u;
-    if (!(m_sampler = g_gpu_device->CreateSampler(config)))
+    if (!(m_sampler = g_gpu_device->CreateSampler(config, error)))
       return false;
   }
 
+  m_output_format = format;
   return true;
 }
 
-GPUDevice::PresentResult PostProcessing::GLSLShader::Apply(GPUTexture* input_color, GPUTexture* input_depth,
-                                                           GPUTexture* final_target, GSVector4i final_rect,
-                                                           s32 orig_width, s32 orig_height, s32 native_width,
-                                                           s32 native_height, u32 target_width, u32 target_height)
+GPUPresentResult PostProcessing::GLSLShader::Apply(GPUTexture* original_color, GPUTexture* input_color,
+                                                   GPUTexture* input_depth, GPUTexture* final_target,
+                                                   const GSVector4i& final_rect, s32 orig_width, s32 orig_height,
+                                                   s32 native_width, s32 native_height, u32 target_width,
+                                                   u32 target_height, float time)
 {
   GL_SCOPE_FMT("GLSL Shader {}", m_name);
 
   // Assumes final stage has been cleared already.
   if (!final_target)
   {
-    if (const GPUDevice::PresentResult pres = g_gpu_device->BeginPresent(); pres != GPUDevice::PresentResult::OK)
+    const GPUPresentResult pres = g_gpu_device->BeginPresent(g_gpu_device->GetMainSwapChain());
+    if (pres != GPUPresentResult::OK)
       return pres;
   }
   else
   {
     g_gpu_device->SetRenderTargets(&final_target, 1, nullptr);
-    g_gpu_device->ClearRenderTarget(final_target, 0); // TODO: Could use an invalidate here too.
+    g_gpu_device->ClearRenderTarget(final_target,
+                                    GPUDevice::DEFAULT_CLEAR_COLOR); // TODO: Could use an invalidate here too.
   }
 
   g_gpu_device->SetPipeline(m_pipeline.get());
   g_gpu_device->SetTextureSampler(0, input_color, m_sampler.get());
-  g_gpu_device->SetViewportAndScissor(final_rect);
+
+  // need to flip the rect, since we're not drawing the entire fb
+  const GSVector4i real_final_rect =
+    g_gpu_device->UsesLowerLeftOrigin() ? g_gpu_device->FlipToLowerLeft(final_rect, target_height) : final_rect;
+  g_gpu_device->SetViewportAndScissor(real_final_rect);
 
   const u32 uniforms_size = GetUniformsSize();
   void* uniforms = g_gpu_device->MapUniformBuffer(uniforms_size);
-  FillUniformBuffer(uniforms, final_rect.left, final_rect.top, final_rect.width(), final_rect.height(), target_width,
-                    target_height, orig_width, orig_height, native_width, native_height,
-                    static_cast<float>(PostProcessing::GetTimer().GetTimeSeconds()));
+  FillUniformBuffer(uniforms, real_final_rect.left, real_final_rect.top, real_final_rect.width(),
+                    real_final_rect.height(), target_width, target_height, orig_width, orig_height, native_width,
+                    native_height, time);
   g_gpu_device->UnmapUniformBuffer(uniforms_size);
   g_gpu_device->Draw(3, 0);
-  return GPUDevice::PresentResult::OK;
-}
-
-bool PostProcessing::GLSLShader::ResizeOutput(GPUTexture::Format format, u32 width, u32 height)
-{
-  return true;
+  return GPUPresentResult::OK;
 }
 
 void PostProcessing::GLSLShader::LoadOptions()
@@ -360,7 +354,7 @@ std::string PostProcessingGLSLShaderGen::GeneratePostProcessingVertexShader(cons
 }
 )";
 
-  return ss.str();
+  return std::move(ss).str();
 }
 
 std::string PostProcessingGLSLShaderGen::GeneratePostProcessingFragmentShader(const PostProcessing::GLSLShader& shader)
@@ -371,11 +365,12 @@ std::string PostProcessingGLSLShaderGen::GeneratePostProcessingFragmentShader(co
   WriteUniformBuffer(ss, shader, false);
   DeclareTexture(ss, "samp0", 0);
 
-  ss << R"(
-layout(location = 0) in VertexData {
-  vec2 v_tex0;
-};
+  if (m_use_glsl_interface_blocks)
+    ss << "layout(location = 0) in VertexData { vec2 v_tex0; };\n";
+  else
+    ss << "layout(location = 0) in vec2 v_tex0;\n";
 
+  ss << R"(
 layout(location = 0) out float4 o_col0;
 
 float4 Sample() { return texture(samp0, v_tex0); }
@@ -409,7 +404,7 @@ float2 GetWindowResolution() { return u_window_size; }
 )";
 
   ss << shader.GetCode();
-  return ss.str();
+  return std::move(ss).str();
 }
 
 void PostProcessingGLSLShaderGen::WriteUniformBuffer(std::stringstream& ss, const PostProcessing::GLSLShader& shader,

@@ -1,13 +1,15 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "string_util.h"
 #include "assert.h"
+#include "bitutils.h"
 
 #include <cctype>
-#include <codecvt>
+#include <charconv>
 #include <cstdio>
-#include <sstream>
+#include <iomanip>
+#include <memory>
 
 #ifndef __APPLE__
 #include <malloc.h> // alloca
@@ -15,13 +17,25 @@
 #include <alloca.h>
 #endif
 
+#include "fast_float/fast_float.h"
+
 #ifdef _WIN32
 #include "windows_headers.h"
 #endif
 
+namespace StringUtil {
+
+template<bool swap>
+static size_t DecodeUTF16Impl(const void* bytes, size_t pos, size_t size, char32_t* ch);
+
+template<bool swap>
+static std::string DecodeUTF16StringImpl(const void* bytes, size_t size);
+
+} // namespace StringUtil
+
 bool StringUtil::WildcardMatch(const char* subject, const char* mask, bool case_sensitive /*= true*/)
 {
-  if (case_sensitive)
+  if (!case_sensitive)
   {
     const char* cp = nullptr;
     const char* mp = nullptr;
@@ -130,12 +144,6 @@ std::size_t StringUtil::Strlcpy(char* dst, const char* src, std::size_t size)
   return len;
 }
 
-std::size_t StringUtil::Strnlen(const char* str, std::size_t max_size)
-{
-  const char* loc = static_cast<const char*>(std::memchr(str, 0, max_size));
-  return loc ? static_cast<size_t>(loc - str) : max_size;
-}
-
 std::size_t StringUtil::Strlcpy(char* dst, const std::string_view src, std::size_t size)
 {
   std::size_t len = src.length();
@@ -152,21 +160,299 @@ std::size_t StringUtil::Strlcpy(char* dst, const std::string_view src, std::size
   return len;
 }
 
-std::optional<std::vector<u8>> StringUtil::DecodeHex(const std::string_view in)
+std::size_t StringUtil::Strnlen(const char* str, std::size_t max_size)
 {
-  std::vector<u8> data;
-  data.reserve(in.size() / 2);
+  const char* loc = static_cast<const char*>(std::memchr(str, 0, max_size));
+  return loc ? static_cast<size_t>(loc - str) : max_size;
+}
 
-  for (size_t i = 0; i < in.size() / 2; i++)
+int StringUtil::Strcasecmp(const char* s1, const char* s2)
+{
+#ifdef _MSC_VER
+  return _stricmp(s1, s2);
+#else
+  return strcasecmp(s1, s2);
+#endif
+}
+
+int StringUtil::Strncasecmp(const char* s1, const char* s2, std::size_t n)
+{
+#ifdef _MSC_VER
+  return _strnicmp(s1, s2, n);
+#else
+  return strncasecmp(s1, s2, n);
+#endif
+}
+
+bool StringUtil::EqualNoCase(std::string_view s1, std::string_view s2)
+{
+  const size_t s1_len = s1.length();
+  const size_t s2_len = s2.length();
+  if (s1_len != s2_len)
+    return false;
+  else if (s1_len == 0)
+    return true;
+
+  return (Strncasecmp(s1.data(), s2.data(), s1_len) == 0);
+}
+
+int StringUtil::CompareNoCase(std::string_view s1, std::string_view s2)
+{
+  const size_t s1_len = s1.length();
+  const size_t s2_len = s2.length();
+  const size_t compare_len = std::min(s1_len, s2_len);
+  const int compare_res = (compare_len > 0) ? Strncasecmp(s1.data(), s2.data(), compare_len) : 0;
+  return (compare_res != 0) ? compare_res : ((s1_len < s2_len) ? -1 : ((s1_len > s2_len) ? 1 : 0));
+}
+
+bool StringUtil::ContainsNoCase(std::string_view s1, std::string_view s2)
+{
+  return (std::search(s1.begin(), s1.end(), s2.begin(), s2.end(),
+                      [](char lhs, char rhs) { return (ToLower(lhs) == ToLower(rhs)); }) != s1.end());
+}
+
+/// Wrapper around std::from_chars
+template<typename T>
+  requires std::is_integral_v<T>
+std::optional<T> StringUtil::FromChars(const std::string_view str, const int base /*= 10*/)
+{
+  T value;
+
+  const std::from_chars_result result = std::from_chars(str.data(), str.data() + str.length(), value, base);
+  if (result.ec != std::errc())
+    return std::nullopt;
+
+  return value;
+}
+template<typename T>
+  requires std::is_integral_v<T>
+std::optional<T> StringUtil::FromChars(const std::string_view str, const int base, std::string_view* const endptr)
+{
+  T value;
+
+  const char* ptr = str.data();
+  const char* end = ptr + str.length();
+  const std::from_chars_result result = std::from_chars(ptr, end, value, base);
+  if (result.ec != std::errc())
+    return std::nullopt;
+
+  if (endptr)
   {
-    std::optional<u8> byte = StringUtil::FromChars<u8>(in.substr(i * 2, 2), 16);
-    if (byte.has_value())
-      data.push_back(*byte);
-    else
-      return std::nullopt;
+    const size_t remaining_len = end - result.ptr;
+    *endptr = (remaining_len > 0) ? std::string_view(result.ptr, remaining_len) : std::string_view();
   }
 
-  return {data};
+  return value;
+}
+
+template<typename T>
+  requires std::is_integral_v<T>
+std::optional<T> StringUtil::FromCharsWithOptionalBase(const std::string_view str,
+                                                       std::string_view* const endptr /*= nullptr*/)
+{
+  int base;
+  std::string_view data;
+  if (str.starts_with("0x"))
+  {
+    base = 16;
+    data = str.substr(2);
+  }
+  else if (str.starts_with("0b"))
+  {
+    base = 2;
+    data = str.substr(2);
+  }
+  else if (str.starts_with("0") && str.length() > 1)
+  {
+    base = 8;
+    data = str.substr(1);
+  }
+  else
+  {
+    base = 10;
+    data = str;
+  }
+
+  if (endptr)
+    return FromChars<T>(data, base, endptr);
+  else
+    return FromChars<T>(data, base);
+}
+
+template<typename T>
+  requires std::is_floating_point_v<T>
+std::optional<T> StringUtil::FromChars(const std::string_view str)
+{
+  T value;
+
+  const fast_float::from_chars_result result = fast_float::from_chars(str.data(), str.data() + str.length(), value);
+  if (result.ec != std::errc())
+    return std::nullopt;
+
+  return value;
+}
+template<typename T>
+  requires std::is_floating_point_v<T>
+std::optional<T> StringUtil::FromChars(const std::string_view str, std::string_view* const endptr)
+{
+  T value;
+
+  const char* ptr = str.data();
+  const char* end = ptr + str.length();
+  const fast_float::from_chars_result result = fast_float::from_chars(ptr, end, value);
+  if (result.ec != std::errc())
+    return std::nullopt;
+
+  if (endptr)
+  {
+    const size_t remaining_len = end - result.ptr;
+    *endptr = (remaining_len > 0) ? std::string_view(result.ptr, remaining_len) : std::string_view();
+  }
+
+  return value;
+}
+
+/// Wrapper around std::to_chars
+template<typename T>
+  requires std::is_integral_v<T>
+std::string StringUtil::ToChars(const T value, const int base /*= 10*/)
+{
+  constexpr size_t MAX_SIZE = 32;
+  char buf[MAX_SIZE];
+  std::string ret;
+
+  const std::to_chars_result result = std::to_chars(buf, buf + MAX_SIZE, value, base);
+  if (result.ec == std::errc())
+    ret.append(buf, result.ptr - buf);
+
+  return ret;
+}
+
+template<typename T>
+  requires std::is_floating_point_v<T>
+std::string StringUtil::ToChars(const T value)
+{
+  constexpr size_t MAX_SIZE = 64;
+  char buf[MAX_SIZE];
+  std::string ret;
+  const std::to_chars_result result = std::to_chars(buf, buf + MAX_SIZE, value);
+  if (result.ec == std::errc())
+    ret.append(buf, result.ptr - buf);
+  return ret;
+}
+
+// Instantiating with known types
+#define TO_FROM_CHARS_INTEGRAL_TYPES(X)                                                                                \
+  X(s8)                                                                                                                \
+  X(u8)                                                                                                                \
+  X(s16)                                                                                                               \
+  X(u16)                                                                                                               \
+  X(s32)                                                                                                               \
+  X(unsigned int)                                                                                                      \
+  X(s64)                                                                                                               \
+  X(u64)
+
+#define X(T)                                                                                                           \
+  template std::optional<T> StringUtil::FromChars<T>(const std::string_view, const int);                               \
+  template std::optional<T> StringUtil::FromChars<T>(const std::string_view, const int, std::string_view* const);      \
+  template std::optional<T> StringUtil::FromCharsWithOptionalBase<T>(const std::string_view, std::string_view* const); \
+  template std::string StringUtil::ToChars<T>(const T, const int);
+TO_FROM_CHARS_INTEGRAL_TYPES(X);
+#undef X
+
+#define TO_FROM_CHARS_FLOATING_POINT_TYPES(X)                                                                          \
+  X(float)                                                                                                             \
+  X(double)
+
+#define X(T)                                                                                                           \
+  template std::optional<T> StringUtil::FromChars<T>(const std::string_view);                                          \
+  template std::optional<T> StringUtil::FromChars<T>(const std::string_view, std::string_view* const);                 \
+  template std::string StringUtil::ToChars<T>(T);
+
+TO_FROM_CHARS_FLOATING_POINT_TYPES(X);
+#undef X
+
+/// Explicit override for booleans
+template<>
+std::optional<bool> StringUtil::FromChars(const std::string_view str, int base)
+{
+  if (Strncasecmp("true", str.data(), str.length()) == 0 || Strncasecmp("yes", str.data(), str.length()) == 0 ||
+      Strncasecmp("on", str.data(), str.length()) == 0 || Strncasecmp("1", str.data(), str.length()) == 0 ||
+      Strncasecmp("enabled", str.data(), str.length()) == 0)
+  {
+    return true;
+  }
+
+  if (Strncasecmp("false", str.data(), str.length()) == 0 || Strncasecmp("no", str.data(), str.length()) == 0 ||
+      Strncasecmp("off", str.data(), str.length()) == 0 || Strncasecmp("0", str.data(), str.length()) == 0 ||
+      Strncasecmp("disabled", str.data(), str.length()) == 0)
+  {
+    return false;
+  }
+
+  return std::nullopt;
+}
+
+template<>
+std::string StringUtil::ToChars(bool value, int base)
+{
+  return std::string(value ? "true" : "false");
+}
+
+std::string StringUtil::StripControlCharacters(std::string_view str)
+{
+  std::string out;
+  out.reserve(str.length());
+  for (size_t i = 0; i < str.length();)
+  {
+    char32_t ch;
+    i += StringUtil::DecodeUTF8(str, i, &ch);
+    ch = (ch < 0x20) ? '_' : ch;
+    StringUtil::EncodeAndAppendUTF8(out, ch);
+  }
+  return out;
+}
+
+u8 StringUtil::DecodeHexDigit(char ch)
+{
+  if (ch >= '0' && ch <= '9')
+    return static_cast<u8>(ch - '0');
+  else if (ch >= 'a' && ch <= 'f')
+    return static_cast<u8>(0xa + (ch - 'a'));
+  else if (ch >= 'A' && ch <= 'F')
+    return static_cast<u8>(0xa + (ch - 'A'));
+  else
+    return 0;
+}
+
+size_t StringUtil::DecodeHex(std::span<u8> dest, const std::string_view str)
+{
+  if ((str.length() % 2) != 0)
+    return 0;
+
+  const size_t bytes = str.length() / 2;
+  if (dest.size() != bytes)
+    return 0;
+
+  for (size_t i = 0; i < bytes; i++)
+  {
+    std::optional<u8> byte = StringUtil::FromChars<u8>(str.substr(i * 2, 2), 16);
+    if (byte.has_value())
+      dest[i] = byte.value();
+    else
+      return i;
+  }
+
+  return bytes;
+}
+
+std::optional<std::vector<u8>> StringUtil::DecodeHex(const std::string_view in)
+{
+  std::optional<std::vector<u8>> ret;
+  ret = std::vector<u8>(in.size() / 2);
+  if (DecodeHex(ret.value(), in) != ret->size())
+    ret.reset();
+  return ret;
 }
 
 std::string StringUtil::EncodeHex(const void* data, size_t length)
@@ -185,16 +471,140 @@ std::string StringUtil::EncodeHex(const void* data, size_t length)
   return ret;
 }
 
+size_t StringUtil::EncodeBase64(const std::span<char> dest, const std::span<const u8> data)
+{
+  const size_t expected_length = EncodedBase64Length(data);
+  Assert(dest.size() <= expected_length);
+
+  static constexpr std::array<char, 64> table = {
+    {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V',
+     'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r',
+     's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '+', '/'}};
+
+  const size_t dataLength = data.size();
+  size_t dest_pos = 0;
+
+  for (size_t i = 0; i < dataLength;)
+  {
+    const size_t bytes_in_sequence = std::min<size_t>(dataLength - i, 3);
+    switch (bytes_in_sequence)
+    {
+      case 1:
+        dest[dest_pos++] = table[(data[i] >> 2) & 63];
+        dest[dest_pos++] = table[(data[i] & 3) << 4];
+        dest[dest_pos++] = '=';
+        dest[dest_pos++] = '=';
+        break;
+
+      case 2:
+        dest[dest_pos++] = table[(data[i] >> 2) & 63];
+        dest[dest_pos++] = table[((data[i] & 3) << 4) | ((data[i + 1] >> 4) & 15)];
+        dest[dest_pos++] = table[(data[i + 1] & 15) << 2];
+        dest[dest_pos++] = '=';
+        break;
+
+      case 3:
+        dest[dest_pos++] = table[(data[i] >> 2) & 63];
+        dest[dest_pos++] = table[((data[i] & 3) << 4) | ((data[i + 1] >> 4) & 15)];
+        dest[dest_pos++] = table[((data[i + 1] & 15) << 2) | ((data[i + 2] >> 6) & 3)];
+        dest[dest_pos++] = table[data[i + 2] & 63];
+        break;
+
+        DefaultCaseIsUnreachable();
+    }
+
+    i += bytes_in_sequence;
+  }
+
+  DebugAssert(dest_pos == expected_length);
+  return dest_pos;
+}
+
+size_t StringUtil::DecodeBase64(const std::span<u8> data, const std::string_view str)
+{
+  static constexpr std::array<u8, 128> table = {
+    64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+    64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 62, 64, 64, 64, 63, 52, 53, 54, 55,
+    56, 57, 58, 59, 60, 61, 64, 64, 64, 0,  64, 64, 64, 0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12,
+    13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 64, 64, 64, 64, 64, 64, 26, 27, 28, 29, 30, 31, 32,
+    33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 64, 64, 64, 64, 64};
+
+  const size_t str_length = str.length();
+  if ((str_length % 4) != 0)
+    return 0;
+
+  size_t data_pos = 0;
+  for (size_t i = 0; i < str_length;)
+  {
+    const u8 byte1 = table[str[i++] & 0x7F];
+    const u8 byte2 = table[str[i++] & 0x7F];
+    const u8 byte3 = table[str[i++] & 0x7F];
+    const u8 byte4 = table[str[i++] & 0x7F];
+
+    if (byte1 == 64 || byte2 == 64 || byte3 == 64 || byte4 == 64)
+      break;
+
+    data[data_pos++] = (byte1 << 2) | (byte2 >> 4);
+    if (str[i - 2] != '=')
+      data[data_pos++] = ((byte2 << 4) | (byte3 >> 2));
+    if (str[i - 1] != '=')
+      data[data_pos++] = ((byte3 << 6) | byte4);
+  }
+
+  return data_pos;
+}
+
+std::optional<std::vector<u8>> StringUtil::DecodeBase64(const std::string_view str)
+{
+  std::vector<u8> ret;
+  const size_t len = DecodedBase64Length(str);
+  ret.resize(len);
+  if (DecodeBase64(ret, str) != len)
+    ret = {};
+  return ret;
+}
+
+std::string StringUtil::EncodeBase64(const std::span<u8> data)
+{
+  std::string ret;
+  ret.resize(EncodedBase64Length(data));
+  ret.resize(EncodeBase64(ret, data));
+  return ret;
+}
+
+bool StringUtil::StartsWithNoCase(const std::string_view str, const std::string_view prefix)
+{
+  return (!str.empty() && Strncasecmp(str.data(), prefix.data(), prefix.length()) == 0);
+}
+
+bool StringUtil::EndsWithNoCase(const std::string_view str, const std::string_view suffix)
+{
+  const std::size_t suffix_length = suffix.length();
+  return (str.length() >= suffix_length &&
+          Strncasecmp(str.data() + (str.length() - suffix_length), suffix.data(), suffix_length) == 0);
+}
+
+size_t StringUtil::CountChar(const std::string_view str, char ch)
+{
+  return std::count(str.begin(), str.end(), ch);
+}
+
+size_t StringUtil::CountCharNoCase(const std::string_view str, char ch)
+{
+  ch = ToLower(ch);
+  return std::count_if(str.begin(), str.end(), [ch](char och) { return (ch == ToLower(och)); });
+}
+
 std::string_view StringUtil::StripWhitespace(const std::string_view str)
 {
   std::string_view::size_type start = 0;
-  while (start < str.size() && std::isspace(str[start]))
+  while (start < str.size() && StringUtil::IsWhitespace(str[start]))
     start++;
   if (start == str.size())
     return {};
 
   std::string_view::size_type end = str.size() - 1;
-  while (end > start && std::isspace(str[end]))
+  while (end > start && StringUtil::IsWhitespace(str[end]))
     end--;
 
   return str.substr(start, end - start + 1);
@@ -205,7 +615,7 @@ void StringUtil::StripWhitespace(std::string* str)
   {
     const char* cstr = str->c_str();
     std::string_view::size_type start = 0;
-    while (start < str->size() && std::isspace(cstr[start]))
+    while (start < str->size() && StringUtil::IsWhitespace(cstr[start]))
       start++;
     if (start != 0)
       str->erase(0, start);
@@ -214,7 +624,7 @@ void StringUtil::StripWhitespace(std::string* str)
   {
     const char* cstr = str->c_str();
     std::string_view::size_type start = str->size();
-    while (start > 0 && std::isspace(cstr[start - 1]))
+    while (start > 0 && StringUtil::IsWhitespace(cstr[start - 1]))
       start--;
     if (start != str->size())
       str->erase(start);
@@ -281,7 +691,7 @@ std::string StringUtil::ReplaceAll(const std::string_view subject, const std::st
 
 void StringUtil::ReplaceAll(std::string* subject, const std::string_view search, const std::string_view replacement)
 {
-  if (!subject->empty())
+  if (!subject->empty() && !search.empty())
   {
     std::string::size_type start_pos = 0;
     while ((start_pos = subject->find(search, start_pos)) != std::string::npos)
@@ -327,9 +737,47 @@ bool StringUtil::ParseAssignmentString(const std::string_view str, std::string_v
   return true;
 }
 
+std::optional<std::string_view> StringUtil::GetNextToken(std::string_view& caret, char separator)
+{
+  std::optional<std::string_view> ret;
+  const std::string_view::size_type pos = caret.find(separator);
+  if (pos != std::string_view::npos)
+  {
+    ret = caret.substr(0, pos);
+    caret = caret.substr(pos + 1);
+  }
+  return ret;
+}
+
+size_t StringUtil::GetUTF8CharacterCount(const std::string_view str)
+{
+  size_t count = 0;
+
+  const size_t len = str.length();
+  for (size_t pos = 0; pos < len;)
+  {
+    const u8 c = str[pos];
+
+    if (c < 0x80) // ASCII
+      pos += 1;
+    else if ((c & 0xE0) == 0xC0) // 2-byte sequence
+      pos += 2;
+    else if ((c & 0xF0) == 0xE0) // 3-byte sequence
+      pos += 3;
+    else if ((c & 0xF8) == 0xF0 && c <= 0xF4) // 4-byte sequence (limited to 0xF4)
+      pos += 4;
+    else // Unknown/invalid leading byte: treat as one invalid byte (replacement), advance one.
+      pos += 1;
+
+    ++count;
+  }
+
+  return count;
+}
+
 void StringUtil::EncodeAndAppendUTF8(std::string& s, char32_t ch)
 {
-  if (ch <= 0x7F)
+  if (ch <= 0x7F) [[likely]]
   {
     s.push_back(static_cast<char>(static_cast<u8>(ch)));
   }
@@ -359,17 +807,84 @@ void StringUtil::EncodeAndAppendUTF8(std::string& s, char32_t ch)
   }
 }
 
+size_t StringUtil::GetEncodedUTF8Length(char32_t ch)
+{
+  if (ch <= 0x7F) [[likely]]
+    return 1;
+  else if (ch <= 0x07FF)
+    return 2;
+  else if (ch <= 0xFFFF)
+    return 3;
+  else if (ch <= 0x10FFFF)
+    return 4;
+  else
+    return 3;
+}
+
+size_t StringUtil::EncodeAndAppendUTF8(void* utf8, size_t pos, size_t size, char32_t ch)
+{
+  u8* utf8_bytes = static_cast<u8*>(utf8) + pos;
+  if (ch <= 0x7F) [[likely]]
+  {
+    if (pos == size) [[unlikely]]
+      return 0;
+
+    utf8_bytes[0] = static_cast<u8>(ch);
+    return 1;
+  }
+  else if (ch <= 0x07FF)
+  {
+    if ((pos + 1) >= size) [[unlikely]]
+      return 0;
+
+    utf8_bytes[0] = static_cast<u8>(0xc0 | static_cast<u8>((ch >> 6) & 0x1f));
+    utf8_bytes[1] = static_cast<u8>(0x80 | static_cast<u8>((ch & 0x3f)));
+    return 2;
+  }
+  else if (ch <= 0xFFFF)
+  {
+    if ((pos + 3) >= size) [[unlikely]]
+      return 0;
+
+    utf8_bytes[0] = static_cast<u8>(0xe0 | static_cast<u8>(((ch >> 12) & 0x0f)));
+    utf8_bytes[1] = static_cast<u8>(0x80 | static_cast<u8>(((ch >> 6) & 0x3f)));
+    utf8_bytes[2] = static_cast<u8>(0x80 | static_cast<u8>((ch & 0x3f)));
+    return 3;
+  }
+  else if (ch <= 0x10FFFF)
+  {
+    if ((pos + 4) >= size) [[unlikely]]
+      return 0;
+
+    utf8_bytes[0] = static_cast<u8>(0xf0 | static_cast<u8>(((ch >> 18) & 0x07)));
+    utf8_bytes[1] = static_cast<u8>(0x80 | static_cast<u8>(((ch >> 12) & 0x3f)));
+    utf8_bytes[2] = static_cast<u8>(0x80 | static_cast<u8>(((ch >> 6) & 0x3f)));
+    utf8_bytes[3] = static_cast<u8>(0x80 | static_cast<u8>((ch & 0x3f)));
+    return 4;
+  }
+  else
+  {
+    if ((pos + 3) >= size) [[unlikely]]
+      return 0;
+
+    utf8_bytes[0] = 0xefu;
+    utf8_bytes[1] = 0xbfu;
+    utf8_bytes[2] = 0xbdu;
+    return 3;
+  }
+}
+
 size_t StringUtil::DecodeUTF8(const void* bytes, size_t length, char32_t* ch)
 {
   const u8* s = reinterpret_cast<const u8*>(bytes);
-  if (s[0] < 0x80)
+  if (s[0] < 0x80) [[likely]]
   {
     *ch = s[0];
     return 1;
   }
   else if ((s[0] & 0xe0) == 0xc0)
   {
-    if (length < 2)
+    if (length < 2) [[unlikely]]
       goto invalid;
 
     *ch = static_cast<char32_t>((static_cast<u32>(s[0] & 0x1f) << 6) | (static_cast<u32>(s[1] & 0x3f) << 0));
@@ -377,7 +892,7 @@ size_t StringUtil::DecodeUTF8(const void* bytes, size_t length, char32_t* ch)
   }
   else if ((s[0] & 0xf0) == 0xe0)
   {
-    if (length < 3)
+    if (length < 3) [[unlikely]]
       goto invalid;
 
     *ch = static_cast<char32_t>((static_cast<u32>(s[0] & 0x0f) << 12) | (static_cast<u32>(s[1] & 0x3f) << 6) |
@@ -386,7 +901,7 @@ size_t StringUtil::DecodeUTF8(const void* bytes, size_t length, char32_t* ch)
   }
   else if ((s[0] & 0xf8) == 0xf0 && (s[0] <= 0xf4))
   {
-    if (length < 4)
+    if (length < 4) [[unlikely]]
       goto invalid;
 
     *ch = static_cast<char32_t>((static_cast<u32>(s[0] & 0x07) << 18) | (static_cast<u32>(s[1] & 0x3f) << 12) |
@@ -397,6 +912,126 @@ size_t StringUtil::DecodeUTF8(const void* bytes, size_t length, char32_t* ch)
 invalid:
   *ch = UNICODE_REPLACEMENT_CHARACTER; // unicode replacement character
   return 1;
+}
+
+size_t StringUtil::EncodeAndAppendUTF16(void* utf16, size_t pos, size_t size, char32_t codepoint)
+{
+  u8* const utf16_bytes = std::assume_aligned<sizeof(u16)>(static_cast<u8*>(utf16)) + (pos * sizeof(u16));
+  if (codepoint <= 0xFFFF) [[likely]]
+  {
+    if (pos == size) [[unlikely]]
+      return 0;
+
+    // surrogates are invalid
+    const u16 codepoint16 =
+      static_cast<u16>((codepoint >= 0xD800 && codepoint <= 0xDFFF) ? UNICODE_REPLACEMENT_CHARACTER : codepoint);
+    std::memcpy(utf16_bytes, &codepoint16, sizeof(codepoint16));
+    return 1;
+  }
+  else if (codepoint <= 0x10FFFF)
+  {
+    if ((pos + 1) >= size) [[unlikely]]
+      return 0;
+
+    codepoint -= 0x010000;
+
+    const u16 low = static_cast<u16>(((static_cast<u32>(codepoint) >> 10) & 0x3FFu) + 0xD800);
+    const u16 high = static_cast<u16>((static_cast<u32>(codepoint) & 0x3FFu) + 0xDC00);
+    std::memcpy(utf16_bytes, &low, sizeof(high));
+    std::memcpy(utf16_bytes + sizeof(u16), &high, sizeof(high));
+    return 2;
+  }
+  else
+  {
+    // unrepresentable
+    constexpr u16 value = static_cast<u16>(UNICODE_REPLACEMENT_CHARACTER);
+    std::memcpy(utf16_bytes, &value, sizeof(value));
+    return 1;
+  }
+}
+
+template<bool swap>
+size_t StringUtil::DecodeUTF16Impl(const void* bytes, size_t pos, size_t size, char32_t* ch)
+{
+  const u8* const utf16_bytes = std::assume_aligned<sizeof(u16)>(static_cast<const u8*>(bytes)) + pos * sizeof(u16);
+
+  u16 high;
+  std::memcpy(&high, utf16_bytes, sizeof(high));
+  if constexpr (swap)
+    high = ByteSwap(high);
+
+  // High surrogate?
+  if (high >= 0xD800 && high <= 0xDBFF) [[unlikely]]
+  {
+    if ((size - pos) < 2) [[unlikely]]
+    {
+      // Missing low surrogate.
+      *ch = UNICODE_REPLACEMENT_CHARACTER;
+      return 1;
+    }
+
+    u16 low;
+    std::memcpy(&low, utf16_bytes + sizeof(u16), sizeof(low));
+    if constexpr (swap)
+      low = ByteSwap(low);
+
+    if (low >= 0xDC00 && low <= 0xDFFF) [[likely]]
+    {
+      *ch = static_cast<char32_t>(((static_cast<u32>(high) - 0xD800u) << 10) + ((static_cast<u32>(low) - 0xDC00)) +
+                                  0x10000u);
+      return 2;
+    }
+    else
+    {
+      // Invalid high surrogate.
+      *ch = UNICODE_REPLACEMENT_CHARACTER;
+      return 2;
+    }
+  }
+  else
+  {
+    // Single 16-bit value.
+    *ch = static_cast<char32_t>(high);
+    return 1;
+  }
+}
+
+template<bool swap>
+std::string StringUtil::DecodeUTF16StringImpl(const void* bytes, size_t size)
+{
+  std::string dest;
+  dest.reserve(size);
+
+  const size_t u16_size = size / 2;
+  for (size_t pos = 0; pos < u16_size;)
+  {
+    char32_t codepoint;
+    const size_t byte_len = DecodeUTF16Impl<swap>(bytes, pos, u16_size, &codepoint);
+    StringUtil::EncodeAndAppendUTF8(dest, codepoint);
+    pos += byte_len;
+  }
+
+  return dest;
+}
+
+size_t StringUtil::DecodeUTF16(const void* bytes, size_t pos, size_t size, char32_t* codepoint)
+{
+  return DecodeUTF16Impl<false>(bytes, pos, size, codepoint);
+}
+
+size_t StringUtil::DecodeUTF16BE(const void* bytes, size_t pos, size_t size, char32_t* codepoint)
+{
+  return DecodeUTF16Impl<true>(bytes, pos, size, codepoint);
+}
+
+std::string StringUtil::DecodeUTF16String(const void* bytes, size_t size)
+{
+  return DecodeUTF16StringImpl<false>(bytes, size);
+}
+
+std::string StringUtil::DecodeUTF16BEString(const void* bytes, size_t size)
+{
+  return DecodeUTF16StringImpl<true>(bytes, size);
 }
 
 std::string StringUtil::Ellipsise(const std::string_view str, u32 max_length, const char* ellipsis /*= "..."*/)
@@ -467,13 +1102,14 @@ std::optional<size_t> StringUtil::BytePatternSearch(const std::span<const u8> by
     return std::nullopt;
 
   const bool allocate_on_heap = (pattern_length >= 512);
-  u8* match_bytes = allocate_on_heap ? static_cast<u8*>(alloca(pattern_length * 2)) : new u8[pattern_length * 2];
+  u8* match_bytes = allocate_on_heap ? new u8[pattern_length * 2] : static_cast<u8*>(alloca(pattern_length * 2));
   u8* match_masks = match_bytes + pattern_length;
 
   hinibble = true;
   u8 match_byte = 0;
   u8 match_mask = 0;
-  for (size_t i = 0, match_len = 0; i < pattern.size(); i++)
+  size_t match_len = 0;
+  for (size_t i = 0; i < pattern.size(); i++)
   {
     u8 nibble = 0, nibble_mask = 0xF;
     if (pattern[i] >= '0' && pattern[i] <= '9')
@@ -502,8 +1138,8 @@ std::optional<size_t> StringUtil::BytePatternSearch(const std::span<const u8> by
       match_mask = nibble_mask;
     }
   }
-  if (pattern_length == 0)
-    return std::nullopt;
+
+  DebugAssert(match_len == pattern_length);
 
   std::optional<size_t> ret;
   const size_t max_search_offset = bytes.size() - pattern_length;
@@ -528,6 +1164,45 @@ std::optional<size_t> StringUtil::BytePatternSearch(const std::span<const u8> by
     delete[] match_bytes;
 
   return ret;
+}
+
+void StringUtil::StrideMemCpy(void* dst, std::size_t dst_stride, const void* src, std::size_t src_stride,
+                              std::size_t copy_size, std::size_t count)
+{
+  if (src_stride == dst_stride && src_stride == copy_size)
+  {
+    std::memcpy(dst, src, src_stride * count);
+    return;
+  }
+
+  const u8* src_ptr = static_cast<const u8*>(src);
+  u8* dst_ptr = static_cast<u8*>(dst);
+  for (std::size_t i = 0; i < count; i++)
+  {
+    std::memcpy(dst_ptr, src_ptr, copy_size);
+    src_ptr += src_stride;
+    dst_ptr += dst_stride;
+  }
+}
+
+int StringUtil::StrideMemCmp(const void* p1, std::size_t p1_stride, const void* p2, std::size_t p2_stride,
+                             std::size_t copy_size, std::size_t count)
+{
+  if (p1_stride == p2_stride && p1_stride == copy_size)
+    return std::memcmp(p1, p2, p1_stride * count);
+
+  const u8* p1_ptr = static_cast<const u8*>(p1);
+  const u8* p2_ptr = static_cast<const u8*>(p2);
+  for (std::size_t i = 0; i < count; i++)
+  {
+    int result = std::memcmp(p1_ptr, p2_ptr, copy_size);
+    if (result != 0)
+      return result;
+    p2_ptr += p2_stride;
+    p1_ptr += p1_stride;
+  }
+
+  return 0;
 }
 
 size_t StringUtil::DecodeUTF8(const std::string_view str, size_t offset, char32_t* ch)

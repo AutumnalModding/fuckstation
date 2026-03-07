@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+# SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 # SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 SCRIPTDIR=$(dirname "${BASH_SOURCE[0]}")
@@ -19,34 +19,31 @@ function retry_command {
   done
 }
 
-if [ "$#" -ne 4 ]; then
-    echo "Syntax: $0 <path to duckstation directory> <path to build directory> <deps prefix> <output name>"
+if [ "$#" -ne 3 ]; then
+    echo "Syntax: $0 <path to duckstation directory> <path to build directory> <output name>"
     exit 1
 fi
 
 ROOTDIR=$1
 BUILDDIR=$2
-DEPSDIR=$3
-NAME=$4
+ASSETNAME=$3
 
 BINARY=duckstation-qt
 APPDIRNAME=DuckStation.AppDir
 STRIP=strip
 
 declare -a MANUAL_LIBS=(
-	"libavcodec.so.61"
-	"libavformat.so.61"
-	"libavutil.so.59"
-	"libswscale.so.8"
-	"libswresample.so.5"
+	"libz.so.1"
+	"libavcodec.so.62"
+	"libavformat.so.62"
+	"libavutil.so.60"
+	"libswscale.so.9"
+	"libswresample.so.6"
 	"libdiscord-rpc.so"
+	"libharfbuzz.so"
 	"libfreetype.so.6"
-	"libshaderc_ds.so"
+	"libshaderc_shared.so"
 	"libspirv-cross-c-shared.so.0"
-)
-
-declare -a MANUAL_QT_LIBS=(
-	"libQt6WaylandEglClientHwIntegration.so.6"
 )
 
 declare -a MANUAL_QT_PLUGINS=(
@@ -63,6 +60,7 @@ declare -a REMOVE_LIBS=(
 
 set -e
 
+DEPSDIR=$(realpath "$SCRIPTDIR/../../dep/prebuilt/linux-x64")
 LINUXDEPLOY=./linuxdeploy-x86_64
 LINUXDEPLOY_PLUGIN_QT=./linuxdeploy-plugin-qt-x86_64
 APPIMAGETOOL=./appimagetool-x86_64
@@ -80,7 +78,7 @@ if [ ! -f "$LINUXDEPLOY_PLUGIN_QT" ]; then
 fi
 
 if [ ! -f "$APPIMAGETOOL" ]; then
-	retry_command wget -O "$APPIMAGETOOL" https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+	retry_command wget -O "$APPIMAGETOOL" https://github.com/stenzek/duckstation-ext-qt-minimal/releases/download/linux/appimagetool-x86_64.AppImage
 	chmod +x "$APPIMAGETOOL"
 fi
 
@@ -122,28 +120,18 @@ done
 
 echo "Running linuxdeploy to create AppDir..."
 EXTRA_QT_PLUGINS="core;gui;svg;waylandclient;widgets;xcbqpa" \
-EXTRA_PLATFORM_PLUGINS="libqwayland-egl.so;libqwayland-generic.so" \
+EXTRA_PLATFORM_PLUGINS="libqwayland.so" \
 DEPLOY_PLATFORM_THEMES="1" \
 QMAKE="$DEPSDIR/bin/qmake" \
 NO_STRIP="1" \
 $LINUXDEPLOY --plugin qt --appdir="$OUTDIR" --executable="$BUILDDIR/bin/duckstation-qt" ${EXTRA_LIBS_ARGS[@]} \
---desktop-file="$ROOTDIR/scripts/org.duckstation.DuckStation.desktop" \
---icon-file="$ROOTDIR/scripts/org.duckstation.DuckStation.png" \
+--desktop-file="$ROOTDIR/scripts/appimage/org.duckstation.DuckStation.desktop" \
+--icon-file="$ROOTDIR/scripts/appimage/org.duckstation.DuckStation.png" \
 
 echo "Copying resources into AppDir..."
 cp -a "$BUILDDIR/bin/resources" "$OUTDIR/usr/bin"
 
 # LinuxDeploy's Qt plugin doesn't include Wayland support. So manually copy in the additional Wayland libraries.
-echo "Copying Qt Wayland libraries..."
-for lib in "${MANUAL_QT_LIBS[@]}"; do
-	srcpath="$DEPSDIR/lib/$lib"
-	dstpath="$OUTDIR/usr/lib/$lib"
-	echo "  $srcpath -> $dstpath"
-	cp "$srcpath" "$dstpath"
-	$PATCHELF --set-rpath '$ORIGIN' "$dstpath"
-done
-
-# .. and plugins.
 echo "Copying Qt Wayland plugins..."
 for GROUP in "${MANUAL_QT_PLUGINS[@]}"; do
 	srcpath="$DEPSDIR/plugins/$GROUP"
@@ -183,17 +171,8 @@ cp -a "$BUILDDIR/bin/translations" "$OUTDIR/usr/bin"
 # Generate AppStream meta-info.
 echo "Generating AppStream metainfo..."
 mkdir -p "$OUTDIR/usr/share/metainfo"
-"$SCRIPTDIR/../generate-metainfo.sh" "$OUTDIR/usr/share/metainfo"
-
-# Copy in AppRun hooks.
-echo "Copying AppRun hooks..."
-mkdir -p "$OUTDIR/apprun-hooks"
-for hookpath in "$SCRIPTDIR/apprun-hooks"/*; do
-	hookname=$(basename "$hookpath")
-	cp -v "$hookpath" "$OUTDIR/apprun-hooks/$hookname"
-	sed -i -e 's/exec /source "$this_dir"\/apprun-hooks\/"'"$hookname"'"\nexec /' "$OUTDIR/AppRun"
-done
+"$SCRIPTDIR/generate-metainfo.sh" "$OUTDIR/usr/share/metainfo"
 
 echo "Generating AppImage..."
-rm -f "$NAME.AppImage"
-"$APPIMAGETOOL" -v --runtime-file "$APPIMAGERUNTIME" "$OUTDIR" "$NAME.AppImage"
+rm -f "$ASSETNAME"
+"$APPIMAGETOOL" -v --runtime-file "$APPIMAGERUNTIME" "$OUTDIR" "$ASSETNAME"

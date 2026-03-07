@@ -1,12 +1,16 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "threading.h"
 #include "assert.h"
-#include "cocoa_tools.h"
 #include "log.h"
 
+#ifdef __APPLE__
+#include "cocoa_tools.h"
+#endif
+
 #include <memory>
+#include <utility>
 
 #if !defined(_WIN32) && !defined(__APPLE__)
 #ifndef _GNU_SOURCE
@@ -118,6 +122,7 @@ Threading::ThreadHandle::ThreadHandle(const ThreadHandle& handle)
                         THREAD_QUERY_INFORMATION | THREAD_SET_LIMITED_INFORMATION, FALSE, 0))
     {
       m_native_handle = (void*)new_handle;
+      m_native_id = handle.m_native_id;
     }
   }
 }
@@ -133,9 +138,11 @@ Threading::ThreadHandle::ThreadHandle(const ThreadHandle& handle)
 #endif
 
 #ifdef _WIN32
-Threading::ThreadHandle::ThreadHandle(ThreadHandle&& handle) : m_native_handle(handle.m_native_handle)
+Threading::ThreadHandle::ThreadHandle(ThreadHandle&& handle)
+  : m_native_handle(handle.m_native_handle), m_native_id(handle.m_native_id)
 {
   handle.m_native_handle = nullptr;
+  handle.m_native_id = 0;
 }
 #else
 Threading::ThreadHandle::ThreadHandle(ThreadHandle&& handle)
@@ -164,8 +171,9 @@ Threading::ThreadHandle Threading::ThreadHandle::GetForCallingThread()
 {
   ThreadHandle ret;
 #ifdef _WIN32
+  ret.m_native_id = GetCurrentThreadId();
   ret.m_native_handle =
-    (void*)OpenThread(THREAD_QUERY_INFORMATION | THREAD_SET_LIMITED_INFORMATION, FALSE, GetCurrentThreadId());
+    (void*)OpenThread(THREAD_QUERY_INFORMATION | THREAD_SET_LIMITED_INFORMATION, FALSE, ret.m_native_id);
 #else
   ret.m_native_handle = (void*)pthread_self();
 #ifdef __linux__
@@ -181,7 +189,9 @@ Threading::ThreadHandle& Threading::ThreadHandle::operator=(ThreadHandle&& handl
   if (m_native_handle)
     CloseHandle((HANDLE)m_native_handle);
   m_native_handle = handle.m_native_handle;
+  m_native_id = handle.m_native_id;
   handle.m_native_handle = nullptr;
+  handle.m_native_id = 0;
 #else
   m_native_handle = handle.m_native_handle;
   handle.m_native_handle = nullptr;
@@ -207,6 +217,12 @@ Threading::ThreadHandle& Threading::ThreadHandle::operator=(const ThreadHandle& 
                       THREAD_QUERY_INFORMATION | THREAD_SET_LIMITED_INFORMATION, FALSE, 0))
   {
     m_native_handle = (void*)new_handle;
+    m_native_id = handle.m_native_id;
+  }
+  else
+  {
+    m_native_handle = nullptr;
+    m_native_id = 0;
   }
 #else
   m_native_handle = handle.m_native_handle;
@@ -216,6 +232,24 @@ Threading::ThreadHandle& Threading::ThreadHandle::operator=(const ThreadHandle& 
 #endif
 
   return *this;
+}
+
+bool Threading::ThreadHandle::operator==(const ThreadHandle& other) const
+{
+#ifdef _WIN32
+  return m_native_id == other.m_native_id;
+#else
+  return pthread_equal((pthread_t)m_native_handle, (pthread_t)other.m_native_handle);
+#endif
+}
+
+bool Threading::ThreadHandle::operator!=(const ThreadHandle& other) const
+{
+#ifdef _WIN32
+  return m_native_id != other.m_native_id;
+#else
+  return !pthread_equal((pthread_t)m_native_handle, (pthread_t)other.m_native_handle);
+#endif
 }
 
 u64 Threading::ThreadHandle::GetCPUTime() const
@@ -275,9 +309,18 @@ bool Threading::ThreadHandle::SetAffinity(u64 processor_mask) const
 #endif
 }
 
+bool Threading::ThreadHandle::IsCallingThread() const
+{
+#ifdef _WIN32
+  return (GetCurrentThreadId() == m_native_id);
+#else
+  return pthread_equal(pthread_self(), (pthread_t)m_native_handle);
+#endif
+}
+
 #ifdef __APPLE__
 
-bool Threading::ThreadHandle::SetTimeConstraints(bool enabled, u64 period, u64 typical_time, u64 maximum_time)
+bool Threading::ThreadHandle::SetTimeConstraints(bool enabled, u64 period, u64 typical_time, u64 maximum_time) const
 {
   const mach_port_t mach_thread_id = pthread_mach_thread_np((pthread_t)m_native_handle);
   if (!enabled)
@@ -317,9 +360,9 @@ bool Threading::ThreadHandle::SetTimeConstraints(bool enabled, u64 period, u64 t
 
 Threading::Thread::Thread() = default;
 
-Threading::Thread::Thread(Thread&& thread) : ThreadHandle(thread), m_stack_size(thread.m_stack_size)
+Threading::Thread::Thread(Thread&& thread) : ThreadHandle(thread)
 {
-  thread.m_stack_size = 0;
+  m_stack_size = std::exchange(thread.m_stack_size, 0);
 }
 
 Threading::Thread::Thread(EntryPoint func) : ThreadHandle()
@@ -353,9 +396,8 @@ bool Threading::Thread::Start(EntryPoint func)
   AssertMsg(!m_native_handle, "Can't start an already-started thread");
 
   std::unique_ptr<EntryPoint> func_clone(std::make_unique<EntryPoint>(std::move(func)));
-  unsigned thread_id;
   m_native_handle =
-    reinterpret_cast<void*>(_beginthreadex(nullptr, m_stack_size, ThreadProc, func_clone.get(), 0, &thread_id));
+    reinterpret_cast<void*>(_beginthreadex(nullptr, m_stack_size, ThreadProc, func_clone.get(), 0, &m_native_id));
   if (!m_native_handle)
     return false;
 
@@ -610,10 +652,15 @@ Threading::KernelSemaphore::KernelSemaphore()
 {
 #ifdef _WIN32
   m_sema = CreateSemaphore(nullptr, 0, LONG_MAX, nullptr);
+  if (m_sema == NULL) [[unlikely]]
+    Panic("CreateSemaphore() failed");
 #elif defined(__APPLE__)
-  semaphore_create(mach_task_self(), &m_sema, SYNC_POLICY_FIFO, 0);
+  const kern_return_t kr = semaphore_create(mach_task_self(), &m_sema, SYNC_POLICY_FIFO, 0);
+  if (kr != KERN_SUCCESS) [[unlikely]]
+    Panic("CreateSemaphore() failed");
 #else
-  sem_init(&m_sema, false, 0);
+  if (sem_init(&m_sema, false, 0) != 0) [[unlikely]]
+    Panic("sem_init() failed");
 #endif
 }
 
@@ -646,7 +693,11 @@ void Threading::KernelSemaphore::Wait()
 #elif defined(__APPLE__)
   semaphore_wait(m_sema);
 #else
-  sem_wait(&m_sema);
+  do
+  {
+    if (sem_wait(&m_sema) == 0) [[likely]]
+      return;
+  } while (errno == EINTR);
 #endif
 }
 

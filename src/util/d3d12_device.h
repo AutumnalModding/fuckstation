@@ -37,6 +37,8 @@ namespace D3D12MA {
 class Allocator;
 }
 
+class D3D12SwapChain;
+
 class D3D12Device final : public GPUDevice
 {
 public:
@@ -58,29 +60,30 @@ public:
   D3D12Device();
   ~D3D12Device() override;
 
-  bool HasSurface() const override;
-
-  bool UpdateWindow() override;
-  void ResizeWindow(s32 new_window_width, s32 new_window_height, float new_window_scale) override;
-
-  void DestroySurface() override;
-
   std::string GetDriverInfo() const override;
 
-  void ExecuteAndWaitForGPUIdle() override;
+  void FlushCommands() override;
+  void WaitForGPUIdle() override;
 
+  std::unique_ptr<GPUSwapChain> CreateSwapChain(const WindowInfo& wi, GPUVSyncMode vsync_mode,
+                                                const ExclusiveFullscreenMode* exclusive_fullscreen_mode,
+                                                std::optional<bool> exclusive_fullscreen_control,
+                                                Error* error) override;
   std::unique_ptr<GPUTexture> CreateTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
-                                            GPUTexture::Type type, GPUTexture::Format format,
-                                            const void* data = nullptr, u32 data_stride = 0) override;
-  std::unique_ptr<GPUSampler> CreateSampler(const GPUSampler::Config& config) override;
-  std::unique_ptr<GPUTextureBuffer> CreateTextureBuffer(GPUTextureBuffer::Format format, u32 size_in_elements) override;
+                                            GPUTexture::Type type, GPUTextureFormat format, GPUTexture::Flags flags,
+                                            const void* data = nullptr, u32 data_stride = 0,
+                                            Error* error = nullptr) override;
+  std::unique_ptr<GPUSampler> CreateSampler(const GPUSampler::Config& config, Error* error = nullptr) override;
+  std::unique_ptr<GPUTextureBuffer> CreateTextureBuffer(GPUTextureBuffer::Format format, u32 size_in_elements,
+                                                        Error* error = nullptr) override;
 
-  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTexture::Format format) override;
-  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTexture::Format format,
-                                                            void* memory, size_t memory_size,
-                                                            u32 memory_stride) override;
+  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTextureFormat format,
+                                                            Error* error = nullptr) override;
+  std::unique_ptr<GPUDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GPUTextureFormat format,
+                                                            void* memory, size_t memory_size, u32 memory_stride,
+                                                            Error* error = nullptr) override;
 
-  bool SupportsTextureFormat(GPUTexture::Format format) const override;
+  bool SupportsTextureFormat(GPUTextureFormat format) const override;
   void CopyTextureRegion(GPUTexture* dst, u32 dst_x, u32 dst_y, u32 dst_layer, u32 dst_level, GPUTexture* src,
                          u32 src_x, u32 src_y, u32 src_layer, u32 src_level, u32 width, u32 height) override;
   void ResolveTextureRegion(GPUTexture* dst, u32 dst_x, u32 dst_y, u32 dst_layer, u32 dst_level, GPUTexture* src,
@@ -95,17 +98,19 @@ public:
                                                     std::string_view source, const char* entry_point,
                                                     DynamicHeapArray<u8>* out_binary, Error* error) override;
   std::unique_ptr<GPUPipeline> CreatePipeline(const GPUPipeline::GraphicsConfig& config, Error* error) override;
+  std::unique_ptr<GPUPipeline> CreatePipeline(const GPUPipeline::ComputeConfig& config, Error* error) override;
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   void PushDebugGroup(const char* name) override;
   void PopDebugGroup() override;
   void InsertDebugMessage(const char* msg) override;
+#endif
 
   void MapVertexBuffer(u32 vertex_size, u32 vertex_count, void** map_ptr, u32* map_space,
                        u32* map_base_vertex) override;
   void UnmapVertexBuffer(u32 vertex_size, u32 vertex_count) override;
   void MapIndexBuffer(u32 index_count, DrawIndex** map_ptr, u32* map_space, u32* map_base_index) override;
   void UnmapIndexBuffer(u32 used_index_count) override;
-  void PushUniformBuffer(const void* data, u32 data_size) override;
   void* MapUniformBuffer(u32 size) override;
   void UnmapUniformBuffer(u32 size) override;
   void SetRenderTargets(GPUTexture* const* rts, u32 num_rts, GPUTexture* ds,
@@ -116,26 +121,32 @@ public:
   void SetViewport(const GSVector4i rc) override;
   void SetScissor(const GSVector4i rc) override;
   void Draw(u32 vertex_count, u32 base_vertex) override;
+  void DrawWithPushConstants(u32 vertex_count, u32 base_vertex, const void* push_constants,
+                             u32 push_constants_size) override;
   void DrawIndexed(u32 index_count, u32 base_index, u32 base_vertex) override;
-  void DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type) override;
-
-  void SetVSyncMode(GPUVSyncMode mode, bool allow_present_throttle) override;
+  void DrawIndexedWithPushConstants(u32 index_count, u32 base_index, u32 base_vertex, const void* push_constants,
+                                    u32 push_constants_size) override;
+  void Dispatch(u32 threads_x, u32 threads_y, u32 threads_z, u32 group_size_x, u32 group_size_y,
+                u32 group_size_z) override;
+  void DispatchWithPushConstants(u32 threads_x, u32 threads_y, u32 threads_z, u32 group_size_x, u32 group_size_y,
+                                 u32 group_size_z, const void* push_constants, u32 push_constants_size) override;
 
   bool SetGPUTimingEnabled(bool enabled) override;
   float GetAndResetAccumulatedGPUTime() override;
 
-  PresentResult BeginPresent(u32 clear_color) override;
-  void EndPresent(bool explicit_present, u64 present_time) override;
-  void SubmitPresent() override;
+  GPUPresentResult BeginPresent(GPUSwapChain* swap_chain, u32 clear_color) override;
+  void EndPresent(GPUSwapChain* swap_chain, bool explicit_present, u64 present_time) override;
+  void SubmitPresent(GPUSwapChain* swap_chain) override;
 
   // Global state accessors
   ALWAYS_INLINE static D3D12Device& GetInstance() { return *static_cast<D3D12Device*>(g_gpu_device.get()); }
   ALWAYS_INLINE IDXGIAdapter1* GetAdapter() const { return m_adapter.Get(); }
   ALWAYS_INLINE ID3D12Device1* GetDevice() const { return m_device.Get(); }
   ALWAYS_INLINE ID3D12CommandQueue* GetCommandQueue() const { return m_command_queue.Get(); }
+  ALWAYS_INLINE IDXGIFactory5* GetDXGIFactory() { return m_dxgi_factory.Get(); }
   ALWAYS_INLINE D3D12MA::Allocator* GetAllocator() const { return m_allocator.Get(); }
 
-  void WaitForGPUIdle();
+  void WaitForAllFences();
 
   // Descriptor manager access.
   D3D12DescriptorHeapManager& GetDescriptorHeapManager() { return m_descriptor_heap_manager; }
@@ -154,7 +165,6 @@ public:
   ID3D12GraphicsCommandList4* GetInitCommandList();
 
   // Root signature access.
-  ComPtr<ID3DBlob> SerializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC* desc, Error* error);
   ComPtr<ID3D12RootSignature> CreateRootSignature(const D3D12_ROOT_SIGNATURE_DESC* desc, Error* error);
 
   /// Fence value for current command list.
@@ -173,6 +183,12 @@ public:
   // Also invokes callbacks for completion.
   void WaitForFence(u64 fence_counter);
 
+  // Ends a render pass if we're currently in one.
+  // When Bind() is next called, the pass will be restarted.
+  void BeginRenderPass();
+  void EndRenderPass();
+  bool InRenderPass();
+
   /// Ends any render pass, executes the command buffer, and invalidates cached state.
   void SubmitCommandList(bool wait_for_completion);
   void SubmitCommandList(bool wait_for_completion, const std::string_view reason);
@@ -182,9 +198,13 @@ public:
   void UnbindTexture(D3D12Texture* tex);
   void UnbindTextureBuffer(D3D12TextureBuffer* buf);
 
+  void RenderTextureMipmap(D3D12Texture* texture, u32 dst_level, u32 dst_width, u32 dst_height, u32 src_level,
+                           u32 src_width, u32 src_height);
+
 protected:
-  bool CreateDevice(std::string_view adapter, std::optional<bool> exclusive_fullscreen_control,
-                    FeatureMask disabled_features, Error* error) override;
+  bool CreateDeviceAndMainSwapChain(std::string_view adapter, CreateFlags create_flags, const WindowInfo& wi,
+                                    GPUVSyncMode vsync_mode, const ExclusiveFullscreenMode* exclusive_fullscreen_mode,
+                                    std::optional<bool> exclusive_fullscreen_control, Error* error) override;
   void DestroyDevice() override;
 
   bool ReadPipelineCache(DynamicHeapArray<u8> data, Error* error) override;
@@ -203,7 +223,7 @@ private:
 
     LAYOUT_DEPENDENT_DIRTY_STATE = DIRTY_FLAG_PIPELINE_LAYOUT | DIRTY_FLAG_CONSTANT_BUFFER | DIRTY_FLAG_TEXTURES |
                                    DIRTY_FLAG_SAMPLERS | DIRTY_FLAG_RT_UAVS,
-    ALL_DIRTY_STATE = DIRTY_FLAG_INITIAL | (LAYOUT_DEPENDENT_DIRTY_STATE & ~DIRTY_FLAG_RT_UAVS),
+    ALL_DIRTY_STATE = DIRTY_FLAG_INITIAL | LAYOUT_DEPENDENT_DIRTY_STATE,
   };
 
   struct CommandList
@@ -227,16 +247,8 @@ private:
   };
   static_assert(sizeof(PIPELINE_CACHE_HEADER) == 16);
 
-  using SamplerMap = std::unordered_map<u64, D3D12DescriptorHandle>;
-
   void GetPipelineCacheHeader(PIPELINE_CACHE_HEADER* hdr);
-  void SetFeatures(D3D_FEATURE_LEVEL feature_level, FeatureMask disabled_features);
-
-  u32 GetSwapChainBufferCount() const;
-  bool CreateSwapChain(Error* error);
-  bool CreateSwapChainRTV(Error* error);
-  void DestroySwapChainRTVs();
-  void DestroySwapChain();
+  void SetFeatures(D3D_FEATURE_LEVEL feature_level, CreateFlags create_flags);
 
   bool CreateCommandLists(Error* error);
   void DestroyCommandLists();
@@ -248,18 +260,19 @@ private:
   void DestroyDescriptorHeaps();
   bool CreateTimestampQuery();
   void DestroyTimestampQuery();
-  D3D12DescriptorHandle GetSampler(const GPUSampler::Config& config);
-  void DestroySamplers();
   void DestroyDeferredObjects(u64 fence_value);
 
-  void RenderBlankFrame();
-  void MoveToNextCommandList();
+  void RenderBlankFrame(D3D12SwapChain* swap_chain);
+  void BeginCommandList(u32 index);
 
   bool CreateSRVDescriptor(ID3D12Resource* resource, u32 layers, u32 levels, u32 samples, DXGI_FORMAT format,
-                           D3D12DescriptorHandle* dh);
-  bool CreateRTVDescriptor(ID3D12Resource* resource, u32 samples, DXGI_FORMAT format, D3D12DescriptorHandle* dh);
-  bool CreateDSVDescriptor(ID3D12Resource* resource, u32 samples, DXGI_FORMAT format, D3D12DescriptorHandle* dh);
-  bool CreateUAVDescriptor(ID3D12Resource* resource, u32 samples, DXGI_FORMAT format, D3D12DescriptorHandle* dh);
+                           D3D12DescriptorHandle* dh, Error* error);
+  bool CreateRTVDescriptor(ID3D12Resource* resource, u32 samples, DXGI_FORMAT format, D3D12DescriptorHandle* dh,
+                           Error* error);
+  bool CreateDSVDescriptor(ID3D12Resource* resource, u32 samples, DXGI_FORMAT format, D3D12DescriptorHandle* dh,
+                           Error* error);
+  bool CreateUAVDescriptor(ID3D12Resource* resource, u32 samples, DXGI_FORMAT format, D3D12DescriptorHandle* dh,
+                           Error* error);
 
   bool IsRenderTargetBound(const GPUTexture* tex) const;
 
@@ -270,22 +283,17 @@ private:
   void SetScissor(ID3D12GraphicsCommandList4* cmdlist);
 
   /// Applies any changed state.
-  ID3D12RootSignature* GetCurrentRootSignature() const;
   void SetInitialPipelineState();
   void PreDrawCheck();
+  void PreDispatchCheck();
+  void PushUniformBuffer(ID3D12GraphicsCommandList4* const cmdlist, bool compute, const void* data, u32 data_size);
 
   bool IsUsingROVRootSignature() const;
+  bool IsUsingComputeRootSignature() const;
   void UpdateRootSignature();
   template<GPUPipeline::Layout layout>
   bool UpdateParametersForLayout(u32 dirty);
   bool UpdateRootParameters(u32 dirty);
-
-  // Ends a render pass if we're currently in one.
-  // When Bind() is next called, the pass will be restarted.
-  void BeginRenderPass();
-  void BeginSwapChainRenderPass(u32 clear_color);
-  void EndRenderPass();
-  bool InRenderPass();
 
   ComPtr<IDXGIAdapter1> m_adapter;
   ComPtr<ID3D12Device1> m_device;
@@ -299,15 +307,9 @@ private:
 
   std::array<CommandList, NUM_COMMAND_LISTS> m_command_lists;
   u32 m_current_command_list = NUM_COMMAND_LISTS - 1;
+  bool m_device_was_lost = false;
 
   ComPtr<IDXGIFactory5> m_dxgi_factory;
-  ComPtr<IDXGISwapChain1> m_swap_chain;
-  std::vector<std::pair<ComPtr<ID3D12Resource>, D3D12DescriptorHandle>> m_swap_chain_buffers;
-  u32 m_current_swap_chain_buffer = 0;
-  bool m_allow_tearing_supported = false;
-  bool m_using_allow_tearing = false;
-  bool m_is_exclusive_fullscreen = false;
-  bool m_device_was_lost = false;
 
   D3D12DescriptorHeapManager m_descriptor_heap_manager;
   D3D12DescriptorHeapManager m_rtv_heap_manager;
@@ -315,7 +317,6 @@ private:
   D3D12DescriptorHeapManager m_sampler_heap_manager;
   D3D12DescriptorHandle m_null_srv_descriptor;
   D3D12DescriptorHandle m_null_uav_descriptor;
-  D3D12DescriptorHandle m_point_sampler;
 
   ComPtr<ID3D12QueryHeap> m_timestamp_query_heap;
   ComPtr<ID3D12Resource> m_timestamp_query_buffer;
@@ -337,7 +338,6 @@ private:
   u32 m_uniform_buffer_position = 0;
   bool m_in_render_pass = false;
 
-  SamplerMap m_sampler_map;
   ComPtr<ID3D12PipelineLibrary> m_pipeline_library;
 
   // Which bindings/state has to be updated before the next draw.
@@ -358,4 +358,58 @@ private:
   D3D12TextureBuffer* m_current_texture_buffer = nullptr;
   GSVector4i m_current_viewport = GSVector4i::cxpr(0, 0, 1, 1);
   GSVector4i m_current_scissor = {};
+
+  D3D12SwapChain* m_current_swap_chain = nullptr;
+
+  ComPtr<ID3D12RootSignature> m_mipmap_render_root_signature;
+  std::array<ComPtr<ID3D12PipelineState>, static_cast<size_t>(GPUTextureFormat::MaxCount)> m_mipmap_render_pipelines =
+    {};
+};
+
+class D3D12SwapChain : public GPUSwapChain
+{
+public:
+  template<typename T>
+  using ComPtr = Microsoft::WRL::ComPtr<T>;
+
+  friend D3D12Device;
+
+  using BufferPair = std::pair<ComPtr<ID3D12Resource>, D3D12DescriptorHandle>;
+
+  D3D12SwapChain(const WindowInfo& wi, GPUVSyncMode vsync_mode,
+                 const GPUDevice::ExclusiveFullscreenMode* fullscreen_mode);
+  ~D3D12SwapChain() override;
+
+  ALWAYS_INLINE IDXGISwapChain1* GetSwapChain() const { return m_swap_chain.Get(); }
+  ALWAYS_INLINE const BufferPair& GetCurrentBuffer() const { return m_swap_chain_buffers[m_current_swap_chain_buffer]; }
+  ALWAYS_INLINE bool IsUsingAllowTearing() const { return m_using_allow_tearing; }
+
+  void AdvanceBuffer()
+  {
+    m_current_swap_chain_buffer = ((m_current_swap_chain_buffer + 1) % static_cast<u32>(m_swap_chain_buffers.size()));
+  }
+
+  bool ResizeBuffers(u32 new_width, u32 new_height, Error* error) override;
+  bool SetVSyncMode(GPUVSyncMode mode, Error* error) override;
+
+  bool IsExclusiveFullscreen() const override;
+
+private:
+  static u32 GetNewBufferCount(GPUVSyncMode vsync_mode);
+
+  bool InitializeExclusiveFullscreenMode(const GPUDevice::ExclusiveFullscreenMode* mode);
+
+  bool CreateSwapChain(D3D12Device& dev, Error* error);
+  bool CreateRTV(D3D12Device& dev, Error* error);
+
+  void DestroySwapChain();
+  void DestroyRTVs();
+
+  ComPtr<IDXGISwapChain1> m_swap_chain;
+  std::vector<BufferPair> m_swap_chain_buffers;
+  u32 m_current_swap_chain_buffer = 0;
+  bool m_using_allow_tearing = false;
+
+  ComPtr<IDXGIOutput> m_fullscreen_output;
+  std::optional<DXGI_MODE_DESC> m_fullscreen_mode;
 };

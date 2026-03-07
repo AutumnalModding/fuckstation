@@ -1,17 +1,21 @@
 // SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
+#if !defined(__APPLE__) && !defined(__ANDROID__)
+
 #include "assert.h"
 #include "crash_handler.h"
+
 #include <cstdio>
 #include <cstdlib>
-#include <mutex>
 
-#if defined(_WIN32)
+#ifdef _WIN32
+
 #include "windows_headers.h"
 #include <intrin.h>
 #include <tlhelp32.h>
-#endif
+
+#include <mutex>
 
 #ifdef __clang__
 #pragma clang diagnostic ignored "-Winvalid-noreturn"
@@ -19,9 +23,8 @@
 
 static std::mutex s_AssertFailedMutex;
 
-static inline void FreezeThreads(void** ppHandle)
+static HANDLE FreezeThreads()
 {
-#if defined(_WIN32)
   HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
   if (hSnapshot != INVALID_HANDLE_VALUE)
   {
@@ -43,17 +46,12 @@ static inline void FreezeThreads(void** ppHandle)
     }
   }
 
-  *ppHandle = (void*)hSnapshot;
-#else
-  *ppHandle = nullptr;
-#endif
+  return hSnapshot;
 }
 
-static inline void ResumeThreads(void* pHandle)
+static void ResumeThreads(HANDLE hSnapshot)
 {
-#if defined(_WIN32)
-  HANDLE hSnapshot = (HANDLE)pHandle;
-  if (pHandle != INVALID_HANDLE_VALUE)
+  if (hSnapshot != INVALID_HANDLE_VALUE)
   {
     THREADENTRY32 threadEntry;
     if (Thread32First(hSnapshot, &threadEntry))
@@ -73,21 +71,19 @@ static inline void ResumeThreads(void* pHandle)
     }
     CloseHandle(hSnapshot);
   }
-#else
-#endif
 }
+
+#endif // _WIN32
 
 void Y_OnAssertFailed(const char* szMessage, const char* szFunction, const char* szFile, unsigned uLine)
 {
-  std::lock_guard<std::mutex> guard(s_AssertFailedMutex);
-
-  void* pHandle;
-  FreezeThreads(&pHandle);
-
   char szMsg[512];
   std::snprintf(szMsg, sizeof(szMsg), "%s in function %s (%s:%u)\n", szMessage, szFunction, szFile, uLine);
 
 #if defined(_WIN32)
+  std::unique_lock lock(s_AssertFailedMutex);
+  HANDLE pHandle = FreezeThreads();
+
   SetConsoleTextAttribute(GetStdHandle(STD_ERROR_HANDLE), FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
   WriteConsoleA(GetStdHandle(STD_ERROR_HANDLE), szMsg, static_cast<DWORD>(std::strlen(szMsg)), NULL, NULL);
   OutputDebugStringA(szMsg);
@@ -104,31 +100,27 @@ void Y_OnAssertFailed(const char* szMessage, const char* szFunction, const char*
   }
   else if (result != IDIGNORE)
   {
-    CrashHandler::WriteDumpForCaller();
+    CrashHandler::WriteDumpForCaller(szMsg);
     TerminateProcess(GetCurrentProcess(), 0xBAADC0DE);
   }
+
+  ResumeThreads(pHandle);
 #else
   std::fputs(szMsg, stderr);
-  CrashHandler::WriteDumpForCaller();
-  std::fputs("Aborting application.\n", stderr);
   std::fflush(stderr);
   std::abort();
 #endif
-
-  ResumeThreads(pHandle);
 }
 
 [[noreturn]] void Y_OnPanicReached(const char* szMessage, const char* szFunction, const char* szFile, unsigned uLine)
 {
-  std::lock_guard<std::mutex> guard(s_AssertFailedMutex);
-
-  void* pHandle;
-  FreezeThreads(&pHandle);
-
   char szMsg[512];
   std::snprintf(szMsg, sizeof(szMsg), "%s in function %s (%s:%u)\n", szMessage, szFunction, szFile, uLine);
 
 #if defined(_WIN32)
+  std::unique_lock guard(s_AssertFailedMutex);
+  HANDLE pHandle = FreezeThreads();
+
   SetConsoleTextAttribute(GetStdHandle(STD_ERROR_HANDLE), FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
   WriteConsoleA(GetStdHandle(STD_ERROR_HANDLE), szMsg, static_cast<DWORD>(std::strlen(szMsg)), NULL, NULL);
   OutputDebugStringA(szMsg);
@@ -142,16 +134,16 @@ void Y_OnAssertFailed(const char* szMessage, const char* szFunction, const char*
   if (result == IDOK)
     __debugbreak();
   else
-    CrashHandler::WriteDumpForCaller();
+    CrashHandler::WriteDumpForCaller(szMsg);
 
   TerminateProcess(GetCurrentProcess(), 0xBAADC0DE);
+
+  ResumeThreads(pHandle);
 #else
   std::fputs(szMsg, stderr);
-  CrashHandler::WriteDumpForCaller();
-  std::fputs("Aborting application.\n", stderr);
   std::fflush(stderr);
   std::abort();
 #endif
-
-  ResumeThreads(pHandle);
 }
+
+#endif // !defined(__APPLE__) && !defined(__ANDROID__)

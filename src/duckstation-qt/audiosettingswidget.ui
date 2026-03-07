@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>523</width>
-    <height>504</height>
+    <width>600</width>
+    <height>526</height>
    </rect>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
@@ -24,174 +24,11 @@
     <number>0</number>
    </property>
    <item>
-    <widget class="QGroupBox" name="groupBox">
-     <property name="title">
-      <string>Configuration</string>
-     </property>
-     <layout class="QGridLayout" name="gridLayout">
-      <item row="5" column="0">
-       <widget class="QLabel" name="label_5">
-        <property name="text">
-         <string>Output Latency:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="1">
-       <widget class="QComboBox" name="outputDevice"/>
-      </item>
-      <item row="5" column="1">
-       <layout class="QHBoxLayout" name="horizontalLayout_3">
-        <item>
-         <widget class="QSlider" name="outputLatencyMS">
-          <property name="minimum">
-           <number>1</number>
-          </property>
-          <property name="maximum">
-           <number>500</number>
-          </property>
-          <property name="orientation">
-           <enum>Qt::Orientation::Horizontal</enum>
-          </property>
-          <property name="tickPosition">
-           <enum>QSlider::TickPosition::TicksBothSides</enum>
-          </property>
-          <property name="tickInterval">
-           <number>20</number>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QLabel" name="outputLatencyLabel">
-          <property name="text">
-           <string>0 ms</string>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QCheckBox" name="outputLatencyMinimal">
-          <property name="text">
-           <string>Minimal</string>
-          </property>
-         </widget>
-        </item>
-       </layout>
-      </item>
-      <item row="1" column="1">
-       <widget class="QComboBox" name="driver"/>
-      </item>
-      <item row="3" column="0">
-       <widget class="QLabel" name="label_7">
-        <property name="text">
-         <string>Stretch Mode:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="4" column="0">
-       <widget class="QLabel" name="label_2">
-        <property name="text">
-         <string>Buffer Size:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="4" column="1">
-       <layout class="QHBoxLayout" name="horizontalLayout_4" stretch="1,0">
-        <item>
-         <widget class="QSlider" name="bufferMS">
-          <property name="minimum">
-           <number>15</number>
-          </property>
-          <property name="maximum">
-           <number>500</number>
-          </property>
-          <property name="singleStep">
-           <number>1</number>
-          </property>
-          <property name="pageStep">
-           <number>5</number>
-          </property>
-          <property name="value">
-           <number>50</number>
-          </property>
-          <property name="orientation">
-           <enum>Qt::Orientation::Horizontal</enum>
-          </property>
-          <property name="tickPosition">
-           <enum>QSlider::TickPosition::TicksBothSides</enum>
-          </property>
-          <property name="tickInterval">
-           <number>20</number>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QLabel" name="bufferMSLabel">
-          <property name="text">
-           <string>0 ms</string>
-          </property>
-         </widget>
-        </item>
-       </layout>
-      </item>
-      <item row="3" column="1">
-       <layout class="QHBoxLayout" name="horizontalLayout_6" stretch="1,0">
-        <item>
-         <widget class="QComboBox" name="stretchMode"/>
-        </item>
-        <item>
-         <widget class="QToolButton" name="stretchSettings">
-          <property name="toolTip">
-           <string>Stretch Settings</string>
-          </property>
-          <property name="icon">
-           <iconset theme="settings-3-line"/>
-          </property>
-         </widget>
-        </item>
-       </layout>
-      </item>
-      <item row="2" column="0">
-       <widget class="QLabel" name="label_8">
-        <property name="text">
-         <string>Output Device:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="1">
-       <widget class="QComboBox" name="audioBackend"/>
-      </item>
-      <item row="1" column="0">
-       <widget class="QLabel" name="label_6">
-        <property name="text">
-         <string>Driver:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="6" column="0" colspan="2">
-       <widget class="QLabel" name="bufferingLabel">
-        <property name="text">
-         <string>Maximum latency: 0 frames (0.00ms)</string>
-        </property>
-        <property name="alignment">
-         <set>Qt::AlignmentFlag::AlignCenter</set>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="0">
-       <widget class="QLabel" name="label">
-        <property name="text">
-         <string>Backend:</string>
-        </property>
-       </widget>
-      </item>
-     </layout>
-    </widget>
-   </item>
-   <item>
     <widget class="QGroupBox" name="groupBox_2">
      <property name="title">
       <string>Controls</string>
      </property>
-     <layout class="QFormLayout" name="formLayout_2">
+     <layout class="QGridLayout" name="gridLayout_3" columnminimumwidth="120,0,0,0">
       <item row="0" column="0">
        <widget class="QLabel" name="label_3">
         <property name="text">
@@ -200,53 +37,49 @@
        </widget>
       </item>
       <item row="0" column="1">
-       <layout class="QHBoxLayout" name="horizontalLayout">
-        <item>
-         <widget class="QSlider" name="volume">
-          <property name="maximum">
-           <number>200</number>
-          </property>
-          <property name="value">
-           <number>100</number>
-          </property>
-          <property name="orientation">
-           <enum>Qt::Orientation::Horizontal</enum>
-          </property>
-          <property name="tickPosition">
-           <enum>QSlider::TickPosition::TicksBothSides</enum>
-          </property>
-          <property name="tickInterval">
-           <number>10</number>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QLabel" name="volumeLabel">
-          <property name="sizePolicy">
-           <sizepolicy hsizetype="Fixed" vsizetype="Preferred">
-            <horstretch>0</horstretch>
-            <verstretch>0</verstretch>
-           </sizepolicy>
-          </property>
-          <property name="text">
-           <string>100%</string>
-          </property>
-          <property name="alignment">
-           <set>Qt::AlignmentFlag::AlignCenter</set>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QToolButton" name="resetVolume">
-          <property name="toolTip">
-           <string>Reset Volume</string>
-          </property>
-          <property name="icon">
-           <iconset theme="refresh-line"/>
-          </property>
-         </widget>
-        </item>
-       </layout>
+       <widget class="QSlider" name="volume">
+        <property name="maximum">
+         <number>200</number>
+        </property>
+        <property name="value">
+         <number>100</number>
+        </property>
+        <property name="orientation">
+         <enum>Qt::Orientation::Horizontal</enum>
+        </property>
+        <property name="tickPosition">
+         <enum>QSlider::TickPosition::TicksBelow</enum>
+        </property>
+        <property name="tickInterval">
+         <number>10</number>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QLabel" name="volumeLabel">
+        <property name="minimumSize">
+         <size>
+          <width>36</width>
+          <height>0</height>
+         </size>
+        </property>
+        <property name="text">
+         <string>100%</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QPushButton" name="resetVolume">
+        <property name="toolTip">
+         <string>Reset Output Volume</string>
+        </property>
+        <property name="icon">
+         <iconset theme="restart-line"/>
+        </property>
+       </widget>
       </item>
       <item row="1" column="0">
        <widget class="QLabel" name="label_4">
@@ -256,55 +89,51 @@
        </widget>
       </item>
       <item row="1" column="1">
-       <layout class="QHBoxLayout" name="horizontalLayout_2">
-        <item>
-         <widget class="QSlider" name="fastForwardVolume">
-          <property name="maximum">
-           <number>200</number>
-          </property>
-          <property name="value">
-           <number>100</number>
-          </property>
-          <property name="orientation">
-           <enum>Qt::Orientation::Horizontal</enum>
-          </property>
-          <property name="tickPosition">
-           <enum>QSlider::TickPosition::TicksBothSides</enum>
-          </property>
-          <property name="tickInterval">
-           <number>10</number>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QLabel" name="fastForwardVolumeLabel">
-          <property name="sizePolicy">
-           <sizepolicy hsizetype="Fixed" vsizetype="Preferred">
-            <horstretch>0</horstretch>
-            <verstretch>0</verstretch>
-           </sizepolicy>
-          </property>
-          <property name="text">
-           <string>100%</string>
-          </property>
-          <property name="alignment">
-           <set>Qt::AlignmentFlag::AlignCenter</set>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QToolButton" name="resetFastForwardVolume">
-          <property name="toolTip">
-           <string>Reset Fast Forward Volume</string>
-          </property>
-          <property name="icon">
-           <iconset theme="refresh-line"/>
-          </property>
-         </widget>
-        </item>
-       </layout>
+       <widget class="QSlider" name="fastForwardVolume">
+        <property name="maximum">
+         <number>200</number>
+        </property>
+        <property name="value">
+         <number>100</number>
+        </property>
+        <property name="orientation">
+         <enum>Qt::Orientation::Horizontal</enum>
+        </property>
+        <property name="tickPosition">
+         <enum>QSlider::TickPosition::TicksBelow</enum>
+        </property>
+        <property name="tickInterval">
+         <number>10</number>
+        </property>
+       </widget>
       </item>
-      <item row="2" column="0" colspan="2">
+      <item row="1" column="2">
+       <widget class="QLabel" name="fastForwardVolumeLabel">
+        <property name="minimumSize">
+         <size>
+          <width>36</width>
+          <height>0</height>
+         </size>
+        </property>
+        <property name="text">
+         <string>100%</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QPushButton" name="resetFastForwardVolume">
+        <property name="toolTip">
+         <string>Reset Fast Forward Volume</string>
+        </property>
+        <property name="icon">
+         <iconset theme="restart-line"/>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0" colspan="4">
        <layout class="QGridLayout" name="gridLayout_2">
         <item row="0" column="0">
          <widget class="QCheckBox" name="muted">
@@ -326,14 +155,392 @@
     </widget>
    </item>
    <item>
+    <widget class="QGroupBox" name="groupBox">
+     <property name="title">
+      <string>Configuration</string>
+     </property>
+     <layout class="QGridLayout" name="configurationLayout" columnstretch="0,1,1" columnminimumwidth="120,0,0">
+      <item row="0" column="0">
+       <widget class="QLabel" name="label">
+        <property name="text">
+         <string>Backend:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="audioBackend">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QComboBox" name="driver">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="label_8">
+        <property name="text">
+         <string>Output Device:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1" colspan="2">
+       <widget class="QComboBox" name="outputDevice">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="label_7">
+        <property name="text">
+         <string>Stretch Mode:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1" colspan="2">
+       <widget class="QComboBox" name="stretchMode">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="label_2">
+        <property name="text">
+         <string>Buffer Size:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1" colspan="2">
+       <layout class="QHBoxLayout" name="horizontalLayout_4">
+        <item>
+         <widget class="QSlider" name="bufferMS">
+          <property name="minimum">
+           <number>15</number>
+          </property>
+          <property name="maximum">
+           <number>500</number>
+          </property>
+          <property name="value">
+           <number>50</number>
+          </property>
+          <property name="orientation">
+           <enum>Qt::Orientation::Horizontal</enum>
+          </property>
+          <property name="tickPosition">
+           <enum>QSlider::TickPosition::TicksBelow</enum>
+          </property>
+          <property name="tickInterval">
+           <number>25</number>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="bufferMSLabel">
+          <property name="minimumSize">
+           <size>
+            <width>46</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="text">
+           <string>0 ms</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="resetBufferSize">
+          <property name="toolTip">
+           <string>Reset Buffer Size</string>
+          </property>
+          <property name="icon">
+           <iconset theme="restart-line"/>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="label_5">
+        <property name="text">
+         <string>Output Latency:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1" colspan="2">
+       <layout class="QHBoxLayout" name="horizontalLayout_3">
+        <item>
+         <widget class="QSlider" name="outputLatencyMS">
+          <property name="minimum">
+           <number>1</number>
+          </property>
+          <property name="maximum">
+           <number>500</number>
+          </property>
+          <property name="orientation">
+           <enum>Qt::Orientation::Horizontal</enum>
+          </property>
+          <property name="tickPosition">
+           <enum>QSlider::TickPosition::TicksBelow</enum>
+          </property>
+          <property name="tickInterval">
+           <number>25</number>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="outputLatencyLabel">
+          <property name="minimumSize">
+           <size>
+            <width>46</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="text">
+           <string>0 ms</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QCheckBox" name="outputLatencyMinimal">
+          <property name="text">
+           <string>Minimal</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item row="5" column="0" colspan="3">
+       <widget class="QLabel" name="bufferingLabel">
+        <property name="text">
+         <string>Maximum Latency: 0 ms (0 ms stretch + 0 ms buffer + 0 ms output)</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignmentFlag::AlignCenter</set>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="timeStretchGroup">
+     <property name="title">
+      <string>Time Stretching</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_4" columnminimumwidth="120,0,0,0">
+      <item row="0" column="0">
+       <widget class="QLabel" name="label_9">
+        <property name="text">
+         <string>Sequence Length:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QSlider" name="sequenceLength">
+        <property name="minimum">
+         <number>20</number>
+        </property>
+        <property name="maximum">
+         <number>100</number>
+        </property>
+        <property name="value">
+         <number>30</number>
+        </property>
+        <property name="orientation">
+         <enum>Qt::Orientation::Horizontal</enum>
+        </property>
+        <property name="tickPosition">
+         <enum>QSlider::TickPosition::TicksBelow</enum>
+        </property>
+        <property name="tickInterval">
+         <number>10</number>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QLabel" name="sequenceLengthLabel">
+        <property name="minimumSize">
+         <size>
+          <width>44</width>
+          <height>0</height>
+         </size>
+        </property>
+        <property name="text">
+         <string>0 ms</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QPushButton" name="resetSequenceLength">
+        <property name="toolTip">
+         <string>Reset Sequence Length</string>
+        </property>
+        <property name="icon">
+         <iconset theme="restart-line"/>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="label_10">
+        <property name="text">
+         <string>Seek Window:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QSlider" name="seekWindowSize">
+        <property name="minimum">
+         <number>10</number>
+        </property>
+        <property name="maximum">
+         <number>30</number>
+        </property>
+        <property name="value">
+         <number>20</number>
+        </property>
+        <property name="orientation">
+         <enum>Qt::Orientation::Horizontal</enum>
+        </property>
+        <property name="tickPosition">
+         <enum>QSlider::TickPosition::TicksBelow</enum>
+        </property>
+        <property name="tickInterval">
+         <number>2</number>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QLabel" name="seekWindowSizeLabel">
+        <property name="minimumSize">
+         <size>
+          <width>44</width>
+          <height>0</height>
+         </size>
+        </property>
+        <property name="text">
+         <string>0 ms</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QPushButton" name="resetSeekWindowSize">
+        <property name="toolTip">
+         <string>Reset Seek Window</string>
+        </property>
+        <property name="icon">
+         <iconset theme="restart-line"/>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="label_11">
+        <property name="text">
+         <string>Overlap:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QSlider" name="overlap">
+        <property name="minimum">
+         <number>5</number>
+        </property>
+        <property name="maximum">
+         <number>15</number>
+        </property>
+        <property name="value">
+         <number>10</number>
+        </property>
+        <property name="orientation">
+         <enum>Qt::Orientation::Horizontal</enum>
+        </property>
+        <property name="tickPosition">
+         <enum>QSlider::TickPosition::TicksBelow</enum>
+        </property>
+        <property name="tickInterval">
+         <number>1</number>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="2">
+       <widget class="QLabel" name="overlapLabel">
+        <property name="minimumSize">
+         <size>
+          <width>44</width>
+          <height>0</height>
+         </size>
+        </property>
+        <property name="text">
+         <string>0 ms</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="3">
+       <widget class="QPushButton" name="resetOverlap">
+        <property name="toolTip">
+         <string>Reset Overlap</string>
+        </property>
+        <property name="icon">
+         <iconset theme="restart-line"/>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0" colspan="4">
+       <layout class="QGridLayout" name="gridLayout_5">
+        <item row="0" column="0">
+         <widget class="QCheckBox" name="useQuickSeek">
+          <property name="text">
+           <string>Use Quick Seek</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QCheckBox" name="useAAFilter">
+          <property name="text">
+           <string>Use Anti-Aliasing Filter</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
     <spacer name="verticalSpacer">
      <property name="orientation">
       <enum>Qt::Orientation::Vertical</enum>
      </property>
      <property name="sizeHint" stdset="0">
       <size>
-       <width>20</width>
-       <height>40</height>
+       <width>0</width>
+       <height>0</height>
       </size>
      </property>
     </spacer>

@@ -3,15 +3,18 @@
 
 #include "gpu_device.h"
 #include "compress_helpers.h"
-#include "core/host.h"     // TODO: Remove, needed for getting fullscreen mode.
-#include "core/settings.h" // TODO: Remove, needed for dump directory.
+#include "dyn_shaderc.h"
+#include "dyn_spirv_cross.h"
 #include "gpu_framebuffer_manager.h"
+#include "image.h"
+#include "imgui_manager.h"
 #include "shadergen.h"
 
 #include "common/assert.h"
 #include "common/dynamic_library.h"
 #include "common/error.h"
 #include "common/file_system.h"
+#include "common/hash_combine.h"
 #include "common/log.h"
 #include "common/path.h"
 #include "common/scoped_guard.h"
@@ -20,10 +23,9 @@
 #include "common/timer.h"
 
 #include "fmt/format.h"
-#include "imgui.h"
-#include "shaderc/shaderc.h"
-#include "spirv_cross/spirv_cross_c.h"
 #include "xxhash.h"
+
+#include "IconsEmoji.h"
 
 LOG_CHANNEL(GPUDevice);
 
@@ -35,15 +37,18 @@ LOG_CHANNEL(GPUDevice);
 #endif
 
 #ifdef ENABLE_OPENGL
+#include "opengl_context.h"
 #include "opengl_device.h"
 #endif
 
 #ifdef ENABLE_VULKAN
 #include "vulkan_device.h"
+#include "vulkan_loader.h"
 #endif
 
 std::unique_ptr<GPUDevice> g_gpu_device;
 
+static std::string s_shader_dump_path;
 static std::string s_pipeline_cache_path;
 static size_t s_pipeline_cache_size;
 static std::array<u8, SHA1Digest::DIGEST_SIZE> s_pipeline_cache_hash;
@@ -119,10 +124,13 @@ bool GPUPipeline::InputLayout::operator!=(const InputLayout& rhs) const
                       sizeof(VertexAttribute) * rhs.vertex_attributes.size()) != 0);
 }
 
-GPUPipeline::RasterizationState GPUPipeline::RasterizationState::GetNoCullState()
+GPUPipeline::RasterizationState GPUPipeline::RasterizationState::GetNoCullState(u8 multisamples /* = 1 */,
+                                                                                bool per_sample_shading /* = false */)
 {
   RasterizationState ret = {};
   ret.cull_mode = CullMode::None;
+  ret.multisamples = multisamples;
+  ret.per_sample_shading = per_sample_shading;
   return ret;
 }
 
@@ -162,12 +170,12 @@ GPUPipeline::BlendState GPUPipeline::BlendState::GetAlphaBlendingState()
   return ret;
 }
 
-void GPUPipeline::GraphicsConfig::SetTargetFormats(GPUTexture::Format color_format,
-                                                   GPUTexture::Format depth_format_ /* = GPUTexture::Format::Unknown */)
+void GPUPipeline::GraphicsConfig::SetTargetFormats(GPUTextureFormat color_format,
+                                                   GPUTextureFormat depth_format_ /* = GPUTexture::Format::Unknown */)
 {
   color_formats[0] = color_format;
   for (size_t i = 1; i < std::size(color_formats); i++)
-    color_formats[i] = GPUTexture::Format::Unknown;
+    color_formats[i] = GPUTextureFormat::Unknown;
   depth_format = depth_format_;
 }
 
@@ -176,7 +184,7 @@ u32 GPUPipeline::GraphicsConfig::GetRenderTargetCount() const
   u32 num_rts = 0;
   for (; num_rts < static_cast<u32>(std::size(color_formats)); num_rts++)
   {
-    if (color_formats[num_rts] == GPUTexture::Format::Unknown)
+    if (color_formats[num_rts] == GPUTextureFormat::Unknown)
       break;
   }
   return num_rts;
@@ -226,6 +234,62 @@ size_t GPUFramebufferManagerBase::KeyHash::operator()(const Key& key) const
     return XXH32(&key, sizeof(key), 0x1337);
 }
 
+GPUSwapChain::GPUSwapChain(const WindowInfo& wi, GPUVSyncMode vsync_mode) : m_window_info(wi), m_vsync_mode(vsync_mode)
+{
+  // Needed for the GetSizeVec() function to work.
+  static_assert(OFFSETOF(GPUSwapChain, m_window_info.surface_height) ==
+                OFFSETOF(GPUSwapChain, m_window_info.surface_width) + sizeof(u16));
+}
+
+GPUSwapChain::~GPUSwapChain() = default;
+
+GSVector4i GPUSwapChain::PreRotateClipRect(WindowInfoPrerotation prerotation, const GSVector2i surface_size,
+                                           const GSVector4i& v)
+{
+  GSVector4i new_clip;
+  switch (prerotation)
+  {
+    case WindowInfoPrerotation::Identity:
+      new_clip = v;
+      break;
+
+    case WindowInfoPrerotation::Rotate90Clockwise:
+    {
+      const s32 height = (v.w - v.y);
+      const s32 y = surface_size.y - v.y - height;
+      new_clip = GSVector4i(y, v.x, y + height, v.z);
+    }
+    break;
+
+    case WindowInfoPrerotation::Rotate180Clockwise:
+    {
+      const s32 width = (v.z - v.x);
+      const s32 height = (v.w - v.y);
+      const s32 x = surface_size.x - v.x - width;
+      const s32 y = surface_size.y - v.y - height;
+      new_clip = GSVector4i(x, y, x + width, y + height);
+    }
+    break;
+
+    case WindowInfoPrerotation::Rotate270Clockwise:
+    {
+      const s32 width = (v.z - v.x);
+      const s32 x = surface_size.x - v.x - width;
+      new_clip = GSVector4i(v.y, x, v.w, x + width);
+    }
+    break;
+
+      DefaultCaseIsUnreachable()
+  }
+
+  return new_clip;
+}
+
+bool GPUSwapChain::IsExclusiveFullscreen() const
+{
+  return false;
+}
+
 GPUDevice::GPUDevice()
 {
   ResetStatistics();
@@ -233,7 +297,7 @@ GPUDevice::GPUDevice()
 
 GPUDevice::~GPUDevice() = default;
 
-RenderAPI GPUDevice::GetPreferredAPI()
+RenderAPI GPUDevice::GetPreferredAPI(WindowInfoType window_type)
 {
   static RenderAPI preferred_renderer = RenderAPI::None;
   if (preferred_renderer == RenderAPI::None) [[unlikely]]
@@ -248,7 +312,7 @@ RenderAPI GPUDevice::GetPreferredAPI()
     preferred_renderer = RenderAPI::Metal;
 #elif defined(ENABLE_OPENGL) && defined(ENABLE_VULKAN)
     // On Linux, if we have both GL and Vulkan, prefer VK if the driver isn't software.
-    preferred_renderer = VulkanDevice::IsSuitableDefaultRenderer() ? RenderAPI::Vulkan : RenderAPI::OpenGL;
+    preferred_renderer = VulkanLoader::IsSuitableDefaultRenderer(window_type) ? RenderAPI::Vulkan : RenderAPI::OpenGL;
 #elif defined(ENABLE_OPENGL)
     preferred_renderer = RenderAPI::OpenGL;
 #elif defined(ENABLE_VULKAN)
@@ -301,35 +365,47 @@ const char* GPUDevice::ShaderLanguageToString(GPUShaderLanguage language)
   }
 }
 
+const char* GPUDevice::VSyncModeToString(GPUVSyncMode mode)
+{
+  static constexpr std::array<const char*, static_cast<size_t>(GPUVSyncMode::Count)> vsync_modes = {{
+    "Disabled",
+    "FIFO",
+    "Mailbox",
+  }};
+
+  return vsync_modes[static_cast<size_t>(mode)];
+}
+
 bool GPUDevice::IsSameRenderAPI(RenderAPI lhs, RenderAPI rhs)
 {
   return (lhs == rhs || ((lhs == RenderAPI::OpenGL || lhs == RenderAPI::OpenGLES) &&
                          (rhs == RenderAPI::OpenGL || rhs == RenderAPI::OpenGLES)));
 }
 
-GPUDevice::AdapterInfoList GPUDevice::GetAdapterListForAPI(RenderAPI api)
+std::optional<GPUDevice::AdapterInfoList> GPUDevice::GetAdapterListForAPI(RenderAPI api, WindowInfoType window_type,
+                                                                          Error* error)
 {
-  AdapterInfoList ret;
+  std::optional<AdapterInfoList> ret;
 
   switch (api)
   {
 #ifdef ENABLE_VULKAN
     case RenderAPI::Vulkan:
-      ret = VulkanDevice::GetAdapterList();
+      ret = VulkanLoader::GetAdapterList(window_type, error);
       break;
 #endif
 
 #ifdef ENABLE_OPENGL
     case RenderAPI::OpenGL:
     case RenderAPI::OpenGLES:
-      // No way of querying.
+      ret = OpenGLContext::GetAdapterList(window_type, error);
       break;
 #endif
 
 #ifdef _WIN32
     case RenderAPI::D3D11:
     case RenderAPI::D3D12:
-      ret = D3DCommon::GetAdapterInfoList();
+      ret = D3DCommon::GetAdapterInfoList(error);
       break;
 #endif
 
@@ -346,21 +422,51 @@ GPUDevice::AdapterInfoList GPUDevice::GetAdapterListForAPI(RenderAPI api)
   return ret;
 }
 
-bool GPUDevice::Create(std::string_view adapter, std::string_view shader_cache_path, u32 shader_cache_version,
-                       bool debug_device, GPUVSyncMode vsync, bool allow_present_throttle,
-                       std::optional<bool> exclusive_fullscreen_control, FeatureMask disabled_features, Error* error)
+bool GPUDevice::Create(std::string_view adapter, CreateFlags create_flags, std::string_view shader_dump_path,
+                       std::string_view shader_cache_path, u32 shader_cache_version, const WindowInfo& wi,
+                       GPUVSyncMode vsync, const ExclusiveFullscreenMode* exclusive_fullscreen_mode,
+                       std::optional<bool> exclusive_fullscreen_control, Error* error)
 {
-  m_vsync_mode = vsync;
-  m_allow_present_throttle = allow_present_throttle;
-  m_debug_device = debug_device;
+  m_debug_device = HasCreateFlag(create_flags, CreateFlags::EnableDebugDevice);
+  s_shader_dump_path = shader_dump_path;
 
-  if (!AcquireWindow(true))
+  INFO_LOG("Main render window is {}x{}.", wi.surface_width, wi.surface_height);
+
+  if (create_flags != CreateFlags::None) [[unlikely]]
   {
-    Error::SetStringView(error, "Failed to acquire window from host.");
-    return false;
+#define FLAG_MSG(flag, text)                                                                                           \
+  if (HasCreateFlag(create_flags, flag))                                                                               \
+    message += " \u2022 " text "\n";
+
+    std::string message;
+    FLAG_MSG(CreateFlags::EnableDebugDevice, "Use Debug Device");
+    FLAG_MSG(CreateFlags::EnableGPUValidation, "Enable GPU Validation");
+    FLAG_MSG(CreateFlags::PreferGLESContext, "Prefer OpenGL ES context");
+    FLAG_MSG(CreateFlags::DisableShaderCache, "Disable Shader Cache");
+    FLAG_MSG(CreateFlags::DisableDualSourceBlend, "Disable Dual Source Blend");
+    FLAG_MSG(CreateFlags::DisableFeedbackLoops, "Disable Feedback Loops");
+    FLAG_MSG(CreateFlags::DisableFramebufferFetch, "Disable Framebuffer Fetch");
+    FLAG_MSG(CreateFlags::DisableTextureBuffers, "Disable Texture Buffers");
+    FLAG_MSG(CreateFlags::DisableGeometryShaders, "Disable Geometry Shaders");
+    FLAG_MSG(CreateFlags::DisableComputeShaders, "Disable Compute Shaders");
+    FLAG_MSG(CreateFlags::DisableTextureCopyToSelf, "Disable Texture Copy To Self");
+    FLAG_MSG(CreateFlags::DisableMemoryImport, "Disable Memory Import");
+    FLAG_MSG(CreateFlags::DisableRasterOrderViews, "Disable Raster Order Views");
+    FLAG_MSG(CreateFlags::DisableCompressedTextures, "Disable Compressed Textures");
+
+    if (!message.empty())
+    {
+      message.pop_back(); // Remove last newline.
+
+      Host::AddIconOSDMessage(OSDMessageType::Warning, "GPUDeviceNonStandardFlags", ICON_EMOJI_WARNING,
+                              "One or more non-standard GPU device flags are enabled.", std::move(message));
+    }
+
+#undef FLAG_MSG
   }
 
-  if (!CreateDevice(adapter, exclusive_fullscreen_control, disabled_features, error))
+  if (!CreateDeviceAndMainSwapChain(adapter, create_flags, wi, vsync, exclusive_fullscreen_mode,
+                                    exclusive_fullscreen_control, error))
   {
     if (error && !error->IsValid())
       error->SetStringView("Failed to create device.");
@@ -370,7 +476,8 @@ bool GPUDevice::Create(std::string_view adapter, std::string_view shader_cache_p
   INFO_LOG("Render API: {} Version {}", RenderAPIToString(m_render_api), m_render_api_version);
   INFO_LOG("Graphics Driver Info:\n{}", GetDriverInfo());
 
-  OpenShaderCache(shader_cache_path, shader_cache_version);
+  OpenShaderCache(HasCreateFlag(create_flags, CreateFlags::DisableShaderCache) ? std::string_view() : shader_cache_path,
+                  shader_cache_version);
 
   if (!CreateResources(error))
   {
@@ -383,17 +490,33 @@ bool GPUDevice::Create(std::string_view adapter, std::string_view shader_cache_p
 
 void GPUDevice::Destroy()
 {
+  s_shader_dump_path = {};
+
   PurgeTexturePool();
-  if (HasSurface())
-    DestroySurface();
   DestroyResources();
   CloseShaderCache();
   DestroyDevice();
 }
 
-bool GPUDevice::SupportsExclusiveFullscreen() const
+bool GPUDevice::SwitchToSurfacelessRendering(Error* error)
 {
-  return false;
+  // noop on everything except GL because of it's context nonsense
+  return true;
+}
+
+bool GPUDevice::RecreateMainSwapChain(const WindowInfo& wi, GPUVSyncMode vsync_mode,
+                                      const ExclusiveFullscreenMode* exclusive_fullscreen_mode,
+                                      std::optional<bool> exclusive_fullscreen_control, Error* error)
+{
+
+  m_main_swap_chain.reset();
+  m_main_swap_chain = CreateSwapChain(wi, vsync_mode, exclusive_fullscreen_mode, exclusive_fullscreen_control, error);
+  return static_cast<bool>(m_main_swap_chain);
+}
+
+void GPUDevice::DestroyMainSwapChain()
+{
+  m_main_swap_chain.reset();
 }
 
 void GPUDevice::OpenShaderCache(std::string_view base_path, u32 version)
@@ -533,155 +656,38 @@ bool GPUDevice::GetPipelineCacheData(DynamicHeapArray<u8>* data, Error* error)
   return false;
 }
 
-bool GPUDevice::AcquireWindow(bool recreate_window)
-{
-  std::optional<WindowInfo> wi = Host::AcquireRenderWindow(recreate_window);
-  if (!wi.has_value())
-    return false;
-
-  INFO_LOG("Render window is {}x{}.", wi->surface_width, wi->surface_height);
-  m_window_info = wi.value();
-  return true;
-}
-
 bool GPUDevice::CreateResources(Error* error)
 {
-  if (!(m_nearest_sampler = CreateSampler(GPUSampler::GetNearestConfig())) ||
-      !(m_linear_sampler = CreateSampler(GPUSampler::GetLinearConfig())))
+  // Backend may initialize null texture itself if it needs it.
+  if (!m_empty_texture &&
+      !(m_empty_texture = CreateTexture(1, 1, 1, 1, 1, GPUTexture::Type::Texture, GPUTextureFormat::RGBA8,
+                                        GPUTexture::Flags::None, nullptr, 0, error)))
   {
-    Error::SetStringView(error, "Failed to create samplers");
+    Error::AddPrefix(error, "Failed to create null texture: ");
     return false;
   }
+  GL_OBJECT_NAME(m_empty_texture, "Null Texture");
 
-  const RenderAPI render_api = GetRenderAPI();
-  ShaderGen shadergen(render_api, ShaderGen::GetShaderLanguageForAPI(render_api), m_features.dual_source_blend,
-                      m_features.framebuffer_fetch);
-
-  std::unique_ptr<GPUShader> imgui_vs =
-    CreateShader(GPUShaderStage::Vertex, shadergen.GetLanguage(), shadergen.GenerateImGuiVertexShader(), error);
-  std::unique_ptr<GPUShader> imgui_fs =
-    CreateShader(GPUShaderStage::Fragment, shadergen.GetLanguage(), shadergen.GenerateImGuiFragmentShader(), error);
-  if (!imgui_vs || !imgui_fs)
+  if (!(m_nearest_sampler = GetSampler(GPUSampler::GetNearestConfig(), error)) ||
+      !(m_linear_sampler = GetSampler(GPUSampler::GetLinearConfig(), error)))
   {
-    Error::AddPrefix(error, "Failed to compile ImGui shaders: ");
+    Error::AddPrefix(error, "Failed to create samplers: ");
     return false;
   }
-  GL_OBJECT_NAME(imgui_vs, "ImGui Vertex Shader");
-  GL_OBJECT_NAME(imgui_fs, "ImGui Fragment Shader");
-
-  static constexpr GPUPipeline::VertexAttribute imgui_attributes[] = {
-    GPUPipeline::VertexAttribute::Make(0, GPUPipeline::VertexAttribute::Semantic::Position, 0,
-                                       GPUPipeline::VertexAttribute::Type::Float, 2, OFFSETOF(ImDrawVert, pos)),
-    GPUPipeline::VertexAttribute::Make(1, GPUPipeline::VertexAttribute::Semantic::TexCoord, 0,
-                                       GPUPipeline::VertexAttribute::Type::Float, 2, OFFSETOF(ImDrawVert, uv)),
-    GPUPipeline::VertexAttribute::Make(2, GPUPipeline::VertexAttribute::Semantic::Color, 0,
-                                       GPUPipeline::VertexAttribute::Type::UNorm8, 4, OFFSETOF(ImDrawVert, col)),
-  };
-
-  GPUPipeline::GraphicsConfig plconfig;
-  plconfig.layout = GPUPipeline::Layout::SingleTextureAndPushConstants;
-  plconfig.input_layout.vertex_attributes = imgui_attributes;
-  plconfig.input_layout.vertex_stride = sizeof(ImDrawVert);
-  plconfig.primitive = GPUPipeline::Primitive::Triangles;
-  plconfig.rasterization = GPUPipeline::RasterizationState::GetNoCullState();
-  plconfig.depth = GPUPipeline::DepthState::GetNoTestsState();
-  plconfig.blend = GPUPipeline::BlendState::GetAlphaBlendingState();
-  plconfig.blend.write_mask = 0x7;
-  plconfig.SetTargetFormats(HasSurface() ? m_window_info.surface_format : GPUTexture::Format::RGBA8);
-  plconfig.samples = 1;
-  plconfig.per_sample_shading = false;
-  plconfig.render_pass_flags = GPUPipeline::NoRenderPassFlags;
-  plconfig.vertex_shader = imgui_vs.get();
-  plconfig.geometry_shader = nullptr;
-  plconfig.fragment_shader = imgui_fs.get();
-
-  m_imgui_pipeline = CreatePipeline(plconfig, error);
-  if (!m_imgui_pipeline)
-  {
-    Error::AddPrefix(error, "Failed to compile ImGui pipeline: ");
-    return false;
-  }
-  GL_OBJECT_NAME(m_imgui_pipeline, "ImGui Pipeline");
-
+  GL_OBJECT_NAME(m_nearest_sampler, "Nearest Sampler");
+  GL_OBJECT_NAME(m_linear_sampler, "Nearest Sampler");
   return true;
 }
 
 void GPUDevice::DestroyResources()
 {
-  m_imgui_font_texture.reset();
-  m_imgui_pipeline.reset();
+  m_empty_texture.reset();
 
-  m_imgui_pipeline.reset();
-
-  m_linear_sampler.reset();
-  m_nearest_sampler.reset();
+  m_linear_sampler = nullptr;
+  m_nearest_sampler = nullptr;
+  m_sampler_map.clear();
 
   m_shader_cache.Close();
-}
-
-void GPUDevice::RenderImGui()
-{
-  GL_SCOPE("RenderImGui");
-
-  ImGui::Render();
-
-  const ImDrawData* draw_data = ImGui::GetDrawData();
-  if (draw_data->CmdListsCount == 0)
-    return;
-
-  SetPipeline(m_imgui_pipeline.get());
-  SetViewportAndScissor(0, 0, m_window_info.surface_width, m_window_info.surface_height);
-
-  const float L = 0.0f;
-  const float R = static_cast<float>(m_window_info.surface_width);
-  const float T = 0.0f;
-  const float B = static_cast<float>(m_window_info.surface_height);
-  const float ortho_projection[4][4] = {
-    {2.0f / (R - L), 0.0f, 0.0f, 0.0f},
-    {0.0f, 2.0f / (T - B), 0.0f, 0.0f},
-    {0.0f, 0.0f, 0.5f, 0.0f},
-    {(R + L) / (L - R), (T + B) / (B - T), 0.5f, 1.0f},
-  };
-  PushUniformBuffer(ortho_projection, sizeof(ortho_projection));
-
-  // Render command lists
-  const bool flip = UsesLowerLeftOrigin();
-  for (int n = 0; n < draw_data->CmdListsCount; n++)
-  {
-    const ImDrawList* cmd_list = draw_data->CmdLists[n];
-    static_assert(sizeof(ImDrawIdx) == sizeof(DrawIndex));
-
-    u32 base_vertex, base_index;
-    UploadVertexBuffer(cmd_list->VtxBuffer.Data, sizeof(ImDrawVert), cmd_list->VtxBuffer.Size, &base_vertex);
-    UploadIndexBuffer(cmd_list->IdxBuffer.Data, cmd_list->IdxBuffer.Size, &base_index);
-
-    for (int cmd_i = 0; cmd_i < cmd_list->CmdBuffer.Size; cmd_i++)
-    {
-      const ImDrawCmd* pcmd = &cmd_list->CmdBuffer[cmd_i];
-      DebugAssert(!pcmd->UserCallback);
-
-      if (pcmd->ElemCount == 0 || pcmd->ClipRect.z <= pcmd->ClipRect.x || pcmd->ClipRect.w <= pcmd->ClipRect.y)
-        continue;
-
-      if (flip)
-      {
-        const s32 height = static_cast<s32>(pcmd->ClipRect.w - pcmd->ClipRect.y);
-        const s32 flipped_y =
-          static_cast<s32>(m_window_info.surface_height) - static_cast<s32>(pcmd->ClipRect.y) - height;
-        SetScissor(static_cast<s32>(pcmd->ClipRect.x), flipped_y, static_cast<s32>(pcmd->ClipRect.z - pcmd->ClipRect.x),
-                   height);
-      }
-      else
-      {
-        SetScissor(static_cast<s32>(pcmd->ClipRect.x), static_cast<s32>(pcmd->ClipRect.y),
-                   static_cast<s32>(pcmd->ClipRect.z - pcmd->ClipRect.x),
-                   static_cast<s32>(pcmd->ClipRect.w - pcmd->ClipRect.y));
-      }
-
-      SetTextureSampler(0, reinterpret_cast<GPUTexture*>(pcmd->TextureId), m_linear_sampler.get());
-      DrawIndexed(pcmd->ElemCount, base_index + pcmd->IdxOffset, base_vertex + pcmd->VtxOffset);
-    }
-  }
 }
 
 void GPUDevice::UploadVertexBuffer(const void* vertices, u32 vertex_size, u32 vertex_count, u32* base_vertex)
@@ -733,6 +739,18 @@ void GPUDevice::SetViewportAndScissor(const GSVector4i rc)
 {
   SetViewport(rc);
   SetScissor(rc);
+}
+
+void GPUDevice::DrawIndexedWithBarrier(u32 index_count, u32 base_index, u32 base_vertex, DrawBarrier type)
+{
+  Panic("Barrier draws are not supported on this API.");
+}
+
+void GPUDevice::DrawIndexedWithBarrierWithPushConstants(u32 index_count, u32 base_index, u32 base_vertex,
+                                                        const void* push_constants, u32 push_constants_size,
+                                                        DrawBarrier type)
+{
+  Panic("Barrier draws are not supported on this API.");
 }
 
 void GPUDevice::ClearRenderTarget(GPUTexture* t, u32 c)
@@ -789,69 +807,78 @@ std::unique_ptr<GPUShader> GPUDevice::CreateShader(GPUShaderStage stage, GPUShad
   return shader;
 }
 
-bool GPUDevice::GetRequestedExclusiveFullscreenMode(u32* width, u32* height, float* refresh_rate)
+std::optional<GPUDevice::ExclusiveFullscreenMode> GPUDevice::ExclusiveFullscreenMode::Parse(std::string_view str)
 {
-  const std::string mode = Host::GetBaseStringSettingValue("GPU", "FullscreenMode", "");
-  if (!mode.empty())
+  std::optional<ExclusiveFullscreenMode> ret;
+  std::string_view::size_type sep1 = str.find('x');
+  if (sep1 != std::string_view::npos)
   {
-    const std::string_view mode_view = mode;
-    std::string_view::size_type sep1 = mode.find('x');
-    if (sep1 != std::string_view::npos)
-    {
-      std::optional<u32> owidth = StringUtil::FromChars<u32>(mode_view.substr(0, sep1));
+    std::optional<u32> owidth = StringUtil::FromChars<u32>(str.substr(0, sep1));
+    sep1++;
+
+    while (sep1 < str.length() && StringUtil::IsWhitespace(str[sep1]))
       sep1++;
 
-      while (sep1 < mode.length() && std::isspace(mode[sep1]))
-        sep1++;
-
-      if (owidth.has_value() && sep1 < mode.length())
+    if (owidth.has_value() && sep1 < str.length())
+    {
+      std::string_view::size_type sep2 = str.find('@', sep1);
+      if (sep2 != std::string_view::npos)
       {
-        std::string_view::size_type sep2 = mode.find('@', sep1);
-        if (sep2 != std::string_view::npos)
-        {
-          std::optional<u32> oheight = StringUtil::FromChars<u32>(mode_view.substr(sep1, sep2 - sep1));
+        std::optional<u32> oheight = StringUtil::FromChars<u32>(str.substr(sep1, sep2 - sep1));
+        sep2++;
+
+        while (sep2 < str.length() && StringUtil::IsWhitespace(str[sep2]))
           sep2++;
 
-          while (sep2 < mode.length() && std::isspace(mode[sep2]))
-            sep2++;
-
-          if (oheight.has_value() && sep2 < mode.length())
+        if (oheight.has_value() && sep2 < str.length())
+        {
+          std::optional<float> orefresh_rate = StringUtil::FromChars<float>(str.substr(sep2));
+          if (orefresh_rate.has_value())
           {
-            std::optional<float> orefresh_rate = StringUtil::FromChars<float>(mode_view.substr(sep2));
-            if (orefresh_rate.has_value())
-            {
-              *width = owidth.value();
-              *height = oheight.value();
-              *refresh_rate = orefresh_rate.value();
-              return true;
-            }
+            ret = ExclusiveFullscreenMode{
+              .width = owidth.value(), .height = oheight.value(), .refresh_rate = orefresh_rate.value()};
           }
         }
       }
     }
   }
 
-  *width = 0;
-  *height = 0;
-  *refresh_rate = 0;
-  return false;
+  return ret;
 }
 
-std::string GPUDevice::GetFullscreenModeString(u32 width, u32 height, float refresh_rate)
+TinyString GPUDevice::ExclusiveFullscreenMode::ToString() const
 {
-  return fmt::format("{} x {} @ {} hz", width, height, refresh_rate);
+  return TinyString::from_format("{} x {} @ {} hz", width, height, refresh_rate);
 }
 
-std::string GPUDevice::GetShaderDumpPath(std::string_view name)
+bool GPUDevice::ExclusiveFullscreenMode::operator==(const ExclusiveFullscreenMode& rhs) const
 {
-  return Path::Combine(EmuFolders::Dumps, name);
+  return (width == rhs.width && height == rhs.height && refresh_rate == rhs.refresh_rate);
+}
+
+bool GPUDevice::ExclusiveFullscreenMode::operator!=(const ExclusiveFullscreenMode& rhs) const
+{
+  return (width != rhs.width || height != rhs.height || refresh_rate != rhs.refresh_rate);
+}
+
+bool GPUDevice::ExclusiveFullscreenMode::operator<(const ExclusiveFullscreenMode& rhs) const
+{
+  if (width != rhs.width)
+    return width < rhs.width;
+  if (height != rhs.height)
+    return height < rhs.height;
+  return refresh_rate < rhs.refresh_rate;
 }
 
 void GPUDevice::DumpBadShader(std::string_view code, std::string_view errors)
 {
   static u32 next_bad_shader_id = 0;
 
-  const std::string filename = GetShaderDumpPath(fmt::format("bad_shader_{}.txt", ++next_bad_shader_id));
+  if (s_shader_dump_path.empty())
+    return;
+
+  const std::string filename =
+    Path::Combine(s_shader_dump_path, TinyString::from_format("bad_shader_{}.txt", ++next_bad_shader_id));
   auto fp = FileSystem::OpenManagedCFile(filename.c_str(), "wb");
   if (fp)
   {
@@ -871,35 +898,6 @@ std::array<float, 4> GPUDevice::RGBA8ToFloat(u32 rgba)
                               static_cast<float>(rgba >> 24) * (1.0f / 255.0f)};
 }
 
-bool GPUDevice::UpdateImGuiFontTexture()
-{
-  ImGuiIO& io = ImGui::GetIO();
-
-  unsigned char* pixels;
-  int width, height;
-  io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
-
-  const u32 pitch = sizeof(u32) * width;
-
-  if (m_imgui_font_texture && m_imgui_font_texture->GetWidth() == static_cast<u32>(width) &&
-      m_imgui_font_texture->GetHeight() == static_cast<u32>(height) &&
-      m_imgui_font_texture->Update(0, 0, static_cast<u32>(width), static_cast<u32>(height), pixels, pitch))
-  {
-    io.Fonts->SetTexID(m_imgui_font_texture.get());
-    return true;
-  }
-
-  std::unique_ptr<GPUTexture> new_font =
-    FetchTexture(width, height, 1, 1, 1, GPUTexture::Type::Texture, GPUTexture::Format::RGBA8, pixels, pitch);
-  if (!new_font)
-    return false;
-
-  RecycleTexture(std::move(m_imgui_font_texture));
-  m_imgui_font_texture = std::move(new_font);
-  io.Fonts->SetTexID(m_imgui_font_texture.get());
-  return true;
-}
-
 bool GPUDevice::UsesLowerLeftOrigin() const
 {
   const RenderAPI api = GetRenderAPI();
@@ -915,14 +913,34 @@ GSVector4i GPUDevice::FlipToLowerLeft(GSVector4i rc, s32 target_height)
   return rc;
 }
 
+GPUSampler* GPUDevice::GetSampler(const GPUSampler::Config& config, Error* error /* = nullptr */)
+{
+  auto it = m_sampler_map.find(config.key);
+  if (it != m_sampler_map.end())
+  {
+    if (!it->second) [[unlikely]]
+      Error::SetStringView(error, "Sampler previously failed creation.");
+
+    return it->second.get();
+  }
+
+  std::unique_ptr<GPUSampler> sampler = g_gpu_device->CreateSampler(config, error);
+  if (sampler)
+    GL_OBJECT_NAME_FMT(sampler, "Sampler {:016X}", config.key);
+
+  it = m_sampler_map.emplace(config.key, std::move(sampler)).first;
+  return it->second.get();
+}
+
 bool GPUDevice::IsTexturePoolType(GPUTexture::Type type)
 {
-  return (type == GPUTexture::Type::Texture || type == GPUTexture::Type::DynamicTexture);
+  return (type == GPUTexture::Type::Texture);
 }
 
 std::unique_ptr<GPUTexture> GPUDevice::FetchTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
-                                                    GPUTexture::Type type, GPUTexture::Format format,
-                                                    const void* data /*= nullptr*/, u32 data_stride /*= 0*/)
+                                                    GPUTexture::Type type, GPUTextureFormat format,
+                                                    GPUTexture::Flags flags, const void* data /* = nullptr */,
+                                                    u32 data_stride /* = 0 */, Error* error /* = nullptr */)
 {
   std::unique_ptr<GPUTexture> ret;
 
@@ -933,7 +951,7 @@ std::unique_ptr<GPUTexture> GPUDevice::FetchTexture(u32 width, u32 height, u32 l
                               static_cast<u8>(samples),
                               type,
                               format,
-                              0u};
+                              flags};
 
   const bool is_texture = IsTexturePoolType(type);
   TexturePool& pool = is_texture ? m_texture_pool : m_target_pool;
@@ -941,7 +959,7 @@ std::unique_ptr<GPUTexture> GPUDevice::FetchTexture(u32 width, u32 height, u32 l
 
   TexturePool::iterator it;
 
-  if (is_texture && m_features.prefer_unused_textures)
+  if (is_texture && data && m_features.prefer_unused_textures)
   {
     // Try to find a texture that wasn't used this frame first.
     for (it = m_texture_pool.begin(); it != m_texture_pool.end(); ++it)
@@ -985,18 +1003,65 @@ std::unique_ptr<GPUTexture> GPUDevice::FetchTexture(u32 width, u32 height, u32 l
     }
   }
 
-  ret = CreateTexture(width, height, layers, levels, samples, type, format, data, data_stride);
+  Error create_error;
+  ret = CreateTexture(width, height, layers, levels, samples, type, format, flags, data, data_stride, &create_error);
+  if (!ret) [[unlikely]]
+  {
+    Error::SetStringFmt(
+      error ? error : &create_error, "Failed to create {}x{} {} {}: {}", width, height,
+      GPUTexture::GetFormatName(format),
+      ((type == GPUTexture::Type::RenderTarget) ? "RT" : (type == GPUTexture::Type::DepthStencil ? "DS" : "Texture")),
+      create_error.GetDescription());
+    if (!error)
+      ERROR_LOG(create_error.GetDescription());
+  }
+
   return ret;
 }
 
-std::unique_ptr<GPUTexture, GPUDevice::PooledTextureDeleter>
+GPUDevice::AutoRecycleTexture
 GPUDevice::FetchAutoRecycleTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples, GPUTexture::Type type,
-                                   GPUTexture::Format format, const void* data /*= nullptr*/, u32 data_stride /*= 0*/,
-                                   bool dynamic /*= false*/)
+                                   GPUTextureFormat format, GPUTexture::Flags flags, const void* data /* = nullptr */,
+                                   u32 data_stride /* = 0 */, Error* error /* = nullptr */)
 {
   std::unique_ptr<GPUTexture> ret =
-    FetchTexture(width, height, layers, levels, samples, type, format, data, data_stride);
+    FetchTexture(width, height, layers, levels, samples, type, format, flags, data, data_stride, error);
   return std::unique_ptr<GPUTexture, PooledTextureDeleter>(ret.release());
+}
+
+std::unique_ptr<GPUTexture> GPUDevice::FetchAndUploadTextureImage(const Image& image,
+                                                                  GPUTexture::Flags flags /*= GPUTexture::Flags::None*/,
+                                                                  Error* error /*= nullptr*/)
+{
+  const Image* image_to_upload = &image;
+  GPUTextureFormat gpu_format = GPUTexture::GetTextureFormatForImageFormat(image.GetFormat());
+  bool gpu_format_supported;
+
+  // avoid device query for compressed formats that we've already pretested
+  if (gpu_format >= GPUTextureFormat::BC1 && gpu_format <= GPUTextureFormat::BC3)
+    gpu_format_supported = m_features.dxt_textures;
+  else if (gpu_format == GPUTextureFormat::BC7)
+    gpu_format_supported = m_features.bptc_textures;
+  else if (gpu_format == GPUTextureFormat::RGBA8) // always supported
+    gpu_format_supported = true;
+  else if (gpu_format != GPUTextureFormat::Unknown)
+    gpu_format_supported = SupportsTextureFormat(gpu_format);
+  else
+    gpu_format_supported = false;
+
+  std::optional<Image> converted_image;
+  if (!gpu_format_supported)
+  {
+    converted_image = image.ConvertToRGBA8(error);
+    if (!converted_image.has_value())
+      return nullptr;
+
+    image_to_upload = &converted_image.value();
+    gpu_format = GPUTexture::GetTextureFormatForImageFormat(converted_image->GetFormat());
+  }
+
+  return FetchTexture(image_to_upload->GetWidth(), image_to_upload->GetHeight(), 1, 1, 1, GPUTexture::Type::Texture,
+                      gpu_format, flags, image_to_upload->GetPixels(), image_to_upload->GetPitch(), error);
 }
 
 void GPUDevice::RecycleTexture(std::unique_ptr<GPUTexture> texture)
@@ -1011,7 +1076,7 @@ void GPUDevice::RecycleTexture(std::unique_ptr<GPUTexture> texture)
                               static_cast<u8>(texture->GetSamples()),
                               texture->GetType(),
                               texture->GetFormat(),
-                              0u};
+                              texture->GetFlags()};
 
   const bool is_texture = IsTexturePoolType(texture->GetType());
   TexturePool& pool = is_texture ? m_texture_pool : m_target_pool;
@@ -1085,38 +1150,48 @@ void GPUDevice::TrimTexturePool()
 }
 
 bool GPUDevice::ResizeTexture(std::unique_ptr<GPUTexture>* tex, u32 new_width, u32 new_height, GPUTexture::Type type,
-                              GPUTexture::Format format, bool preserve /* = true */)
+                              GPUTextureFormat format, GPUTexture::Flags flags, bool preserve /* = true */,
+                              Error* error /* = nullptr */)
 {
   GPUTexture* old_tex = tex->get();
-  DebugAssert(!old_tex || (old_tex->GetLayers() == 1 && old_tex->GetLevels() == 1 && old_tex->GetSamples() == 1));
-  std::unique_ptr<GPUTexture> new_tex = FetchTexture(new_width, new_height, 1, 1, 1, type, format);
-  if (!new_tex) [[unlikely]]
+  if (old_tex && old_tex->GetWidth() == new_width && old_tex->GetHeight() == new_height && old_tex->GetType() == type &&
+      old_tex->GetFormat() == format && old_tex->GetFlags() == flags)
   {
-    ERROR_LOG("Failed to create new {}x{} texture", new_width, new_height);
-    return false;
+    return true;
   }
 
-  if (old_tex)
+  DebugAssert(!old_tex || (old_tex->GetLayers() == 1 && old_tex->GetLevels() == 1 && old_tex->GetSamples() == 1));
+  std::unique_ptr<GPUTexture> new_tex =
+    FetchTexture(new_width, new_height, 1, 1, 1, type, format, flags, nullptr, 0, error);
+  if (!new_tex) [[unlikely]]
+    return false;
+
+  if (preserve)
   {
-    if (old_tex->GetState() == GPUTexture::State::Cleared)
+    if (old_tex)
     {
-      if (type == GPUTexture::Type::RenderTarget)
-        ClearRenderTarget(new_tex.get(), old_tex->GetClearColor());
+      if (old_tex->GetState() == GPUTexture::State::Cleared)
+      {
+        if (type == GPUTexture::Type::RenderTarget)
+          ClearRenderTarget(new_tex.get(), old_tex->GetClearColor());
+      }
+      else if (old_tex->GetState() == GPUTexture::State::Dirty)
+      {
+        const u32 copy_width = std::min(new_width, old_tex->GetWidth());
+        const u32 copy_height = std::min(new_height, old_tex->GetHeight());
+        if (type == GPUTexture::Type::RenderTarget)
+          ClearRenderTarget(new_tex.get(), 0);
+
+        if (old_tex->GetFormat() == new_tex->GetFormat())
+          CopyTextureRegion(new_tex.get(), 0, 0, 0, 0, old_tex, 0, 0, 0, 0, copy_width, copy_height);
+      }
     }
-    else if (old_tex->GetState() == GPUTexture::State::Dirty)
+    else
     {
-      const u32 copy_width = std::min(new_width, old_tex->GetWidth());
-      const u32 copy_height = std::min(new_height, old_tex->GetHeight());
+      // If we're expecting data to be there, make sure to clear it.
       if (type == GPUTexture::Type::RenderTarget)
         ClearRenderTarget(new_tex.get(), 0);
-      CopyTextureRegion(new_tex.get(), 0, 0, 0, 0, old_tex, 0, 0, 0, 0, copy_width, copy_height);
     }
-  }
-  else if (preserve)
-  {
-    // If we're expecting data to be there, make sure to clear it.
-    if (type == GPUTexture::Type::RenderTarget)
-      ClearRenderTarget(new_tex.get(), 0);
   }
 
   RecycleTexture(std::move(*tex));
@@ -1124,40 +1199,32 @@ bool GPUDevice::ResizeTexture(std::unique_ptr<GPUTexture>* tex, u32 new_width, u
   return true;
 }
 
-bool GPUDevice::ShouldSkipPresentingFrame()
+bool GPUDevice::ResizeTexture(std::unique_ptr<GPUTexture>* tex, u32 new_width, u32 new_height, GPUTexture::Type type,
+                              GPUTextureFormat format, GPUTexture::Flags flags, const void* replace_data,
+                              u32 replace_data_pitch, Error* error /* = nullptr */)
 {
-  // Only needed with FIFO. But since we're so fast, we allow it always.
-  if (!m_allow_present_throttle)
+  GPUTexture* old_tex = tex->get();
+  if (old_tex && old_tex->GetWidth() == new_width && old_tex->GetHeight() == new_height && old_tex->GetType() == type &&
+      old_tex->GetFormat() == format && old_tex->GetFlags() == flags)
+  {
+    if (replace_data && !old_tex->Update(0, 0, new_width, new_height, replace_data, replace_data_pitch))
+    {
+      Error::SetStringView(error, "Texture update failed.");
+      return false;
+    }
+
+    return true;
+  }
+
+  DebugAssert(!old_tex || (old_tex->GetLayers() == 1 && old_tex->GetLevels() == 1 && old_tex->GetSamples() == 1));
+  std::unique_ptr<GPUTexture> new_tex =
+    FetchTexture(new_width, new_height, 1, 1, 1, type, format, flags, replace_data, replace_data_pitch, error);
+  if (!new_tex) [[unlikely]]
     return false;
 
-  const float throttle_rate = (m_window_info.surface_refresh_rate > 0.0f) ? m_window_info.surface_refresh_rate : 60.0f;
-  const float throttle_period = 1.0f / throttle_rate;
-
-  const u64 now = Common::Timer::GetCurrentValue();
-  const double diff = Common::Timer::ConvertValueToSeconds(now - m_last_frame_displayed_time);
-  if (diff < throttle_period)
-    return true;
-
-  m_last_frame_displayed_time = now;
-  return false;
-}
-
-void GPUDevice::ThrottlePresentation()
-{
-  const float throttle_rate = (m_window_info.surface_refresh_rate > 0.0f) ? m_window_info.surface_refresh_rate : 60.0f;
-
-  const u64 sleep_period = Common::Timer::ConvertNanosecondsToValue(1e+9f / static_cast<double>(throttle_rate));
-  const u64 current_ts = Common::Timer::GetCurrentValue();
-
-  // Allow it to fall behind/run ahead up to 2*period. Sleep isn't that precise, plus we need to
-  // allow time for the actual rendering.
-  const u64 max_variance = sleep_period * 2;
-  if (static_cast<u64>(std::abs(static_cast<s64>(current_ts - m_last_frame_displayed_time))) > max_variance)
-    m_last_frame_displayed_time = current_ts + sleep_period;
-  else
-    m_last_frame_displayed_time += sleep_period;
-
-  Common::Timer::SleepUntil(m_last_frame_displayed_time, false);
+  RecycleTexture(std::move(*tex));
+  *tex = std::move(new_tex);
+  return true;
 }
 
 bool GPUDevice::SetGPUTimingEnabled(bool enabled)
@@ -1173,6 +1240,99 @@ float GPUDevice::GetAndResetAccumulatedGPUTime()
 void GPUDevice::ResetStatistics()
 {
   s_stats = {};
+}
+
+GPUDriverType GPUDevice::GuessDriverType(u32 pci_vendor_id, std::string_view vendor_name, std::string_view adapter_name)
+{
+#define ACHECK(name) (adapter_name.find(name) != std::string_view::npos)
+#define VCHECK(name) (vendor_name.find(name) != std::string_view::npos)
+#define MESA_CHECK (ACHECK("Mesa") || VCHECK("Mesa"))
+
+  if (pci_vendor_id == 0x1002 || pci_vendor_id == 0x1022 || VCHECK("Advanced Micro Devices") ||
+      VCHECK("ATI Technologies Inc.") || VCHECK("ATI"))
+  {
+    INFO_LOG("AMD GPU detected.");
+    return MESA_CHECK ? GPUDriverType::AMDMesa : GPUDriverType::AMDProprietary;
+  }
+  else if (pci_vendor_id == 0x10DE || VCHECK("NVIDIA Corporation"))
+  {
+    INFO_LOG("NVIDIA GPU detected.");
+    return MESA_CHECK ? GPUDriverType::NVIDIAMesa : GPUDriverType::NVIDIAProprietary;
+  }
+  else if (pci_vendor_id == 0x8086 || VCHECK("Intel"))
+  {
+    INFO_LOG("Intel GPU detected.");
+    return MESA_CHECK ? GPUDriverType::IntelMesa : GPUDriverType::IntelProprietary;
+  }
+  else if (pci_vendor_id == 0x5143 || VCHECK("Qualcomm") || ACHECK("Adreno"))
+  {
+    INFO_LOG("Qualcomm GPU detected.");
+    return MESA_CHECK ? GPUDriverType::QualcommMesa : GPUDriverType::QualcommProprietary;
+  }
+  else if (pci_vendor_id == 0x13B5 || VCHECK("ARM") || ACHECK("Mali"))
+  {
+    INFO_LOG("ARM GPU detected.");
+    return MESA_CHECK ? GPUDriverType::ARMMesa : GPUDriverType::ARMProprietary;
+  }
+  else if (pci_vendor_id == 0x1010 || VCHECK("Imagination Technologies") || ACHECK("PowerVR"))
+  {
+    INFO_LOG("Imagination GPU detected.");
+    return MESA_CHECK ? GPUDriverType::ImaginationMesa : GPUDriverType::ImaginationProprietary;
+  }
+  else if (pci_vendor_id == 0x14E4 || VCHECK("Broadcom") || ACHECK("VideoCore"))
+  {
+    INFO_LOG("Broadcom GPU detected.");
+    return MESA_CHECK ? GPUDriverType::BroadcomMesa : GPUDriverType::BroadcomProprietary;
+  }
+  else
+  {
+    WARNING_LOG("Unknown GPU vendor with PCI ID 0x{:04X}, adapter='{}', vendor='{}'", pci_vendor_id, adapter_name,
+                vendor_name);
+    return GPUDriverType::Unknown;
+  }
+
+#undef MESA_CHECK
+#undef VCHECK
+#undef ACHECK
+}
+
+void GPUDevice::SetDriverType(GPUDriverType type)
+{
+  m_driver_type = type;
+
+#define NTENTRY(n)                                                                                                     \
+  {                                                                                                                    \
+    GPUDriverType::n, #n                                                                                               \
+  }
+  static constexpr const std::pair<GPUDriverType, const char*> name_table[] = {
+    NTENTRY(Unknown),
+    NTENTRY(AMDProprietary),
+    NTENTRY(AMDMesa),
+    NTENTRY(IntelProprietary),
+    NTENTRY(IntelMesa),
+    NTENTRY(NVIDIAProprietary),
+    NTENTRY(NVIDIAMesa),
+    NTENTRY(AppleProprietary),
+    NTENTRY(AppleMesa),
+    NTENTRY(DozenMesa),
+
+    NTENTRY(ImaginationProprietary),
+    NTENTRY(ImaginationMesa),
+    NTENTRY(ARMProprietary),
+    NTENTRY(ARMMesa),
+    NTENTRY(QualcommProprietary),
+    NTENTRY(QualcommMesa),
+    NTENTRY(BroadcomProprietary),
+    NTENTRY(BroadcomMesa),
+
+    NTENTRY(LLVMPipe),
+    NTENTRY(SwiftShader),
+  };
+#undef NTENTRY
+
+  const auto iter =
+    std::find_if(std::begin(name_table), std::end(name_table), [&type](const auto& it) { return it.first == type; });
+  INFO_LOG("Driver type set to {}.", (iter == std::end(name_table)) ? name_table[0].second : iter->second);
 }
 
 std::unique_ptr<GPUDevice> GPUDevice::CreateDeviceForAPI(RenderAPI api)
@@ -1208,76 +1368,19 @@ std::unique_ptr<GPUDevice> GPUDevice::CreateDeviceForAPI(RenderAPI api)
   }
 }
 
-#ifndef _WIN32
-// Use a duckstation-suffixed shaderc name to avoid conflicts and loading another shaderc, e.g. from the Vulkan SDK.
-#define SHADERC_LIB_NAME "shaderc_ds"
-#else
-#define SHADERC_LIB_NAME "shaderc_shared"
-#endif
-
-#define SHADERC_FUNCTIONS(X)                                                                                           \
-  X(shaderc_compiler_initialize)                                                                                       \
-  X(shaderc_compiler_release)                                                                                          \
-  X(shaderc_compile_options_initialize)                                                                                \
-  X(shaderc_compile_options_release)                                                                                   \
-  X(shaderc_compile_options_set_source_language)                                                                       \
-  X(shaderc_compile_options_set_generate_debug_info)                                                                   \
-  X(shaderc_compile_options_set_optimization_level)                                                                    \
-  X(shaderc_compile_options_set_target_env)                                                                            \
-  X(shaderc_compilation_status_to_string)                                                                              \
-  X(shaderc_compile_into_spv)                                                                                          \
-  X(shaderc_result_release)                                                                                            \
-  X(shaderc_result_get_length)                                                                                         \
-  X(shaderc_result_get_num_warnings)                                                                                   \
-  X(shaderc_result_get_bytes)                                                                                          \
-  X(shaderc_result_get_compilation_status)                                                                             \
-  X(shaderc_result_get_error_message)                                                                                  \
-  X(shaderc_optimize_spv)
-
-#define SPIRV_CROSS_FUNCTIONS(X)                                                                                       \
-  X(spvc_context_create)                                                                                               \
-  X(spvc_context_destroy)                                                                                              \
-  X(spvc_context_set_error_callback)                                                                                   \
-  X(spvc_context_parse_spirv)                                                                                          \
-  X(spvc_context_create_compiler)                                                                                      \
-  X(spvc_compiler_create_compiler_options)                                                                             \
-  X(spvc_compiler_create_shader_resources)                                                                             \
-  X(spvc_compiler_get_execution_model)                                                                                 \
-  X(spvc_compiler_options_set_bool)                                                                                    \
-  X(spvc_compiler_options_set_uint)                                                                                    \
-  X(spvc_compiler_install_compiler_options)                                                                            \
-  X(spvc_compiler_require_extension)                                                                                   \
-  X(spvc_compiler_compile)                                                                                             \
-  X(spvc_resources_get_resource_list_for_type)
-
-#ifdef _WIN32
-#define SPIRV_CROSS_HLSL_FUNCTIONS(X) X(spvc_compiler_hlsl_add_resource_binding)
-#else
-#define SPIRV_CROSS_HLSL_FUNCTIONS(X)
-#endif
-#ifdef __APPLE__
-#define SPIRV_CROSS_MSL_FUNCTIONS(X) X(spvc_compiler_msl_add_resource_binding)
-#else
-#define SPIRV_CROSS_MSL_FUNCTIONS(X)
-#endif
-
-// TODO: NOT thread safe, yet.
 namespace dyn_libs {
-static bool OpenShaderc(Error* error);
 static void CloseShaderc();
-static bool OpenSpirvCross(Error* error);
 static void CloseSpirvCross();
-static void CloseAll();
 
+static std::mutex s_dyn_mutex;
 static DynamicLibrary s_shaderc_library;
 static DynamicLibrary s_spirv_cross_library;
 
-static shaderc_compiler_t s_shaderc_compiler = nullptr;
+shaderc_compiler_t g_shaderc_compiler = nullptr;
 
-static bool s_close_registered = false;
-
-#define ADD_FUNC(F) static decltype(&::F) F;
-SHADERC_FUNCTIONS(ADD_FUNC)
+// TODO: Merge all of these into a struct?
+#define ADD_FUNC(F) decltype(&::F) F;
+DYN_SHADERC_FUNCTIONS(ADD_FUNC)
 SPIRV_CROSS_FUNCTIONS(ADD_FUNC)
 SPIRV_CROSS_HLSL_FUNCTIONS(ADD_FUNC)
 SPIRV_CROSS_MSL_FUNCTIONS(ADD_FUNC)
@@ -1287,10 +1390,11 @@ SPIRV_CROSS_MSL_FUNCTIONS(ADD_FUNC)
 
 bool dyn_libs::OpenShaderc(Error* error)
 {
+  const std::unique_lock lock(s_dyn_mutex);
   if (s_shaderc_library.IsOpen())
     return true;
 
-  const std::string libname = DynamicLibrary::GetVersionedFilename(SHADERC_LIB_NAME);
+  const std::string libname = DynamicLibrary::GetVersionedFilename("shaderc_shared");
   if (!s_shaderc_library.Open(libname.c_str(), error))
   {
     Error::AddPrefix(error, "Failed to load shaderc: ");
@@ -1305,21 +1409,15 @@ bool dyn_libs::OpenShaderc(Error* error)
     return false;                                                                                                      \
   }
 
-  SHADERC_FUNCTIONS(LOAD_FUNC)
+  DYN_SHADERC_FUNCTIONS(LOAD_FUNC)
 #undef LOAD_FUNC
 
-  s_shaderc_compiler = shaderc_compiler_initialize();
-  if (!s_shaderc_compiler)
+  g_shaderc_compiler = shaderc_compiler_initialize();
+  if (!g_shaderc_compiler)
   {
     Error::SetStringView(error, "shaderc_compiler_initialize() failed");
     CloseShaderc();
     return false;
-  }
-
-  if (!s_close_registered)
-  {
-    s_close_registered = true;
-    std::atexit(&dyn_libs::CloseAll);
   }
 
   return true;
@@ -1327,14 +1425,20 @@ bool dyn_libs::OpenShaderc(Error* error)
 
 void dyn_libs::CloseShaderc()
 {
-  if (s_shaderc_compiler)
+  if (!s_shaderc_library.IsOpen())
   {
-    shaderc_compiler_release(s_shaderc_compiler);
-    s_shaderc_compiler = nullptr;
+    DebugAssert(!g_shaderc_compiler);
+    return;
+  }
+
+  if (g_shaderc_compiler)
+  {
+    shaderc_compiler_release(g_shaderc_compiler);
+    g_shaderc_compiler = nullptr;
   }
 
 #define UNLOAD_FUNC(F) F = nullptr;
-  SHADERC_FUNCTIONS(UNLOAD_FUNC)
+  DYN_SHADERC_FUNCTIONS(UNLOAD_FUNC)
 #undef UNLOAD_FUNC
 
   s_shaderc_library.Close();
@@ -1342,10 +1446,11 @@ void dyn_libs::CloseShaderc()
 
 bool dyn_libs::OpenSpirvCross(Error* error)
 {
+  const std::unique_lock lock(s_dyn_mutex);
   if (s_spirv_cross_library.IsOpen())
     return true;
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__ANDROID__)
   // SPVC's build on Windows doesn't spit out a versioned DLL.
   const std::string libname = DynamicLibrary::GetVersionedFilename("spirv-cross-c-shared");
 #else
@@ -1361,7 +1466,7 @@ bool dyn_libs::OpenSpirvCross(Error* error)
   if (!s_spirv_cross_library.GetSymbol(#F, &F))                                                                        \
   {                                                                                                                    \
     Error::SetStringFmt(error, "Failed to find function {}", #F);                                                      \
-    CloseShaderc();                                                                                                    \
+    CloseSpirvCross();                                                                                                 \
     return false;                                                                                                      \
   }
 
@@ -1370,17 +1475,14 @@ bool dyn_libs::OpenSpirvCross(Error* error)
   SPIRV_CROSS_MSL_FUNCTIONS(LOAD_FUNC)
 #undef LOAD_FUNC
 
-  if (!s_close_registered)
-  {
-    s_close_registered = true;
-    std::atexit(&dyn_libs::CloseAll);
-  }
-
   return true;
 }
 
 void dyn_libs::CloseSpirvCross()
 {
+  if (!s_spirv_cross_library.IsOpen())
+    return;
+
 #define UNLOAD_FUNC(F) F = nullptr;
   SPIRV_CROSS_FUNCTIONS(UNLOAD_FUNC)
   SPIRV_CROSS_HLSL_FUNCTIONS(UNLOAD_FUNC)
@@ -1390,16 +1492,10 @@ void dyn_libs::CloseSpirvCross()
   s_spirv_cross_library.Close();
 }
 
-void dyn_libs::CloseAll()
-{
-  CloseShaderc();
-  CloseSpirvCross();
-}
-
 #undef SPIRV_CROSS_HLSL_FUNCTIONS
 #undef SPIRV_CROSS_MSL_FUNCTIONS
 #undef SPIRV_CROSS_FUNCTIONS
-#undef SHADERC_FUNCTIONS
+#undef DYN_SHADERC_FUNCTIONS
 
 std::optional<DynamicHeapArray<u8>> GPUDevice::OptimizeVulkanSpv(const std::span<const u8> spirv, Error* error)
 {
@@ -1436,7 +1532,7 @@ std::optional<DynamicHeapArray<u8>> GPUDevice::OptimizeVulkanSpv(const std::span
   dyn_libs::shaderc_compile_options_set_optimization_level(options, shaderc_optimization_level_performance);
 
   const shaderc_compilation_result_t result =
-    dyn_libs::shaderc_optimize_spv(dyn_libs::s_shaderc_compiler, spirv.data(), spirv.size(), options);
+    dyn_libs::shaderc_optimize_spv(dyn_libs::g_shaderc_compiler, spirv.data(), spirv.size(), options);
   const shaderc_compilation_status status =
     result ? dyn_libs::shaderc_result_get_compilation_status(result) : shaderc_compilation_status_internal_error;
   if (status != shaderc_compilation_status_success)
@@ -1491,7 +1587,7 @@ bool GPUDevice::CompileGLSLShaderToVulkanSpv(GPUShaderStage stage, GPUShaderLang
     options, optimization ? shaderc_optimization_level_performance : shaderc_optimization_level_zero);
 
   const shaderc_compilation_result_t result =
-    dyn_libs::shaderc_compile_into_spv(dyn_libs::s_shaderc_compiler, source.data(), source.length(),
+    dyn_libs::shaderc_compile_into_spv(dyn_libs::g_shaderc_compiler, source.data(), source.length(),
                                        stage_kinds[static_cast<size_t>(stage)], "source", entry_point, options);
   const shaderc_compilation_status status =
     result ? dyn_libs::shaderc_result_get_compilation_status(result) : shaderc_compilation_status_internal_error;
@@ -1581,12 +1677,16 @@ bool GPUDevice::TranslateVulkanSpvToLanguage(const std::span<const u8> spirv, GP
   }
 
   // Need to know if there's UBOs for mapping.
-  const spvc_reflected_resource *ubos, *textures;
-  size_t ubos_count, textures_count;
+  const spvc_reflected_resource *ubos, *push_constants, *textures, *images;
+  size_t ubos_count, push_constants_count, textures_count, images_count;
   if ((sres = dyn_libs::spvc_resources_get_resource_list_for_type(resources, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, &ubos,
                                                                   &ubos_count)) != SPVC_SUCCESS ||
+      (sres = dyn_libs::spvc_resources_get_resource_list_for_type(
+         resources, SPVC_RESOURCE_TYPE_PUSH_CONSTANT, &push_constants, &push_constants_count)) != SPVC_SUCCESS ||
       (sres = dyn_libs::spvc_resources_get_resource_list_for_type(resources, SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
-                                                                  &textures, &textures_count)) != SPVC_SUCCESS)
+                                                                  &textures, &textures_count)) != SPVC_SUCCESS ||
+      (sres = dyn_libs::spvc_resources_get_resource_list_for_type(resources, SPVC_RESOURCE_TYPE_STORAGE_IMAGE, &images,
+                                                                  &images_count)) != SPVC_SUCCESS)
   {
     Error::SetStringFmt(error, "spvc_resources_get_resource_list_for_type() failed: {}", static_cast<int>(sres));
     return {};
@@ -1595,12 +1695,39 @@ bool GPUDevice::TranslateVulkanSpvToLanguage(const std::span<const u8> spirv, GP
   [[maybe_unused]] const SpvExecutionModel execmodel = dyn_libs::spvc_compiler_get_execution_model(scompiler);
   [[maybe_unused]] static constexpr u32 UBO_DESCRIPTOR_SET = 0;
   [[maybe_unused]] static constexpr u32 TEXTURE_DESCRIPTOR_SET = 1;
+  [[maybe_unused]] static constexpr u32 IMAGE_DESCRIPTOR_SET = 2;
 
   switch (target_language)
   {
 #ifdef _WIN32
     case GPUShaderLanguage::HLSL:
     {
+      if (execmodel == SpvExecutionModelVertex)
+      {
+        const spvc_reflected_resource* inputs;
+        size_t inputs_count;
+        if ((sres = dyn_libs::spvc_resources_get_resource_list_for_type(resources, SPVC_RESOURCE_TYPE_STAGE_INPUT,
+                                                                        &inputs, &inputs_count)) != SPVC_SUCCESS)
+        {
+          Error::SetStringFmt(error, "spvc_resources_get_resource_list_for_type() for vertex attributes failed: {}",
+                              static_cast<int>(sres));
+          return {};
+        }
+
+        for (const spvc_reflected_resource& res : std::span<const spvc_reflected_resource>(inputs, inputs_count))
+        {
+          const unsigned location = dyn_libs::spvc_compiler_get_decoration(scompiler, res.id, SpvDecorationLocation);
+          const TinyString name = TinyString::from_format("ATTR{}", location);
+          const spvc_hlsl_vertex_attribute_remap va = {.location = location, .semantic = name.c_str()};
+          if ((sres = dyn_libs::spvc_compiler_hlsl_add_vertex_attribute_remap(scompiler, &va, 1)) != SPVC_SUCCESS)
+          {
+            Error::SetStringFmt(error, "spvc_compiler_hlsl_add_vertex_attribute_remap() failed: {}",
+                                static_cast<int>(sres));
+            return {};
+          }
+        }
+      }
+
       if ((sres = dyn_libs::spvc_compiler_options_set_uint(soptions, SPVC_COMPILER_OPTION_HLSL_SHADER_MODEL,
                                                            target_version)) != SPVC_SUCCESS)
       {
@@ -1633,10 +1760,31 @@ bool GPUDevice::TranslateVulkanSpvToLanguage(const std::span<const u8> spirv, GP
         const spvc_hlsl_resource_binding rb = {.stage = execmodel,
                                                .desc_set = UBO_DESCRIPTOR_SET,
                                                .binding = 0,
-                                               .cbv = {.register_space = 0, .register_binding = 0}};
+                                               .cbv = {.register_space = 0, .register_binding = 0},
+                                               .uav = {},
+                                               .srv = {},
+                                               .sampler = {}};
         if ((sres = dyn_libs::spvc_compiler_hlsl_add_resource_binding(scompiler, &rb)) != SPVC_SUCCESS)
         {
-          Error::SetStringFmt(error, "spvc_compiler_hlsl_add_resource_binding() failed: {}", static_cast<int>(sres));
+          Error::SetStringFmt(error, "spvc_compiler_hlsl_add_resource_binding() for UBO failed: {}",
+                              static_cast<int>(sres));
+          return {};
+        }
+      }
+
+      if (push_constants_count > 0)
+      {
+        const spvc_hlsl_resource_binding rb = {.stage = execmodel,
+                                               .desc_set = SPVC_HLSL_PUSH_CONSTANT_DESC_SET,
+                                               .binding = SPVC_HLSL_PUSH_CONSTANT_BINDING,
+                                               .cbv = {.register_space = 0, .register_binding = 1},
+                                               .uav = {},
+                                               .srv = {},
+                                               .sampler = {}};
+        if ((sres = dyn_libs::spvc_compiler_hlsl_add_resource_binding(scompiler, &rb)) != SPVC_SUCCESS)
+        {
+          Error::SetStringFmt(error, "spvc_compiler_hlsl_add_resource_binding() for push constant failed: {}",
+                              static_cast<int>(sres));
           return {};
         }
       }
@@ -1645,14 +1793,39 @@ bool GPUDevice::TranslateVulkanSpvToLanguage(const std::span<const u8> spirv, GP
       {
         for (u32 i = 0; i < textures_count; i++)
         {
+          const u32 binding = dyn_libs::spvc_compiler_get_decoration(scompiler, textures[i].id, SpvDecorationBinding);
+
           const spvc_hlsl_resource_binding rb = {.stage = execmodel,
                                                  .desc_set = TEXTURE_DESCRIPTOR_SET,
-                                                 .binding = i,
-                                                 .srv = {.register_space = 0, .register_binding = i},
-                                                 .sampler = {.register_space = 0, .register_binding = i}};
+                                                 .binding = binding,
+                                                 .cbv = {},
+                                                 .uav = {},
+                                                 .srv = {.register_space = 0, .register_binding = binding},
+                                                 .sampler = {.register_space = 0, .register_binding = binding}};
           if ((sres = dyn_libs::spvc_compiler_hlsl_add_resource_binding(scompiler, &rb)) != SPVC_SUCCESS)
           {
-            Error::SetStringFmt(error, "spvc_compiler_hlsl_add_resource_binding() failed: {}", static_cast<int>(sres));
+            Error::SetStringFmt(error, "spvc_compiler_hlsl_add_resource_binding() for texture failed: {}",
+                                static_cast<int>(sres));
+            return {};
+          }
+        }
+      }
+
+      if (stage == GPUShaderStage::Compute)
+      {
+        for (u32 i = 0; i < images_count; i++)
+        {
+          const spvc_hlsl_resource_binding rb = {.stage = execmodel,
+                                                 .desc_set = IMAGE_DESCRIPTOR_SET,
+                                                 .binding = i,
+                                                 .cbv = {},
+                                                 .uav = {.register_space = 0, .register_binding = i},
+                                                 .srv = {},
+                                                 .sampler = {}};
+          if ((sres = dyn_libs::spvc_compiler_hlsl_add_resource_binding(scompiler, &rb)) != SPVC_SUCCESS)
+          {
+            Error::SetStringFmt(error, "spvc_compiler_hlsl_add_resource_binding() for image failed: {}",
+                                static_cast<int>(sres));
             return {};
           }
         }
@@ -1691,6 +1864,29 @@ bool GPUDevice::TranslateVulkanSpvToLanguage(const std::span<const u8> spirv, GP
           static_cast<int>(sres));
         return {};
       }
+
+      if (ubos_count > 0)
+      {
+        // Set name of UBO block to match our shaders, so that drivers without binding info can still find it.
+        dyn_libs::spvc_compiler_set_name(scompiler, ubos[0].id, "UBOBlock");
+      }
+
+      if (push_constants_count > 0)
+      {
+        // Set name of push constant block to match our shaders, so that drivers without binding info can still find it.
+        dyn_libs::spvc_compiler_set_name(scompiler, push_constants[0].id, "PushConstants");
+        dyn_libs::spvc_compiler_set_decoration(scompiler, push_constants[0].id, SpvDecorationBinding, 1);
+
+        if ((sres = dyn_libs::spvc_compiler_options_set_bool(
+               soptions, SPVC_COMPILER_OPTION_GLSL_EMIT_PUSH_CONSTANT_AS_UNIFORM_BUFFER, SPVC_TRUE)) != SPVC_SUCCESS)
+        {
+          Error::SetStringFmt(
+            error,
+            "spvc_compiler_options_set_bool(SPVC_COMPILER_OPTION_GLSL_EMIT_PUSH_CONSTANT_AS_UNIFORM_BUFFER) failed: {}",
+            static_cast<int>(sres));
+          return {};
+        }
+      }
     }
     break;
 #endif
@@ -1725,35 +1921,52 @@ bool GPUDevice::TranslateVulkanSpvToLanguage(const std::span<const u8> spirv, GP
         return {};
       }
 
-      if (stage == GPUShaderStage::Fragment)
+      const auto add_msl_resource_binding = [&scompiler, &execmodel, &error](unsigned desc_set, unsigned binding,
+                                                                             unsigned msl_buffer, unsigned msl_texture,
+                                                                             unsigned msl_sampler) {
+        const spvc_msl_resource_binding rb = {.stage = execmodel,
+                                              .desc_set = desc_set,
+                                              .binding = binding,
+                                              .msl_buffer = msl_buffer,
+                                              .msl_texture = msl_texture,
+                                              .msl_sampler = msl_sampler};
+
+        const spvc_result sres = dyn_libs::spvc_compiler_msl_add_resource_binding(scompiler, &rb);
+        if (sres != SPVC_SUCCESS)
+        {
+          Error::SetStringFmt(error, "spvc_compiler_msl_add_resource_binding() failed: {}", static_cast<int>(sres));
+          return false;
+        }
+
+        return true;
+      };
+
+      // push constant
+      if (!add_msl_resource_binding(SPVC_MSL_PUSH_CONSTANT_DESC_SET, SPVC_MSL_PUSH_CONSTANT_BINDING, 2, 0, 0))
+        return false;
+
+      if (stage == GPUShaderStage::Fragment || stage == GPUShaderStage::Compute)
       {
         for (u32 i = 0; i < MAX_TEXTURE_SAMPLERS; i++)
         {
-          const spvc_msl_resource_binding rb = {.stage = SpvExecutionModelFragment,
-                                                .desc_set = 1,
-                                                .binding = i,
-                                                .msl_buffer = i,
-                                                .msl_texture = i,
-                                                .msl_sampler = i};
-
-          if ((sres = dyn_libs::spvc_compiler_msl_add_resource_binding(scompiler, &rb)) != SPVC_SUCCESS)
-          {
-            Error::SetStringFmt(error, "spvc_compiler_msl_add_resource_binding() failed: {}", static_cast<int>(sres));
-            return {};
-          }
+          // Add +1 for the buffer binding since we use this for texture buffers.
+          if (!add_msl_resource_binding(TEXTURE_DESCRIPTOR_SET, i, i + 1, i, i))
+            return false;
         }
+      }
 
-        if (!m_features.framebuffer_fetch)
+      if (stage == GPUShaderStage::Fragment && !m_features.framebuffer_fetch)
+      {
+        if (!add_msl_resource_binding(2, 0, 0, MAX_TEXTURE_SAMPLERS, 0))
+          return false;
+      }
+
+      if (stage == GPUShaderStage::Compute)
+      {
+        for (u32 i = 0; i < MAX_IMAGE_RENDER_TARGETS; i++)
         {
-          const spvc_msl_resource_binding rb = {
-            .stage = SpvExecutionModelFragment, .desc_set = 2, .binding = 0, .msl_texture = MAX_TEXTURE_SAMPLERS};
-
-          if ((sres = dyn_libs::spvc_compiler_msl_add_resource_binding(scompiler, &rb)) != SPVC_SUCCESS)
-          {
-            Error::SetStringFmt(error, "spvc_compiler_msl_add_resource_binding() for FB failed: {}",
-                                static_cast<int>(sres));
-            return {};
-          }
+          if (!add_msl_resource_binding(2, i, i, i, i))
+            return false;
         }
       }
     }
@@ -1857,4 +2070,16 @@ std::unique_ptr<GPUShader> GPUDevice::TranspileAndCreateShaderFromSource(
 #endif
 
   return CreateShaderFromSource(stage, target_language, dest_source, entry_point, out_binary, error);
+}
+
+void GPUDevice::UnloadDynamicLibraries()
+{
+  Assert(!g_gpu_device);
+
+  dyn_libs::CloseSpirvCross();
+  dyn_libs::CloseShaderc();
+
+#ifdef ENABLE_VULKAN
+  VulkanLoader::DestroyVulkanInstance();
+#endif
 }

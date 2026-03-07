@@ -1,10 +1,13 @@
 #include "memoryviewwidget.h"
+#include "qthost.h"
 
 #include <QtGui/QKeyEvent>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
 #include <QtWidgets/QScrollBar>
 #include <cstring>
+
+#include "moc_memoryviewwidget.cpp"
 
 MemoryViewWidget::MemoryViewWidget(QWidget* parent /* = nullptr */, size_t address_offset /* = 0 */,
                                    void* data_ptr /* = nullptr */, size_t data_size /* = 0 */,
@@ -44,6 +47,17 @@ void MemoryViewWidget::updateMetrics()
   const QFontMetrics fm(fontMetrics());
   m_char_width = fm.horizontalAdvance(QChar('0'));
   m_char_height = fm.height();
+}
+
+size_t MemoryViewWidget::selectedAddress() const
+{
+  return (m_selected_address != INVALID_SELECTED_ADDRESS) ? (m_selected_address + m_address_offset) :
+                                                            INVALID_SELECTED_ADDRESS;
+}
+
+size_t MemoryViewWidget::topAddress() const
+{
+  return static_cast<size_t>(verticalScrollBar()->value()) * m_bytes_per_line + m_address_offset;
 }
 
 void MemoryViewWidget::setData(size_t address_offset, void* data_ptr, size_t data_size, bool data_editable,
@@ -120,9 +134,9 @@ void MemoryViewWidget::mouseMoveEvent(QMouseEvent* event)
 
 void MemoryViewWidget::keyPressEvent(QKeyEvent* event)
 {
+  const int key = event->key();
   if (m_selected_address < m_data_size && m_data_editable)
   {
-    const int key = event->key();
     if (key == Qt::Key_Backspace)
     {
       if (m_selected_address > 0)
@@ -130,6 +144,7 @@ void MemoryViewWidget::keyPressEvent(QKeyEvent* event)
         m_selected_address--;
         m_editing_nibble = -1;
         forceRefresh();
+        notifySelectedAddressChanged();
       }
     }
     else
@@ -152,6 +167,7 @@ void MemoryViewWidget::keyPressEvent(QKeyEvent* event)
 
           m_selected_address = std::min(m_selected_address + 1, m_data_size - 1);
           forceRefresh();
+          notifySelectedAddressChanged();
         }
         else
         {
@@ -169,8 +185,8 @@ void MemoryViewWidget::keyPressEvent(QKeyEvent* event)
             expandCurrentDataToInclude(m_selected_address);
 
             unsigned char* pdata = static_cast<unsigned char*>(m_data) + m_selected_address;
-            const unsigned char new_value =
-              (*pdata & ~(0xf0 >> (m_editing_nibble * 4))) | (nibble << ((1 - m_editing_nibble) * 4));
+            const unsigned char new_value = (*pdata & ~(0xf0 >> (m_editing_nibble * 4))) |
+                                            (static_cast<unsigned char>(nibble) << ((1 - m_editing_nibble) * 4));
             if (*pdata != new_value)
             {
               *pdata = new_value;
@@ -182,6 +198,7 @@ void MemoryViewWidget::keyPressEvent(QKeyEvent* event)
             {
               m_editing_nibble = -1;
               m_selected_address = std::min(m_selected_address + 1, m_data_size - 1);
+              notifySelectedAddressChanged();
             }
 
             forceRefresh();
@@ -189,6 +206,44 @@ void MemoryViewWidget::keyPressEvent(QKeyEvent* event)
         }
       }
     }
+  }
+
+  if (m_data_size > 0 &&
+      ((key >= Qt::Key_Left && key <= Qt::Key_Down) || key == Qt::Key_PageUp || key == Qt::Key_PageDown))
+  {
+    if (key == Qt::Key_Left)
+    {
+      m_selected_address = (m_selected_address > 0) ? (m_selected_address - 1) : 0;
+    }
+    else if (key == Qt::Key_Right)
+    {
+      m_selected_address = std::min(m_selected_address + 1, m_data_size - 1);
+    }
+    else if (key == Qt::Key_Up)
+    {
+      m_selected_address = (m_selected_address < 16) ? m_selected_address : (m_selected_address - 16);
+    }
+    else if (key == Qt::Key_Down)
+    {
+      m_selected_address = ((m_selected_address + 16) < m_data_size) ? (m_selected_address + 16) : m_selected_address;
+    }
+    else if (key == Qt::Key_PageUp)
+    {
+      m_selected_address = (m_selected_address >= (m_rows_visible * m_bytes_per_line)) ?
+                             (m_selected_address - (m_rows_visible * m_bytes_per_line)) :
+                             0;
+    }
+    else if (key == Qt::Key_PageDown)
+    {
+      m_selected_address = std::min((m_selected_address + (m_rows_visible * m_bytes_per_line)), m_data_size - 1);
+    }
+
+    m_editing_nibble = -1;
+    forceRefresh();
+    expandCurrentDataToInclude(m_selected_address);
+    adjustScrollToInclude(m_selected_address);
+    notifySelectedAddressChanged();
+    return;
   }
 
   QAbstractScrollArea::keyPressEvent(event);
@@ -208,13 +263,13 @@ void MemoryViewWidget::paintEvent(QPaintEvent* event)
     return;
 
   const QPalette palette = viewport()->palette();
-  const bool dark = palette.windowText().color().value() > palette.window().color().value();
+  const bool dark = QtHost::IsDarkApplicationTheme();
   const QColor alt_fill_color =
     dark ? palette.color(QPalette::AlternateBase).darker(130) : palette.color(QPalette::AlternateBase).lighter(100);
   const QColor selected_color = dark ? palette.color(QPalette::Highlight) : QColor(190, 190, 190);
   const QColor text_color = palette.color(QPalette::WindowText);
   const QColor highlight_color(100, 100, 0);
-  const QColor edited_color(240, 30, 30);
+  const QColor edited_color = dark ? QColor(255, 80, 80) : QColor(191, 121, 20);
   const int offsetX = horizontalScrollBar()->value();
 
   int y = m_char_height;
@@ -243,7 +298,6 @@ void MemoryViewWidget::paintEvent(QPaintEvent* event)
   int x;
   int lx = addressWidth();
   painter.drawLine(lx - offsetX, 0, lx - offsetX, height());
-  y = m_char_height;
 
   // hex data
   const int HEX_CHAR_WIDTH = 4 * m_char_width;
@@ -412,6 +466,7 @@ void MemoryViewWidget::setSelection(size_t new_selection, bool new_ascii)
     m_selection_was_ascii = new_ascii;
     m_editing_nibble = -1;
     forceRefresh();
+    notifySelectedAddressChanged();
   }
 }
 
@@ -437,6 +492,18 @@ void MemoryViewWidget::expandCurrentDataToInclude(size_t offset)
   }
 }
 
+void MemoryViewWidget::adjustScrollToInclude(size_t offset)
+{
+  const int row = static_cast<int>(offset / m_bytes_per_line);
+  const int scroll_row = verticalScrollBar()->value();
+  ;
+  const int last_visible_row = scroll_row + m_rows_visible;
+  if (row < scroll_row)
+    verticalScrollBar()->setValue(row);
+  else if (row >= last_visible_row)
+    verticalScrollBar()->setValue(row - m_rows_visible + 1);
+}
+
 void MemoryViewWidget::saveCurrentData()
 {
   if (!m_data)
@@ -460,18 +527,13 @@ void MemoryViewWidget::forceRefresh()
 void MemoryViewWidget::adjustContent()
 {
   if (!m_data)
-  {
-    setEnabled(false);
     return;
-  }
-
-  setEnabled(true);
 
   int w = addressWidth() + hexWidth() + asciiWidth();
   horizontalScrollBar()->setRange(0, w - viewport()->width());
   horizontalScrollBar()->setPageStep(viewport()->width());
 
-  m_rows_visible = viewport()->height() / m_char_height;
+  m_rows_visible = (viewport()->height() - m_char_height) / m_char_height; // -1 for the header
   int val = verticalScrollBar()->value();
   m_start_offset = (size_t)val * m_bytes_per_line;
   m_end_offset = m_start_offset + m_rows_visible * m_bytes_per_line - 1;
@@ -486,4 +548,11 @@ void MemoryViewWidget::adjustContent()
   expandCurrentDataToInclude(m_end_offset);
 
   forceRefresh();
+
+  emit topAddressChanged(topAddress());
+}
+
+void MemoryViewWidget::notifySelectedAddressChanged()
+{
+  emit selectedAddressChanged(selectedAddress());
 }

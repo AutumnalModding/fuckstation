@@ -11,6 +11,15 @@ void Initialize();
 void Reset();
 void Shutdown();
 
+/// Returns true if PGXP state should be saved to memory save states.
+bool ShouldSavePGXPState();
+
+/// Returns memory usage to serialize additional PGXP state.
+size_t GetStateSize(bool enable_8mb_memory);
+
+/// Save/load additional PGXP state.
+void DoState(StateWrapper& sw);
+
 /// Vertex lookup from GPU side.
 bool GetPreciseVertex(u32 addr, u32 value, int x, int y, int xOffs, int yOffs, float* out_x, float* out_y,
                       float* out_w);
@@ -31,9 +40,11 @@ void CPU_LW(Instruction instr, u32 addr, u32 rtVal);
 void CPU_LH(Instruction instr, u32 addr, u32 rtVal);
 void CPU_LHU(Instruction instr, u32 addr, u32 rtVal);
 void CPU_LBx(Instruction instr, u32 addr, u32 rtVal);
+void CPU_LWx(Instruction instr, u32 addr, u32 rtVal);
 void CPU_SB(Instruction instr, u32 addr, u32 rtVal);
 void CPU_SH(Instruction instr, u32 addr, u32 rtVal);
 void CPU_SW(Instruction instr, u32 addr, u32 rtVal);
+void CPU_SWx(Instruction instr, u32 addr, u32 rtVal);
 void CPU_MOVE(u32 Rd, u32 Rs, u32 rsVal);
 void CPU_MOVE_Packed(u32 rd_and_rs, u32 rsVal);
 void CPU_ADDI(Instruction instr, u32 rsVal);
@@ -66,7 +77,7 @@ void CPU_MTC0(Instruction instr, u32 rdVal, u32 rtVal);
 
 // Utility functions.
 
-ALWAYS_INLINE static u32 PackMoveArgs(Reg rd, Reg rs)
+ALWAYS_INLINE u32 PackMoveArgs(Reg rd, Reg rs)
 {
   return (static_cast<u32>(rd) << 8) | static_cast<u32>(rs);
 }

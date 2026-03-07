@@ -1,14 +1,15 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "controllersettingswindow.h"
 #include "controllerbindingwidgets.h"
 #include "controllerglobalsettingswidget.h"
 #include "hotkeysettingswidget.h"
+#include "mainwindow.h"
 #include "qthost.h"
 
 #include "core/controller.h"
-#include "core/host.h"
+#include "core/core.h"
 
 #include "util/ini_settings_interface.h"
 #include "util/input_manager.h"
@@ -17,55 +18,29 @@
 #include "common/file_system.h"
 
 #include <QtWidgets/QInputDialog>
-#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QTextEdit>
 #include <array>
 
-static constexpr const std::array<char, 4> s_mtap_slot_names = {{'A', 'B', 'C', 'D'}};
+#include "moc_controllersettingswindow.cpp"
 
-ControllerSettingsWindow::ControllerSettingsWindow(SettingsInterface* game_sif /* = nullptr */,
-                                                   QWidget* parent /* = nullptr */)
-  : QWidget(parent), m_editing_settings_interface(game_sif)
+using namespace Qt::StringLiterals;
+
+ControllerSettingsWindow::ControllerSettingsWindow(INISettingsInterface* game_sif /* = nullptr */,
+                                                   bool edit_profiles /* = false */, QWidget* parent /* = nullptr */)
+  : QWidget(parent), m_editing_settings_interface(game_sif), m_editing_input_profiles(edit_profiles)
 {
   m_ui.setupUi(this);
+  m_ui.buttonBox->button(QDialogButtonBox::Close)->setDefault(true);
 
   setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
-
-  m_ui.settingsCategory->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
 
   connect(m_ui.settingsCategory, &QListWidget::currentRowChanged, this,
           &ControllerSettingsWindow::onCategoryCurrentRowChanged);
   connect(m_ui.buttonBox, &QDialogButtonBox::rejected, this, &ControllerSettingsWindow::close);
 
-  if (!game_sif)
+  if (!game_sif && !edit_profiles)
   {
-    refreshProfileList();
-
-    m_ui.editProfileLayout->removeWidget(m_ui.copyGlobalSettings);
-    delete m_ui.copyGlobalSettings;
-    m_ui.copyGlobalSettings = nullptr;
-
-    connect(m_ui.currentProfile, &QComboBox::currentIndexChanged, this,
-            &ControllerSettingsWindow::onCurrentProfileChanged);
-    connect(m_ui.newProfile, &QPushButton::clicked, this, &ControllerSettingsWindow::onNewProfileClicked);
-    connect(m_ui.applyProfile, &QPushButton::clicked, this, &ControllerSettingsWindow::onApplyProfileClicked);
-    connect(m_ui.deleteProfile, &QPushButton::clicked, this, &ControllerSettingsWindow::onDeleteProfileClicked);
-    connect(m_ui.restoreDefaults, &QPushButton::clicked, this, &ControllerSettingsWindow::onRestoreDefaultsClicked);
-
-    connect(g_emu_thread, &EmuThread::onInputDevicesEnumerated, this,
-            &ControllerSettingsWindow::onInputDevicesEnumerated);
-    connect(g_emu_thread, &EmuThread::onInputDeviceConnected, this, &ControllerSettingsWindow::onInputDeviceConnected);
-    connect(g_emu_thread, &EmuThread::onInputDeviceDisconnected, this,
-            &ControllerSettingsWindow::onInputDeviceDisconnected);
-    connect(g_emu_thread, &EmuThread::onVibrationMotorsEnumerated, this,
-            &ControllerSettingsWindow::onVibrationMotorsEnumerated);
-
-    // trigger a device enumeration to populate the device list
-    g_emu_thread->enumerateInputDevices();
-    g_emu_thread->enumerateVibrationMotors();
-  }
-  else
-  {
+    // editing global settings
     m_ui.editProfileLayout->removeWidget(m_ui.editProfileLabel);
     delete m_ui.editProfileLabel;
     m_ui.editProfileLabel = nullptr;
@@ -81,24 +56,65 @@ ControllerSettingsWindow::ControllerSettingsWindow(SettingsInterface* game_sif /
     m_ui.editProfileLayout->removeWidget(m_ui.deleteProfile);
     delete m_ui.deleteProfile;
     m_ui.deleteProfile = nullptr;
+    m_ui.editProfileLayout->removeWidget(m_ui.copyGlobalSettings);
+    delete m_ui.copyGlobalSettings;
+    m_ui.copyGlobalSettings = nullptr;
+
+    if (QPushButton* button = m_ui.buttonBox->button(QDialogButtonBox::RestoreDefaults))
+      connect(button, &QPushButton::clicked, this, &ControllerSettingsWindow::onRestoreDefaultsClicked);
+  }
+  else
+  {
+    if (QPushButton* button = m_ui.buttonBox->button(QDialogButtonBox::RestoreDefaults))
+      m_ui.buttonBox->removeButton(button);
 
     connect(m_ui.copyGlobalSettings, &QPushButton::clicked, this,
             &ControllerSettingsWindow::onCopyGlobalSettingsClicked);
-    connect(m_ui.restoreDefaults, &QPushButton::clicked, this,
-            &ControllerSettingsWindow::onRestoreDefaultsForGameClicked);
+
+    if (edit_profiles)
+    {
+      setWindowTitle(tr("DuckStation Controller Presets"));
+      refreshProfileList();
+
+      connect(m_ui.currentProfile, &QComboBox::currentIndexChanged, this,
+              &ControllerSettingsWindow::onCurrentProfileChanged);
+      connect(m_ui.newProfile, &QPushButton::clicked, this, &ControllerSettingsWindow::onNewProfileClicked);
+      connect(m_ui.applyProfile, &QPushButton::clicked, this, &ControllerSettingsWindow::onApplyProfileClicked);
+      connect(m_ui.deleteProfile, &QPushButton::clicked, this, &ControllerSettingsWindow::onDeleteProfileClicked);
+    }
+    else
+    {
+      // editing game settings
+      m_ui.editProfileLayout->removeWidget(m_ui.editProfileLabel);
+      delete m_ui.editProfileLabel;
+      m_ui.editProfileLabel = nullptr;
+      m_ui.editProfileLayout->removeWidget(m_ui.currentProfile);
+      delete m_ui.currentProfile;
+      m_ui.currentProfile = nullptr;
+      m_ui.editProfileLayout->removeWidget(m_ui.newProfile);
+      delete m_ui.newProfile;
+      m_ui.newProfile = nullptr;
+      m_ui.editProfileLayout->removeWidget(m_ui.applyProfile);
+      delete m_ui.applyProfile;
+      m_ui.applyProfile = nullptr;
+      m_ui.editProfileLayout->removeWidget(m_ui.deleteProfile);
+      delete m_ui.deleteProfile;
+      m_ui.deleteProfile = nullptr;
+    }
   }
 
-  createWidgets();
+  if (m_ui.settingsContainer->count() == 0)
+    createWidgets();
 }
 
 ControllerSettingsWindow::~ControllerSettingsWindow() = default;
 
-void ControllerSettingsWindow::editControllerSettingsForGame(QWidget* parent, SettingsInterface* sif)
+void ControllerSettingsWindow::editControllerSettingsForGame(QWidget* parent, INISettingsInterface* sif)
 {
-  ControllerSettingsWindow* dlg = new ControllerSettingsWindow(sif, parent);
+  ControllerSettingsWindow* dlg = new ControllerSettingsWindow(sif, false, parent);
   dlg->setWindowFlag(Qt::Window);
   dlg->setAttribute(Qt::WA_DeleteOnClose);
-  dlg->setWindowModality(Qt::WindowModality::WindowModal);
+  dlg->setWindowModality(Qt::WindowModal);
   dlg->setWindowTitle(parent->windowTitle());
   dlg->setWindowIcon(parent->windowIcon());
   dlg->show();
@@ -110,30 +126,29 @@ int ControllerSettingsWindow::getHotkeyCategoryIndex() const
   return 1 + (mtap_enabled[0] ? 4 : 1) + (mtap_enabled[1] ? 4 : 1);
 }
 
-ControllerSettingsWindow::Category ControllerSettingsWindow::getCurrentCategory() const
+int ControllerSettingsWindow::getCategoryRow() const
 {
-  const int index = m_ui.settingsCategory->currentRow();
-  if (index == 0)
-    return Category::GlobalSettings;
-  else if (index >= getHotkeyCategoryIndex())
-    return Category::HotkeySettings;
-  else
-    return Category::FirstControllerSettings;
+  return m_ui.settingsCategory->currentRow();
 }
 
-void ControllerSettingsWindow::setCategory(Category category)
+void ControllerSettingsWindow::setCategoryRow(int row)
+{
+  m_ui.settingsCategory->setCurrentRow(row);
+}
+
+void ControllerSettingsWindow::setCategory(u32 category)
 {
   switch (category)
   {
-    case Category::GlobalSettings:
+    case CATEGORY_GLOBAL_SETTINGS:
       m_ui.settingsCategory->setCurrentRow(0);
       break;
 
-    case Category::FirstControllerSettings:
+    case CATEGORY_FIRST_CONTROLLER_SETTINGS:
       m_ui.settingsCategory->setCurrentRow(1);
       break;
 
-    case Category::HotkeySettings:
+    case CATEGORY_HOTKEY_SETTINGS:
       m_ui.settingsCategory->setCurrentRow(getHotkeyCategoryIndex());
       break;
 
@@ -149,17 +164,13 @@ void ControllerSettingsWindow::onCategoryCurrentRowChanged(int row)
 
 void ControllerSettingsWindow::onCurrentProfileChanged(int index)
 {
-  std::string profile_name;
-  if (index > 0)
-    profile_name = m_ui.currentProfile->itemText(index).toStdString();
-
-  switchProfile(profile_name);
+  switchProfile(m_ui.currentProfile->itemText(index).toStdString());
 }
 
 void ControllerSettingsWindow::onNewProfileClicked()
 {
   const std::string profile_name =
-    QInputDialog::getText(this, tr("Create Input Profile"), tr("Enter the name for the new input profile:"))
+    QInputDialog::getText(this, tr("Create Controller Preset"), tr("Enter the name for the new controller preset:"))
       .toStdString();
   if (profile_name.empty())
     return;
@@ -167,15 +178,17 @@ void ControllerSettingsWindow::onNewProfileClicked()
   std::string profile_path = System::GetInputProfilePath(profile_name);
   if (FileSystem::FileExists(profile_path.c_str()))
   {
-    QMessageBox::critical(this, tr("Error"),
-                          tr("A profile with the name '%1' already exists.").arg(QString::fromStdString(profile_name)));
+    QtUtils::AsyncMessageBox(
+      this, QMessageBox::Critical, tr("Error"),
+      tr("A preset with the name '%1' already exists.").arg(QString::fromStdString(profile_name)));
     return;
   }
 
-  const int res = QMessageBox::question(this, tr("Create Input Profile"),
-                                        tr("Do you want to copy all bindings from the currently-selected profile to "
-                                           "the new profile? Selecting No will create a completely empty profile."),
-                                        QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
+  const int res =
+    QtUtils::MessageBoxQuestion(this, tr("Create Controller Preset"),
+                                tr("Do you want to copy all bindings from the currently-selected preset to "
+                                   "the new preset? Selecting No will create a completely empty preset."),
+                                QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
   if (res == QMessageBox::Cancel)
     return;
 
@@ -185,9 +198,9 @@ void ControllerSettingsWindow::onNewProfileClicked()
     // copy from global or the current profile
     if (!m_editing_settings_interface)
     {
-      const int hkres = QMessageBox::question(
-        this, tr("Create Input Profile"),
-        tr("Do you want to copy the current hotkey bindings from global settings to the new input profile?"),
+      const int hkres = QtUtils::MessageBoxQuestion(
+        this, tr("Create Controller Preset"),
+        tr("Do you want to copy the current hotkey bindings from global settings to the new controller preset?"),
         QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
       if (hkres == QMessageBox::Cancel)
         return;
@@ -197,25 +210,28 @@ void ControllerSettingsWindow::onNewProfileClicked()
         temp_si.SetBoolValue("ControllerPorts", "UseProfileHotkeyBindings", true);
 
       // from global
-      auto lock = Host::GetSettingsLock();
-      InputManager::CopyConfiguration(&temp_si, *Host::Internal::GetBaseSettingsLayer(), true, true,
-                                      copy_hotkey_bindings);
+      const auto lock = Core::GetSettingsLock();
+      InputManager::CopyConfiguration(&temp_si, *Core::GetBaseSettingsLayer(), true, false, true, copy_hotkey_bindings);
     }
     else
     {
       // from profile
       const bool copy_hotkey_bindings =
         m_editing_settings_interface->GetBoolValue("ControllerPorts", "UseProfileHotkeyBindings", false);
+      const bool copy_sources =
+        m_editing_settings_interface->GetBoolValue("ControllerPorts", "UseProfileInputSources", false);
       temp_si.SetBoolValue("ControllerPorts", "UseProfileHotkeyBindings", copy_hotkey_bindings);
-      InputManager::CopyConfiguration(&temp_si, *m_editing_settings_interface, true, true, copy_hotkey_bindings);
+      temp_si.SetBoolValue("ControllerPorts", "UseProfileInputSources", copy_sources);
+      InputManager::CopyConfiguration(&temp_si, *m_editing_settings_interface, true, copy_sources, true,
+                                      copy_hotkey_bindings);
     }
   }
 
   if (!temp_si.Save())
   {
-    QMessageBox::critical(
-      this, tr("Error"),
-      tr("Failed to save the new profile to '%1'.").arg(QString::fromStdString(temp_si.GetFileName())));
+    QtUtils::AsyncMessageBox(
+      this, QMessageBox::Critical, tr("Error"),
+      tr("Failed to save the new preset to '%1'.").arg(QString::fromStdString(temp_si.GetPath())));
     return;
   }
 
@@ -225,11 +241,11 @@ void ControllerSettingsWindow::onNewProfileClicked()
 
 void ControllerSettingsWindow::onApplyProfileClicked()
 {
-  if (QMessageBox::question(this, tr("Load Input Profile"),
-                            tr("Are you sure you want to load the input profile named '%1'?\n\n"
-                               "All current global bindings will be removed, and the profile bindings loaded.\n\n"
-                               "You cannot undo this action.")
-                              .arg(m_profile_name)) != QMessageBox::Yes)
+  if (QtUtils::MessageBoxQuestion(this, tr("Load Controller Preset"),
+                                  tr("Are you sure you want to apply the controller preset named '%1'?\n\n"
+                                     "All current global bindings will be removed, and the preset bindings loaded.\n\n"
+                                     "You cannot undo this action.")
+                                    .arg(m_profile_name)) != QMessageBox::Yes)
   {
     return;
   }
@@ -237,23 +253,25 @@ void ControllerSettingsWindow::onApplyProfileClicked()
   {
     const bool copy_hotkey_bindings =
       m_editing_settings_interface->GetBoolValue("ControllerPorts", "UseProfileHotkeyBindings", false);
-    auto lock = Host::GetSettingsLock();
-    InputManager::CopyConfiguration(Host::Internal::GetBaseSettingsLayer(), *m_editing_settings_interface, true, true,
-                                    copy_hotkey_bindings);
+    const bool copy_sources =
+      m_editing_settings_interface->GetBoolValue("ControllerPorts", "UseProfileInputSources", false);
+    const auto lock = Core::GetSettingsLock();
+    InputManager::CopyConfiguration(Core::GetBaseSettingsLayer(), *m_editing_settings_interface, true, copy_sources,
+                                    true, copy_hotkey_bindings);
     QtHost::QueueSettingsSave();
   }
-  g_emu_thread->applySettings();
+  g_core_thread->applySettings();
 
-  // make it visible
-  switchProfile({});
+  // Recreate global widget on profile apply
+  g_main_window->getControllerSettingsWindow()->createWidgets();
 }
 
 void ControllerSettingsWindow::onDeleteProfileClicked()
 {
-  if (QMessageBox::question(this, tr("Delete Input Profile"),
-                            tr("Are you sure you want to delete the input profile named '%1'?\n\n"
-                               "You cannot undo this action.")
-                              .arg(m_profile_name)) != QMessageBox::Yes)
+  if (QtUtils::MessageBoxQuestion(this, tr("Delete Controller Preset"),
+                                  tr("Are you sure you want to delete the controller preset named '%1'?\n\n"
+                                     "You cannot undo this action.")
+                                    .arg(m_profile_name)) != QMessageBox::Yes)
   {
     return;
   }
@@ -261,7 +279,8 @@ void ControllerSettingsWindow::onDeleteProfileClicked()
   std::string profile_path(System::GetInputProfilePath(m_profile_name.toStdString()));
   if (!FileSystem::DeleteFile(profile_path.c_str()))
   {
-    QMessageBox::critical(this, tr("Error"), tr("Failed to delete '%1'.").arg(QString::fromStdString(profile_path)));
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
+                             tr("Failed to delete '%1'.").arg(QString::fromStdString(profile_path)));
     return;
   }
 
@@ -272,92 +291,38 @@ void ControllerSettingsWindow::onDeleteProfileClicked()
 
 void ControllerSettingsWindow::onRestoreDefaultsClicked()
 {
-  if (QMessageBox::question(
-        this, tr("Restore Defaults"),
-        tr("Are you sure you want to restore the default controller configuration?\n\n"
-           "All shared bindings and configuration will be lost, but your input profiles will remain.\n\n"
-           "You cannot undo this action.")) != QMessageBox::Yes)
+  if (QtUtils::MessageBoxQuestion(this, tr("Restore Defaults"),
+                                  tr("Are you sure you want to restore the default controller configuration?\n\n"
+                                     "All bindings and configuration will be lost. You cannot undo this action.")) !=
+      QMessageBox::Yes)
   {
     return;
   }
 
   // actually restore it
-  g_emu_thread->setDefaultSettings(false, true);
+  g_core_thread->setDefaultSettings(false, false, true);
 
   // reload all settings
-  switchProfile({});
+  createWidgets();
 }
 
 void ControllerSettingsWindow::onCopyGlobalSettingsClicked()
 {
-  DebugAssert(isEditingGameSettings());
+  DebugAssert(!isEditingGlobalSettings());
 
   {
-    const auto lock = Host::GetSettingsLock();
-    InputManager::CopyConfiguration(m_editing_settings_interface, *Host::Internal::GetBaseSettingsLayer(), true, true,
+    const auto lock = Core::GetSettingsLock();
+    InputManager::CopyConfiguration(m_editing_settings_interface, *Core::GetBaseSettingsLayer(), true, false, true,
                                     false);
   }
 
   m_editing_settings_interface->Save();
-  g_emu_thread->reloadGameSettings();
+  g_core_thread->reloadGameSettings();
   createWidgets();
 
-  QMessageBox::information(QtUtils::GetRootWidget(this), tr("DuckStation Controller Settings"),
-                           tr("Per-game controller configuration reset to global settings."));
-}
-
-void ControllerSettingsWindow::onRestoreDefaultsForGameClicked()
-{
-  DebugAssert(isEditingGameSettings());
-  Settings::SetDefaultControllerConfig(*m_editing_settings_interface);
-  m_editing_settings_interface->Save();
-  g_emu_thread->reloadGameSettings();
-  createWidgets();
-
-  QMessageBox::information(QtUtils::GetRootWidget(this), tr("DuckStation Controller Settings"),
-                           tr("Per-game controller configuration reset to default settings."));
-}
-
-void ControllerSettingsWindow::onInputDevicesEnumerated(const std::vector<std::pair<std::string, std::string>>& devices)
-{
-  m_device_list = devices;
-  for (const auto& [device_name, display_name] : m_device_list)
-    m_global_settings->addDeviceToList(QString::fromStdString(device_name), QString::fromStdString(display_name));
-}
-
-void ControllerSettingsWindow::onInputDeviceConnected(const std::string& identifier, const std::string& device_name)
-{
-  m_device_list.emplace_back(identifier, device_name);
-  m_global_settings->addDeviceToList(QString::fromStdString(identifier), QString::fromStdString(device_name));
-  g_emu_thread->enumerateVibrationMotors();
-}
-
-void ControllerSettingsWindow::onInputDeviceDisconnected(const std::string& identifier)
-{
-  for (auto iter = m_device_list.begin(); iter != m_device_list.end(); ++iter)
-  {
-    if (iter->first == identifier)
-    {
-      m_device_list.erase(iter);
-      break;
-    }
-  }
-
-  m_global_settings->removeDeviceFromList(QString::fromStdString(identifier));
-  g_emu_thread->enumerateVibrationMotors();
-}
-
-void ControllerSettingsWindow::onVibrationMotorsEnumerated(const QList<InputBindingKey>& motors)
-{
-  m_vibration_motors.clear();
-  m_vibration_motors.reserve(motors.size());
-
-  for (const InputBindingKey key : motors)
-  {
-    const std::string key_str(InputManager::ConvertInputBindingKeyToString(InputBindingInfo::Type::Motor, key));
-    if (!key_str.empty())
-      m_vibration_motors.push_back(QString::fromStdString(key_str));
-  }
+  QtUtils::AsyncMessageBox(this, QMessageBox::Information, tr("DuckStation Controller Settings"),
+                           isEditingGameSettings() ? tr("Per-game controller configuration reset to global settings.") :
+                                                     tr("Controller preset reset to global settings."));
 }
 
 bool ControllerSettingsWindow::getBoolValue(const char* section, const char* key, bool default_value) const
@@ -365,7 +330,7 @@ bool ControllerSettingsWindow::getBoolValue(const char* section, const char* key
   if (m_editing_settings_interface)
     return m_editing_settings_interface->GetBoolValue(section, key, default_value);
   else
-    return Host::GetBaseBoolSettingValue(section, key, default_value);
+    return Core::GetBaseBoolSettingValue(section, key, default_value);
 }
 
 s32 ControllerSettingsWindow::getIntValue(const char* section, const char* key, s32 default_value) const
@@ -373,7 +338,7 @@ s32 ControllerSettingsWindow::getIntValue(const char* section, const char* key, 
   if (m_editing_settings_interface)
     return m_editing_settings_interface->GetIntValue(section, key, default_value);
   else
-    return Host::GetBaseIntSettingValue(section, key, default_value);
+    return Core::GetBaseIntSettingValue(section, key, default_value);
 }
 
 std::string ControllerSettingsWindow::getStringValue(const char* section, const char* key,
@@ -383,7 +348,7 @@ std::string ControllerSettingsWindow::getStringValue(const char* section, const 
   if (m_editing_settings_interface)
     value = m_editing_settings_interface->GetStringValue(section, key, default_value);
   else
-    value = Host::GetBaseStringSettingValue(section, key, default_value);
+    value = Core::GetBaseStringSettingValue(section, key, default_value);
   return value;
 }
 
@@ -396,9 +361,9 @@ void ControllerSettingsWindow::setBoolValue(const char* section, const char* key
   }
   else
   {
-    Host::SetBaseBoolSettingValue(section, key, value);
+    Core::SetBaseBoolSettingValue(section, key, value);
     Host::CommitBaseSettingChanges();
-    g_emu_thread->applySettings();
+    g_core_thread->applySettings();
   }
 }
 
@@ -411,9 +376,9 @@ void ControllerSettingsWindow::setIntValue(const char* section, const char* key,
   }
   else
   {
-    Host::SetBaseIntSettingValue(section, key, value);
+    Core::SetBaseIntSettingValue(section, key, value);
     Host::CommitBaseSettingChanges();
-    g_emu_thread->applySettings();
+    g_core_thread->applySettings();
   }
 }
 
@@ -426,9 +391,9 @@ void ControllerSettingsWindow::setStringValue(const char* section, const char* k
   }
   else
   {
-    Host::SetBaseStringSettingValue(section, key, value);
+    Core::SetBaseStringSettingValue(section, key, value);
     Host::CommitBaseSettingChanges();
-    g_emu_thread->applySettings();
+    g_core_thread->applySettings();
   }
 }
 
@@ -436,7 +401,7 @@ void ControllerSettingsWindow::saveAndReloadGameSettings()
 {
   DebugAssert(m_editing_settings_interface);
   QtHost::SaveGameSettings(m_editing_settings_interface, false);
-  g_emu_thread->reloadGameSettings(false);
+  g_core_thread->reloadGameSettings(false);
 }
 
 void ControllerSettingsWindow::clearSettingValue(const char* section, const char* key)
@@ -445,13 +410,13 @@ void ControllerSettingsWindow::clearSettingValue(const char* section, const char
   {
     m_editing_settings_interface->DeleteValue(section, key);
     m_editing_settings_interface->Save();
-    g_emu_thread->reloadGameSettings();
+    g_core_thread->reloadGameSettings();
   }
   else
   {
-    Host::DeleteBaseSettingValue(section, key);
+    Core::DeleteBaseSettingValue(section, key);
     Host::CommitBaseSettingChanges();
-    g_emu_thread->applySettings();
+    g_core_thread->applySettings();
   }
 }
 
@@ -476,25 +441,18 @@ void ControllerSettingsWindow::createWidgets()
     // global settings
     QListWidgetItem* item = new QListWidgetItem();
     item->setText(tr("Global Settings"));
-    item->setIcon(QIcon::fromTheme(QStringLiteral("settings-3-line")));
+    item->setIcon(QIcon::fromTheme("settings-3-line"_L1));
     m_ui.settingsCategory->addItem(item);
     m_ui.settingsCategory->setCurrentRow(0);
     m_global_settings = new ControllerGlobalSettingsWidget(m_ui.settingsContainer, this);
     m_ui.settingsContainer->addWidget(m_global_settings);
     connect(m_global_settings, &ControllerGlobalSettingsWidget::bindingSetupChanged, this,
             &ControllerSettingsWindow::createWidgets);
-    for (const auto& [identifier, device_name] : m_device_list)
-      m_global_settings->addDeviceToList(QString::fromStdString(identifier), QString::fromStdString(device_name));
   }
 
   // load mtap settings
   const std::array<bool, 2> mtap_enabled = getEnabledMultitaps();
-
-  // we reorder things a little to make it look less silly for mtap
-  static constexpr const std::array<u32, MAX_PORTS> mtap_port_order = {{0, 2, 3, 4, 1, 5, 6, 7}};
-
-  // create the ports
-  for (u32 global_slot : mtap_port_order)
+  for (u32 global_slot : Controller::PortDisplayOrder)
   {
     const bool is_mtap_port = Controller::PadIsMultitapSlot(global_slot);
     const auto [port, slot] = Controller::ConvertPadToPortAndSlot(global_slot);
@@ -504,12 +462,13 @@ void ControllerSettingsWindow::createWidgets()
     m_port_bindings[global_slot] = new ControllerBindingWidget(m_ui.settingsContainer, this, global_slot);
     m_ui.settingsContainer->addWidget(m_port_bindings[global_slot]);
 
-    const QString display_name(QString::fromUtf8(m_port_bindings[global_slot]->getControllerInfo()->GetDisplayName()));
+    const QString display_name(
+      QtUtils::StringViewToQString(m_port_bindings[global_slot]->getControllerInfo()->GetDisplayName()));
 
     QListWidgetItem* item = new QListWidgetItem();
-    item->setText(mtap_enabled[port] ?
-                    (tr("Controller Port %1%2\n%3").arg(port + 1).arg(s_mtap_slot_names[slot]).arg(display_name)) :
-                    tr("Controller Port %1\n%2").arg(port + 1).arg(display_name));
+    item->setText(tr("Controller Port %1\n%2")
+                    .arg(Controller::GetPortDisplayName(port, slot, mtap_enabled[port]))
+                    .arg(display_name));
     item->setIcon(m_port_bindings[global_slot]->getIcon());
     item->setData(Qt::UserRole, QVariant(global_slot));
     m_ui.settingsCategory->addItem(item);
@@ -521,24 +480,27 @@ void ControllerSettingsWindow::createWidgets()
   {
     QListWidgetItem* item = new QListWidgetItem();
     item->setText(tr("Hotkeys"));
-    item->setIcon(QIcon::fromTheme(QStringLiteral("keyboard-line")));
+    item->setIcon(QIcon::fromTheme("keyboard-line"_L1));
     m_ui.settingsCategory->addItem(item);
     m_hotkey_settings = new HotkeySettingsWidget(m_ui.settingsContainer, this);
     m_ui.settingsContainer->addWidget(m_hotkey_settings);
   }
 
-  if (!isEditingGameSettings())
+  if (isEditingProfile())
   {
-    m_ui.applyProfile->setEnabled(isEditingProfile());
-    m_ui.deleteProfile->setEnabled(isEditingProfile());
-    m_ui.restoreDefaults->setEnabled(isEditingGlobalSettings());
+    const bool enable_buttons = static_cast<bool>(m_profile_settings_interface);
+    m_ui.applyProfile->setEnabled(enable_buttons);
+    m_ui.deleteProfile->setEnabled(enable_buttons);
+    m_ui.copyGlobalSettings->setEnabled(enable_buttons);
   }
 }
 
 void ControllerSettingsWindow::closeEvent(QCloseEvent* event)
 {
+  if (isEditingGlobalSettings())
+    QtUtils::SaveWindowGeometry(this);
+
   QWidget::closeEvent(event);
-  emit windowClosed();
 }
 
 void ControllerSettingsWindow::updateListDescription(u32 global_slot, ControllerBindingWidget* widget)
@@ -553,11 +515,11 @@ void ControllerSettingsWindow::updateListDescription(u32 global_slot, Controller
       const std::array<bool, 2> mtap_enabled = getEnabledMultitaps();
       const auto [port, slot] = Controller::ConvertPadToPortAndSlot(global_slot);
 
-      const QString display_name = QString::fromUtf8(widget->getControllerInfo()->GetDisplayName());
+      const QString display_name = QtUtils::StringViewToQString(widget->getControllerInfo()->GetDisplayName());
 
-      item->setText(mtap_enabled[port] ?
-                      (tr("Controller Port %1%2\n%3").arg(port + 1).arg(s_mtap_slot_names[slot]).arg(display_name)) :
-                      tr("Controller Port %1\n%2").arg(port + 1).arg(display_name));
+      item->setText(tr("Controller Port %1\n%2")
+                      .arg(Controller::GetPortDisplayName(port, slot, mtap_enabled[port]))
+                      .arg(display_name));
       item->setIcon(widget->getIcon());
       break;
     }
@@ -574,55 +536,65 @@ std::array<bool, 2> ControllerSettingsWindow::getEnabledMultitaps() const
   return {{(mtap_mode == MultitapMode::Port1Only || mtap_mode == MultitapMode::BothPorts),
            (mtap_mode == MultitapMode::Port2Only || mtap_mode == MultitapMode::BothPorts)}};
 }
+
 void ControllerSettingsWindow::refreshProfileList()
 {
   const std::vector<std::string> names(InputManager::GetInputProfileNames());
 
   QSignalBlocker sb(m_ui.currentProfile);
   m_ui.currentProfile->clear();
-  m_ui.currentProfile->addItem(tr("Shared"));
-  if (isEditingGlobalSettings())
-    m_ui.currentProfile->setCurrentIndex(0);
 
+  bool current_profile_found = false;
   for (const std::string& name : names)
   {
     const QString qname(QString::fromStdString(name));
     m_ui.currentProfile->addItem(qname);
     if (qname == m_profile_name)
+    {
       m_ui.currentProfile->setCurrentIndex(m_ui.currentProfile->count() - 1);
+      current_profile_found = true;
+    }
   }
+
+  if (!current_profile_found)
+    switchProfile(names.empty() ? std::string_view() : std::string_view(names.front()));
 }
 
 void ControllerSettingsWindow::switchProfile(const std::string_view name)
 {
-  QSignalBlocker sb(m_ui.currentProfile);
-
-  if (!name.empty())
+  const QString name_qstr = QtUtils::StringViewToQString(name);
   {
-    const QString name_qstr = QtUtils::StringViewToQString(name);
-
-    std::string path = System::GetInputProfilePath(name);
-    if (!FileSystem::FileExists(path.c_str()))
-    {
-      QMessageBox::critical(this, tr("Error"), tr("The input profile named '%1' cannot be found.").arg(name_qstr));
-      return;
-    }
-
-    std::unique_ptr<INISettingsInterface> sif = std::make_unique<INISettingsInterface>(std::move(path));
-    sif->Load();
-
-    m_profile_settings_interface = std::move(sif);
-    m_editing_settings_interface = m_profile_settings_interface.get();
+    QSignalBlocker sb(m_ui.currentProfile);
     m_ui.currentProfile->setCurrentIndex(m_ui.currentProfile->findText(name_qstr));
-    m_profile_name = name_qstr;
   }
-  else
+  m_profile_name = name_qstr;
+  m_profile_settings_interface.reset();
+  m_editing_settings_interface = nullptr;
+
+  // disable UI if there is no selection
+  const bool disable_ui = name.empty();
+  m_ui.settingsCategory->setDisabled(disable_ui);
+  m_ui.settingsContainer->setDisabled(disable_ui);
+
+  if (name_qstr.isEmpty())
   {
-    m_profile_settings_interface.reset();
-    m_editing_settings_interface = nullptr;
-    m_ui.currentProfile->setCurrentIndex(0);
-    m_profile_name = QString();
+    createWidgets();
+    return;
   }
+
+  std::string path = System::GetInputProfilePath(name);
+  if (!FileSystem::FileExists(path.c_str()))
+  {
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
+                             tr("The controller preset named '%1' cannot be found.").arg(name_qstr));
+    return;
+  }
+
+  std::unique_ptr<INISettingsInterface> sif = std::make_unique<INISettingsInterface>(std::move(path));
+  sif->Load();
+
+  m_profile_settings_interface = std::move(sif);
+  m_editing_settings_interface = m_profile_settings_interface.get();
 
   createWidgets();
 }

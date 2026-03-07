@@ -4,14 +4,17 @@
 #include "dma.h"
 #include "bus.h"
 #include "cdrom.h"
+#include "cpu_code_cache.h"
 #include "cpu_core.h"
 #include "gpu.h"
+#include "gpu_dump.h"
 #include "imgui.h"
 #include "interrupt_controller.h"
 #include "mdec.h"
 #include "pad.h"
 #include "spu.h"
 #include "system.h"
+#include "timing_event.h"
 
 #include "util/imgui_manager.h"
 #include "util/state_wrapper.h"
@@ -43,9 +46,10 @@ static constexpr PhysicalMemoryAddress BASE_ADDRESS_MASK = UINT32_C(0x00FFFFFF);
 static constexpr PhysicalMemoryAddress TRANSFER_ADDRESS_MASK = UINT32_C(0x00FFFFFC);
 static constexpr PhysicalMemoryAddress LINKED_LIST_TERMINATOR = UINT32_C(0x00FFFFFF);
 
-static constexpr TickCount LINKED_LIST_HEADER_READ_TICKS = 10;
+static constexpr TickCount LINKED_LIST_HEADER_READ_TICKS = 8;
 static constexpr TickCount LINKED_LIST_BLOCK_SETUP_TICKS = 5;
 static constexpr TickCount SLICE_SIZE_WHEN_TRANSMITTING_PAD = 10;
+static constexpr TickCount SLICE_SIZE_WHEN_DECODING_MDEC = 100;
 
 struct ChannelState
 {
@@ -192,6 +196,7 @@ static TickCount TransferDeviceToMemory(u32 address, u32 increment, u32 word_cou
 template<Channel channel>
 static TickCount TransferMemoryToDevice(u32 address, u32 increment, u32 word_count);
 
+template<Channel channel>
 static TickCount GetMaxSliceTicks(TickCount max_slice_size);
 
 // configuration
@@ -389,12 +394,12 @@ void DMA::WriteRegister(u32 offset, u32 value)
             // Figure out how roughly many CPU cycles it'll take for the transfer to complete, and delay the transfer.
             // Needed for Lagnacure Legend, which sets DICR to enable interrupts after CHCR to kickstart the transfer.
             // This has an artificial 500 cycle cap, setting it too high causes Namco Museum Vol. 4 and a couple of
-            // other games to crash... so clearly something is missing here.
-            const u32 block_words = (1u << state.channel_control.chopping_dma_window_size);
+            // other games to crash... so clearly something is missing here. Small blocks are similarly excluded,
+            // Dotchi Mecha! sets up a 3 word transfer for the CD sector header and expects it to complete immediately.
             const u32 cpu_cycles_per_block = (1u << state.channel_control.chopping_cpu_window_size);
-            const u32 blocks = state.block_control.manual.word_count / block_words;
+            const u32 blocks = state.block_control.manual.word_count >> state.channel_control.chopping_dma_window_size;
             const TickCount delay_cycles = std::min(static_cast<TickCount>(cpu_cycles_per_block * blocks), 500);
-            if (delay_cycles > 1 && true)
+            if (state.block_control.manual.word_count > 4 && delay_cycles > 1)
             {
               DEV_LOG("Delaying {} transfer by {} cycles due to chopping", static_cast<Channel>(channel_index),
                       delay_cycles);
@@ -530,9 +535,19 @@ ALWAYS_INLINE_RELEASE void DMA::CompleteTransfer(Channel channel, ChannelState& 
   }
 }
 
+template<DMA::Channel channel>
 TickCount DMA::GetMaxSliceTicks(TickCount max_slice_size)
 {
-  const TickCount max = Pad::IsTransmitting() ? SLICE_SIZE_WHEN_TRANSMITTING_PAD : max_slice_size;
+  TickCount max = Pad::IsTransmitting() ? SLICE_SIZE_WHEN_TRANSMITTING_PAD : max_slice_size;
+
+  // Prevent the slice size from being too large for MDEC.
+  // Since we use a larger than real FIFO, this can lead to excessively large chunks of data being
+  // transferred and queued in the FIFO (multiple kilobytes), which steals a large number of CPU
+  // cycles and results in other interrupts being missed. I hate it, but unless we do tight sync
+  // all the time, which has a massive performance penalty, it's really the best option.
+  if constexpr (channel == Channel::MDECin || channel == Channel::MDECout)
+    max = MDEC::IsDecodingMacroblock() ? SLICE_SIZE_WHEN_DECODING_MDEC : max;
+
   if (!TimingEvents::IsRunningEvents())
     return max;
 
@@ -590,7 +605,7 @@ bool DMA::TransferChannel()
       const u8* const ram_ptr = Bus::g_ram;
       const u32 mask = Bus::g_ram_mask;
 
-      const TickCount slice_ticks = GetMaxSliceTicks(g_settings.dma_max_slice_ticks);
+      const TickCount slice_ticks = GetMaxSliceTicks<channel>(g_settings.dma_max_slice_ticks);
       TickCount remaining_ticks = slice_ticks;
       while (cs.request && remaining_ticks > 0)
       {
@@ -660,7 +675,7 @@ bool DMA::TransferChannel()
 
       const u32 block_size = cs.block_control.request.GetBlockSize();
       u32 blocks_remaining = cs.block_control.request.GetBlockCount();
-      TickCount ticks_remaining = GetMaxSliceTicks(g_settings.dma_max_slice_ticks);
+      TickCount ticks_remaining = GetMaxSliceTicks<channel>(g_settings.dma_max_slice_ticks);
 
       if (copy_to_device)
       {
@@ -770,7 +785,7 @@ template<DMA::Channel channel>
 TickCount DMA::TransferMemoryToDevice(u32 address, u32 increment, u32 word_count)
 {
   const u32 mask = Bus::g_ram_mask;
-#ifdef _DEBUG
+#if defined(_DEBUG) || defined(_DEVEL)
   if ((address & mask) != address)
     DEBUG_LOG("DMA TO {} from masked RAM address 0x{:08X} => 0x{:08X}", channel, address, (address & mask));
 #endif
@@ -800,17 +815,39 @@ TickCount DMA::TransferMemoryToDevice(u32 address, u32 increment, u32 word_count
   {
     case Channel::GPU:
     {
-      if (g_gpu->BeginDMAWrite()) [[likely]]
+      if (g_gpu.BeginDMAWrite()) [[likely]]
       {
+        if (GPUDump::Recorder* dump = g_gpu.GetGPUDump()) [[unlikely]]
+        {
+          // No wraparound?
+          dump->BeginGP0Packet(word_count);
+          if (((address + (increment * (word_count - 1))) & mask) >= address) [[likely]]
+          {
+            dump->WriteWords(reinterpret_cast<const u32*>(&Bus::g_ram[address]), word_count);
+          }
+          else
+          {
+            u32 dump_address = address;
+            for (u32 i = 0; i < word_count; i++)
+            {
+              u32 value;
+              std::memcpy(&value, &Bus::g_ram[dump_address], sizeof(u32));
+              dump->WriteWord(value);
+              dump_address = (dump_address + increment) & mask;
+            }
+          }
+          dump->EndGP0Packet();
+        }
+
         u8* ram_pointer = Bus::g_ram;
         for (u32 i = 0; i < word_count; i++)
         {
           u32 value;
           std::memcpy(&value, &ram_pointer[address], sizeof(u32));
-          g_gpu->DMAWrite(address, value);
+          g_gpu.DMAWrite(address, value);
           address = (address + increment) & mask;
         }
-        g_gpu->EndDMAWrite();
+        g_gpu.EndDMAWrite();
       }
     }
     break;
@@ -838,7 +875,7 @@ template<DMA::Channel channel>
 TickCount DMA::TransferDeviceToMemory(u32 address, u32 increment, u32 word_count)
 {
   const u32 mask = Bus::g_ram_mask;
-#ifdef _DEBUG
+#if defined(_DEBUG) || defined(_DEVEL)
   if ((address & mask) != address)
     DEBUG_LOG("DMA FROM {} to masked RAM address 0x{:08X} => 0x{:08X}", channel, address, (address & mask));
 #endif
@@ -871,12 +908,21 @@ TickCount DMA::TransferDeviceToMemory(u32 address, u32 increment, u32 word_count
       s_state.transfer_buffer.resize(word_count);
     dest_pointer = s_state.transfer_buffer.data();
   }
+  else if constexpr (channel == Channel::CDROM)
+  {
+    const u32 end_page = (address + (increment * word_count) - 1) >> HOST_PAGE_SHIFT;
+    for (u32 page = address >> HOST_PAGE_SHIFT; page <= end_page; page++)
+    {
+      if (Bus::IsRAMCodePage(page))
+        CPU::CodeCache::InvalidateBlocksWithPageIndex(page);
+    }
+  }
 
   // Read from device.
   switch (channel)
   {
     case Channel::GPU:
-      g_gpu->DMARead(dest_pointer, word_count);
+      g_gpu.DMARead(dest_pointer, word_count);
       break;
 
     case Channel::CDROM:
@@ -907,36 +953,33 @@ TickCount DMA::TransferDeviceToMemory(u32 address, u32 increment, u32 word_count
     }
   }
 
-  return Bus::GetDMARAMTickCount(word_count);
+  TickCount ticks = Bus::GetDMARAMTickCount(word_count);
+  if constexpr (channel == Channel::CDROM)
+  {
+    if (g_settings.cdrom_read_speedup != 1)
+      ticks = (g_settings.cdrom_read_speedup == 0) ? 0 : (ticks / g_settings.cdrom_read_speedup);
+  }
+  return ticks;
 }
 
-void DMA::DrawDebugStateWindow()
+void DMA::DrawDebugStateWindow(float scale)
 {
-  static constexpr u32 NUM_COLUMNS = 10;
-  static constexpr std::array<const char*, NUM_COLUMNS> column_names = {
-    {"#", "Req", "Direction", "Chopping", "Mode", "Busy", "Enable", "Priority", "IRQ", "Flag"}};
-  static constexpr std::array<const char*, 4> sync_mode_names = {{"Manual", "Request", "LinkedList", "Reserved"}};
+  static constexpr std::array column_names = {"#",    "Req",    "Addr",     "Direction", "Chopping", "Mode",
+                                              "Busy", "Enable", "Priority", "IRQ",       "Flag"};
+  static constexpr std::array sync_mode_names = {"Manual", "Request", "LinkedList", "Reserved"};
 
-  const float framebuffer_scale = ImGuiManager::GetGlobalScale();
-
-  ImGui::SetNextWindowSize(ImVec2(850.0f * framebuffer_scale, 250.0f * framebuffer_scale), ImGuiCond_FirstUseEver);
-  if (!ImGui::Begin("DMA State", nullptr))
-  {
-    ImGui::End();
-    return;
-  }
-
-  ImGui::Columns(NUM_COLUMNS);
-  ImGui::SetColumnWidth(0, 100.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(1, 50.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(2, 100.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(3, 150.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(4, 80.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(5, 80.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(6, 80.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(7, 80.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(8, 80.0f * framebuffer_scale);
-  ImGui::SetColumnWidth(9, 80.0f * framebuffer_scale);
+  ImGui::Columns(static_cast<int>(column_names.size()));
+  ImGui::SetColumnWidth(0, 80.0f * scale);
+  ImGui::SetColumnWidth(1, 50.0f * scale);
+  ImGui::SetColumnWidth(2, 80.0f * scale);
+  ImGui::SetColumnWidth(3, 110.0f * scale);
+  ImGui::SetColumnWidth(4, 100.0f * scale);
+  ImGui::SetColumnWidth(5, 80.0f * scale);
+  ImGui::SetColumnWidth(6, 80.0f * scale);
+  ImGui::SetColumnWidth(7, 80.0f * scale);
+  ImGui::SetColumnWidth(8, 60.0f * scale);
+  ImGui::SetColumnWidth(9, 80.0f * scale);
+  ImGui::SetColumnWidth(10, 80.0f * scale);
 
   for (const char* title : column_names)
   {
@@ -954,6 +997,8 @@ void DMA::DrawDebugStateWindow()
     ImGui::TextColored(cs.channel_control.enable_busy ? active : inactive, "%u[%s]", i, s_channel_names[i]);
     ImGui::NextColumn();
     ImGui::TextColored(cs.request ? active : inactive, cs.request ? "Yes" : "No");
+    ImGui::NextColumn();
+    ImGui::TextColored(cs.request ? active : inactive, "%08X", cs.base_address);
     ImGui::NextColumn();
     ImGui::Text("%s%s", cs.channel_control.copy_to_device ? "FromRAM" : "ToRAM",
                 cs.channel_control.address_step_reverse ? " Addr+" : " Addr-");
@@ -984,7 +1029,6 @@ void DMA::DrawDebugStateWindow()
   }
 
   ImGui::Columns(1);
-  ImGui::End();
 }
 
 // Instantiate channel functions.

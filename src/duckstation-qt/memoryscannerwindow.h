@@ -5,11 +5,9 @@
 
 #include "ui_memoryscannerwindow.h"
 
-#include "core/cheats.h"
+#include "core/memory_scanner.h"
 
 #include <QtCore/QTimer>
-#include <QtWidgets/QComboBox>
-#include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QWidget>
@@ -27,23 +25,7 @@ Q_SIGNALS:
   void closed();
 
 protected:
-  void showEvent(QShowEvent* event);
-  void closeEvent(QCloseEvent* event);
-  void resizeEvent(QResizeEvent* event);
-
-private Q_SLOTS:
-  void onSystemStarted();
-  void onSystemDestroyed();
-
-  void addToWatchClicked();
-  void addManualWatchAddressClicked();
-  void removeWatchClicked();
-  void scanCurrentItemChanged(QTableWidgetItem* current, QTableWidgetItem* previous);
-  void watchCurrentItemChanged(QTableWidgetItem* current, QTableWidgetItem* previous);
-  void scanItemChanged(QTableWidgetItem* item);
-  void watchItemChanged(QTableWidgetItem* item);
-  void updateScanValue();
-  void updateScanUi();
+  void closeEvent(QCloseEvent* event) override;
 
 private:
   enum : int
@@ -52,18 +34,47 @@ private:
     SCAN_INTERVAL = 100,
   };
 
+  void onSystemStarted();
+  void onSystemDestroyed();
+
+  void newSearchClicked();
+  void searchAgainClicked();
+  void resetSearchClicked();
+
+  void addToWatchClicked();
+  void addManualWatchAddressClicked();
+  void freezeWatchClicked();
+  void removeWatchClicked();
+  void scanCurrentItemChanged(QTableWidgetItem* current, QTableWidgetItem* previous);
+  void scanItemChanged(QTableWidgetItem* item);
+  void scanItemDoubleClicked(QTableWidgetItem* item);
+  void watchCurrentItemChanged(QTableWidgetItem* current, QTableWidgetItem* previous);
+  void watchItemChanged(QTableWidgetItem* item);
+  void watchItemDoubleClicked(QTableWidgetItem* item);
+  void updateScanValue();
+  void updateScanUi();
+
+  void setupAdditionalUi();
   void connectUi();
   void enableUi(bool enabled);
-  void resizeColumns();
   void updateResults();
   void updateResultsValues();
   void updateWatch();
   void updateWatchValues();
 
+  void tryOpenAddressInMemoryEditor(VirtualMemoryAddress address);
+
   int getSelectedResultIndexFirst() const;
   int getSelectedResultIndexLast() const;
   int getSelectedWatchIndexFirst() const;
   int getSelectedWatchIndexLast() const;
+
+  QTableWidgetItem* createValueItem(MemoryAccessSize size, u32 value, bool is_signed, bool editable) const;
+
+  std::string getWatchSavePath(bool saving);
+  void saveWatches();
+  void reloadWatches();
+  void clearWatches();
 
   Ui::MemoryScannerWindow m_ui;
 
@@ -71,4 +82,5 @@ private:
   MemoryWatchList m_watch;
 
   QTimer* m_update_timer = nullptr;
+  std::string m_watch_save_filename;
 };

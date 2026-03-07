@@ -1,13 +1,15 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "cue_parser.h"
 
 #include "common/error.h"
 #include "common/log.h"
+#include "common/small_string.h"
 #include "common/string_util.h"
 
 #include <cstdarg>
+#include <sstream>
 
 LOG_CHANNEL(CueParser);
 
@@ -71,6 +73,26 @@ bool CueParser::File::Parse(std::FILE* fp, Error* error)
   return true;
 }
 
+bool CueParser::File::Parse(const std::string& buffer, Error* error)
+{
+  u32 line_number = 1;
+  std::istringstream ss(buffer);
+  for (std::string line; std::getline(ss, line);)
+  {
+    if (!ParseLine(line.c_str(), line_number, error))
+      return false;
+    line_number++;
+  }
+
+  if (!CompleteLastTrack(line_number, error))
+    return false;
+
+  if (!SetTrackLengths(line_number, error))
+    return false;
+
+  return true;
+}
+
 void CueParser::File::SetError(u32 line_number, Error* error, const char* format, ...)
 {
   std::va_list ap;
@@ -88,7 +110,7 @@ std::string_view CueParser::File::GetToken(const char*& line)
   std::string_view ret;
 
   const char* start = line;
-  while (std::isspace(*start) && *start != '\0')
+  while (StringUtil::IsWhitespace(*start) && *start != '\0')
     start++;
 
   if (*start == '\0')
@@ -114,7 +136,7 @@ std::string_view CueParser::File::GetToken(const char*& line)
   else
   {
     end = start;
-    while (!std::isspace(*end) && *end != '\0')
+    while (!StringUtil::IsWhitespace(*end) && *end != '\0')
       end++;
 
     ret = std::string_view(start, static_cast<size_t>(end - start));
@@ -154,7 +176,7 @@ std::optional<CueParser::MSF> CueParser::File::GetMSF(std::string_view token)
     if (part == 3)
       break;
 
-    while (end < token.length() && std::isspace(token[end]))
+    while (end < token.length() && StringUtil::IsWhitespace(token[end]))
       end++;
     if (end == token.length() || token[end] != ':')
       return std::nullopt;
@@ -224,13 +246,22 @@ bool CueParser::File::HandleFileCommand(const char* line, u32 line_number, Error
     return false;
   }
 
-  if (!TokenMatch(mode, "BINARY"))
+  FileFormat format;
+  if (TokenMatch(mode, "BINARY"))
   {
-    SetError(line_number, error, "Only BINARY modes are supported");
+    format = FileFormat::Binary;
+  }
+  else if (TokenMatch(mode, "WAVE"))
+  {
+    format = FileFormat::Wave;
+  }
+  else
+  {
+    SetError(line_number, error, "Only BINARY and WAVE modes are supported");
     return false;
   }
 
-  m_current_file = filename;
+  m_current_file = {std::string(filename), format};
   DEBUG_LOG("File '{}'", filename);
   return true;
 }
@@ -285,8 +316,9 @@ bool CueParser::File::HandleTrackCommand(const char* line, u32 line_number, Erro
   }
 
   m_current_track = Track();
-  m_current_track->number = static_cast<u32>(track_number.value());
-  m_current_track->file = m_current_file.value();
+  m_current_track->number = static_cast<u8>(track_number.value());
+  m_current_track->file = m_current_file->first;
+  m_current_track->file_format = m_current_file->second;
   m_current_track->mode = mode;
   return true;
 }

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "d3d_common.h"
@@ -14,12 +14,15 @@
 
 #include "fmt/format.h"
 
+#include <algorithm>
 #include <d3d11.h>
+#include <d3d12.h>
 #include <d3dcompiler.h>
 #include <dxcapi.h>
 #include <dxgi1_5.h>
+#include <mutex>
 
-LOG_CHANNEL(D3DCommon);
+LOG_CHANNEL(GPUDevice);
 
 namespace D3DCommon {
 namespace {
@@ -30,6 +33,24 @@ struct FeatureLevelTableEntry
   u16 shader_model_number;
   const char* feature_level_str;
 };
+
+struct Libs
+{
+  std::mutex load_mutex;
+  DynamicLibrary dxgi_library;
+  decltype(&CreateDXGIFactory2) CreateDXGIFactory2;
+  DynamicLibrary d3d11_library;
+  PFN_D3D11_CREATE_DEVICE D3D11CreateDevice;
+  DynamicLibrary d3d12_library;
+  PFN_D3D12_CREATE_DEVICE D3D12CreateDevice;
+  PFN_D3D12_GET_DEBUG_INTERFACE D3D12GetDebugInterface;
+  PFN_D3D12_SERIALIZE_ROOT_SIGNATURE D3D12SerializeRootSignature;
+  DynamicLibrary d3dcompiler_library;
+  pD3DCompile D3DCompile;
+  DynamicLibrary dxcompiler_library;
+  DxcCreateInstanceProc DxcCreateInstance;
+};
+
 } // namespace
 
 static std::optional<DynamicHeapArray<u8>> CompileShaderWithFXC(u32 shader_model, bool debug_device,
@@ -38,10 +59,9 @@ static std::optional<DynamicHeapArray<u8>> CompileShaderWithFXC(u32 shader_model
 static std::optional<DynamicHeapArray<u8>> CompileShaderWithDXC(u32 shader_model, bool debug_device,
                                                                 GPUShaderStage stage, std::string_view source,
                                                                 const char* entry_point, Error* error);
+static bool LoadD3D12Library(Error* error);
+static bool LoadD3DCompilerLibrary(Error* error);
 static bool LoadDXCompilerLibrary(Error* error);
-
-static DynamicLibrary s_dxcompiler_library;
-static DxcCreateInstanceProc s_DxcCreateInstance;
 
 static constexpr std::array<FeatureLevelTableEntry, 11> s_feature_levels = {{
   {D3D_FEATURE_LEVEL_1_0_CORE, 100, 40, "D3D_FEATURE_LEVEL_1_0_CORE"},
@@ -56,6 +76,8 @@ static constexpr std::array<FeatureLevelTableEntry, 11> s_feature_levels = {{
   {D3D_FEATURE_LEVEL_12_1, 1210, 60, "D3D_FEATURE_LEVEL_12_1"},
   {D3D_FEATURE_LEVEL_12_2, 1220, 60, "D3D_FEATURE_LEVEL_12_2"},
 }};
+
+static Libs s_libs;
 } // namespace D3DCommon
 
 const char* D3DCommon::GetFeatureLevelString(u32 render_api_version)
@@ -99,28 +121,165 @@ D3D_FEATURE_LEVEL D3DCommon::GetDeviceMaxFeatureLevel(IDXGIAdapter1* adapter)
     D3D_FEATURE_LEVEL_12_2, D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_11_1,
     D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0};
 
-  D3D_FEATURE_LEVEL max_supported_level = requested_feature_levels.back();
-  HRESULT hr = D3D11CreateDevice(adapter, adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
-                                 requested_feature_levels.data(), static_cast<UINT>(requested_feature_levels.size()),
-                                 D3D11_SDK_VERSION, nullptr, &max_supported_level, nullptr);
-  if (FAILED(hr))
-    WARNING_LOG("D3D11CreateDevice() for getting max feature level failed: 0x{:08X}", static_cast<unsigned>(hr));
+  D3D_FEATURE_LEVEL max_supported_level;
+  Error error;
+  if (!CreateD3D11Device(adapter, 0, requested_feature_levels.data(),
+                         static_cast<UINT>(requested_feature_levels.size()), nullptr, &max_supported_level, nullptr,
+                         &error))
+  {
+    WARNING_LOG("D3D11CreateDevice() for getting max feature level failed: {}", error.GetDescription());
+    max_supported_level = requested_feature_levels.back();
+  }
 
   return max_supported_level;
 }
 
 Microsoft::WRL::ComPtr<IDXGIFactory5> D3DCommon::CreateFactory(bool debug, Error* error)
 {
+  if (!s_libs.dxgi_library.IsOpen())
+  {
+    // another thread may have opened it
+    const std::unique_lock lock(s_libs.load_mutex);
+    if (!s_libs.d3d11_library.IsOpen())
+    {
+      if (!s_libs.dxgi_library.Open("dxgi.dll", error))
+        return {};
+
+      if (!s_libs.dxgi_library.GetSymbol("CreateDXGIFactory2", &s_libs.CreateDXGIFactory2))
+      {
+        Error::SetStringView(error, "Failed to load CreateDXGIFactory2 from dxgi.dll");
+        s_libs.dxgi_library.Close();
+        return {};
+      }
+    }
+  }
+
   UINT flags = 0;
   if (debug)
     flags |= DXGI_CREATE_FACTORY_DEBUG;
 
   Microsoft::WRL::ComPtr<IDXGIFactory5> factory;
-  const HRESULT hr = CreateDXGIFactory2(flags, IID_PPV_ARGS(factory.GetAddressOf()));
+  const HRESULT hr = s_libs.CreateDXGIFactory2(flags, IID_PPV_ARGS(factory.GetAddressOf()));
   if (FAILED(hr))
     Error::SetHResult(error, "Failed to create DXGI factory: ", hr);
 
   return factory;
+}
+
+bool D3DCommon::SupportsAllowTearing(IDXGIFactory5* factory)
+{
+  BOOL allow_tearing_supported = false;
+  HRESULT hr = factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow_tearing_supported,
+                                            sizeof(allow_tearing_supported));
+  return (SUCCEEDED(hr) && allow_tearing_supported == TRUE);
+}
+
+bool D3DCommon::CreateD3D11Device(IDXGIAdapter* adapter, UINT create_flags, const D3D_FEATURE_LEVEL* feature_levels,
+                                  UINT num_feature_levels, Microsoft::WRL::ComPtr<ID3D11Device>* device,
+                                  D3D_FEATURE_LEVEL* out_feature_level,
+                                  Microsoft::WRL::ComPtr<ID3D11DeviceContext>* immediate_context, Error* error)
+{
+  if (!s_libs.d3d11_library.IsOpen())
+  {
+    // another thread may have opened it
+    const std::unique_lock lock(s_libs.load_mutex);
+    if (!s_libs.d3d11_library.IsOpen())
+    {
+      if (!s_libs.d3d11_library.Open("d3d11.dll", error))
+        return false;
+
+      if (!s_libs.d3d11_library.GetSymbol("D3D11CreateDevice", &s_libs.D3D11CreateDevice))
+      {
+        Error::SetStringView(error, "Failed to load D3D11CreateDevice from d3d11.dll");
+        s_libs.d3dcompiler_library.Close();
+        return false;
+      }
+    }
+  }
+
+  const HRESULT hr = s_libs.D3D11CreateDevice(
+    adapter, adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE, nullptr, create_flags, feature_levels,
+    num_feature_levels, D3D11_SDK_VERSION, device ? device->ReleaseAndGetAddressOf() : nullptr, out_feature_level,
+    immediate_context ? immediate_context->ReleaseAndGetAddressOf() : nullptr);
+  if (SUCCEEDED(hr))
+    return true;
+
+  Error::SetHResult(error, "D3D11CreateDevice() failed: ", hr);
+  return true;
+}
+
+bool D3DCommon::LoadD3D12Library(Error* error)
+{
+  if (s_libs.d3d12_library.IsOpen())
+    return true;
+
+  // double check, another thread may have opened it
+  const std::unique_lock lock(s_libs.load_mutex);
+  if (s_libs.d3d12_library.IsOpen())
+    return true;
+
+  if (!s_libs.d3d12_library.Open("d3d12.dll", error))
+    return false;
+
+  if (!s_libs.d3d12_library.GetSymbol("D3D12CreateDevice", &s_libs.D3D12CreateDevice) ||
+      !s_libs.d3d12_library.GetSymbol("D3D12GetDebugInterface", &s_libs.D3D12GetDebugInterface) ||
+      !s_libs.d3d12_library.GetSymbol("D3D12SerializeRootSignature", &s_libs.D3D12SerializeRootSignature))
+  {
+    Error::SetStringView(error, "Failed to load one or more required functions from d3d12.dll");
+    s_libs.d3d12_library.Close();
+    return false;
+  }
+
+  return true;
+}
+
+bool D3DCommon::GetD3D12DebugInterface(Microsoft::WRL::ComPtr<ID3D12Debug>* debug, Error* error)
+{
+  if (!LoadD3D12Library(error))
+    return false;
+
+  const HRESULT hr = s_libs.D3D12GetDebugInterface(IID_PPV_ARGS(debug->ReleaseAndGetAddressOf()));
+  if (FAILED(hr))
+  {
+    Error::SetHResult(error, "D3D12GetDebugInterface() failed: ", hr);
+    return false;
+  }
+
+  return true;
+}
+
+bool D3DCommon::CreateD3D12Device(IDXGIAdapter* adapter, D3D_FEATURE_LEVEL feature_level,
+                                  Microsoft::WRL::ComPtr<ID3D12Device1>* device, Error* error)
+{
+  if (!LoadD3D12Library(error))
+    return false;
+
+  const HRESULT hr = s_libs.D3D12CreateDevice(adapter, feature_level, IID_PPV_ARGS(device->ReleaseAndGetAddressOf()));
+  if (FAILED(hr))
+  {
+    Error::SetHResult(error, "D3D12CreateDevice() failed: ", hr);
+    return false;
+  }
+
+  return true;
+}
+
+Microsoft::WRL::ComPtr<ID3DBlob> D3DCommon::SerializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC* desc, Error* error)
+{
+  Microsoft::WRL::ComPtr<ID3DBlob> blob;
+  Microsoft::WRL::ComPtr<ID3DBlob> error_blob;
+  const HRESULT hr = s_libs.D3D12SerializeRootSignature(desc, D3D_ROOT_SIGNATURE_VERSION_1, blob.GetAddressOf(),
+                                                        error_blob.GetAddressOf());
+  if (FAILED(hr)) [[unlikely]]
+  {
+    Error::SetHResult(error, "D3D12SerializeRootSignature() failed: ", hr);
+    if (error_blob)
+      ERROR_LOG(static_cast<const char*>(error_blob->GetBufferPointer()));
+
+    return {};
+  }
+
+  return blob;
 }
 
 static std::string FixupDuplicateAdapterNames(const GPUDevice::AdapterInfoList& adapter_names, std::string adapter_name)
@@ -143,13 +302,13 @@ static std::string FixupDuplicateAdapterNames(const GPUDevice::AdapterInfoList& 
   return adapter_name;
 }
 
-GPUDevice::AdapterInfoList D3DCommon::GetAdapterInfoList()
+std::optional<GPUDevice::AdapterInfoList> D3DCommon::GetAdapterInfoList(Error* error)
 {
-  GPUDevice::AdapterInfoList adapters;
+  std::optional<GPUDevice::AdapterInfoList> ret;
 
-  Microsoft::WRL::ComPtr<IDXGIFactory5> factory = CreateFactory(false, nullptr);
+  Microsoft::WRL::ComPtr<IDXGIFactory5> factory = CreateFactory(false, error);
   if (!factory)
-    return adapters;
+    return ret;
 
   Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
   for (u32 index = 0;; index++)
@@ -164,10 +323,13 @@ GPUDevice::AdapterInfoList D3DCommon::GetAdapterInfoList()
       continue;
     }
 
+    if (!ret.has_value())
+      ret.emplace();
+
     // Unfortunately we can't get any properties such as feature level without creating the device.
     // So just assume a max of the D3D11 max across the board.
     GPUDevice::AdapterInfo ai;
-    ai.name = FixupDuplicateAdapterNames(adapters, GetAdapterName(adapter.Get()));
+    ai.name = FixupDuplicateAdapterNames(ret.value(), GetAdapterName(adapter.Get(), &ai.driver_type));
     ai.max_texture_size = D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION;
     ai.max_multisamples = 8;
     ai.supports_sample_shading = true;
@@ -183,10 +345,16 @@ GPUDevice::AdapterInfoList D3DCommon::GetAdapterInfoList()
         {
           for (const DXGI_MODE_DESC& mode : dmodes)
           {
-            ai.fullscreen_modes.push_back(GPUDevice::GetFullscreenModeString(
-              mode.Width, mode.Height,
-              static_cast<float>(mode.RefreshRate.Numerator) / static_cast<float>(mode.RefreshRate.Denominator)));
+            const GPUDevice::ExclusiveFullscreenMode efm{.width = mode.Width,
+                                                         .height = mode.Height,
+                                                         .refresh_rate =
+                                                           static_cast<float>(mode.RefreshRate.Numerator) /
+                                                           static_cast<float>(mode.RefreshRate.Denominator)};
+            if (std::ranges::find(ai.fullscreen_modes, efm) == ai.fullscreen_modes.end())
+              ai.fullscreen_modes.push_back(efm);
           }
+
+          std::sort(ai.fullscreen_modes.begin(), ai.fullscreen_modes.end());
         }
         else
         {
@@ -205,54 +373,53 @@ GPUDevice::AdapterInfoList D3DCommon::GetAdapterInfoList()
         ERROR_LOG("EnumOutputs() failed: {:08X}", static_cast<unsigned>(hr));
     }
 
-    adapters.push_back(std::move(ai));
+    ret->push_back(std::move(ai));
   }
 
-  return adapters;
+  if (!ret.has_value())
+  {
+    Error::SetStringView(error, "No DXGI adapters found.");
+    return ret;
+  }
+
+  return ret;
 }
 
-bool D3DCommon::GetRequestedExclusiveFullscreenModeDesc(IDXGIFactory5* factory, const RECT& window_rect, u32 width,
-                                                        u32 height, float refresh_rate, DXGI_FORMAT format,
-                                                        DXGI_MODE_DESC* fullscreen_mode, IDXGIOutput** output)
+std::optional<DXGI_MODE_DESC>
+D3DCommon::GetRequestedExclusiveFullscreenModeDesc(IDXGIAdapter* adapter, const RECT& window_rect,
+                                                   const GPUDevice::ExclusiveFullscreenMode* requested_fullscreen_mode,
+                                                   DXGI_FORMAT format, IDXGIOutput** output)
 {
+  std::optional<DXGI_MODE_DESC> ret;
+
   // We need to find which monitor the window is located on.
+  // The adapter must match, you cannot restrict the output to a monitor that is not connected to the device.
   const GSVector4i client_rc_vec(window_rect.left, window_rect.top, window_rect.right, window_rect.bottom);
 
   // The window might be on a different adapter to which we are rendering.. so we have to enumerate them all.
   HRESULT hr;
   Microsoft::WRL::ComPtr<IDXGIOutput> first_output, intersecting_output;
-
-  for (u32 adapter_index = 0; !intersecting_output; adapter_index++)
+  for (u32 output_index = 0;; output_index++)
   {
-    Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
-    hr = factory->EnumAdapters1(adapter_index, adapter.GetAddressOf());
+    Microsoft::WRL::ComPtr<IDXGIOutput> this_output;
+    DXGI_OUTPUT_DESC output_desc;
+    hr = adapter->EnumOutputs(output_index, this_output.GetAddressOf());
     if (hr == DXGI_ERROR_NOT_FOUND)
       break;
-    else if (FAILED(hr))
+    else if (FAILED(hr) || FAILED(this_output->GetDesc(&output_desc)))
       continue;
 
-    for (u32 output_index = 0;; output_index++)
+    const GSVector4i output_rc(output_desc.DesktopCoordinates.left, output_desc.DesktopCoordinates.top,
+                               output_desc.DesktopCoordinates.right, output_desc.DesktopCoordinates.bottom);
+    if (!client_rc_vec.rintersects(output_rc))
     {
-      Microsoft::WRL::ComPtr<IDXGIOutput> this_output;
-      DXGI_OUTPUT_DESC output_desc;
-      hr = adapter->EnumOutputs(output_index, this_output.GetAddressOf());
-      if (hr == DXGI_ERROR_NOT_FOUND)
-        break;
-      else if (FAILED(hr) || FAILED(this_output->GetDesc(&output_desc)))
-        continue;
-
-      const GSVector4i output_rc(output_desc.DesktopCoordinates.left, output_desc.DesktopCoordinates.top,
-                                 output_desc.DesktopCoordinates.right, output_desc.DesktopCoordinates.bottom);
-      if (!client_rc_vec.rintersects(output_rc))
-      {
-        intersecting_output = std::move(this_output);
-        break;
-      }
-
-      // Fallback to the first monitor.
-      if (!first_output)
-        first_output = std::move(this_output);
+      intersecting_output = std::move(this_output);
+      break;
     }
+
+    // Fallback to the first monitor.
+    if (!first_output)
+      first_output = std::move(this_output);
   }
 
   if (!intersecting_output)
@@ -260,7 +427,7 @@ bool D3DCommon::GetRequestedExclusiveFullscreenModeDesc(IDXGIFactory5* factory, 
     if (!first_output)
     {
       ERROR_LOG("No DXGI output found. Can't use exclusive fullscreen.");
-      return false;
+      return ret;
     }
 
     WARNING_LOG("No DXGI output found for window, using first.");
@@ -268,22 +435,25 @@ bool D3DCommon::GetRequestedExclusiveFullscreenModeDesc(IDXGIFactory5* factory, 
   }
 
   DXGI_MODE_DESC request_mode = {};
-  request_mode.Width = width;
-  request_mode.Height = height;
+  request_mode.Width = requested_fullscreen_mode->width;
+  request_mode.Height = requested_fullscreen_mode->height;
   request_mode.Format = format;
-  request_mode.RefreshRate.Numerator = static_cast<UINT>(std::floor(refresh_rate * 1000.0f));
+  request_mode.RefreshRate.Numerator = static_cast<UINT>(std::floor(requested_fullscreen_mode->refresh_rate * 1000.0f));
   request_mode.RefreshRate.Denominator = 1000u;
 
-  if (FAILED(hr = intersecting_output->FindClosestMatchingMode(&request_mode, fullscreen_mode, nullptr)) ||
+  ret = DXGI_MODE_DESC();
+
+  if (FAILED(hr = intersecting_output->FindClosestMatchingMode(&request_mode, &ret.value(), nullptr)) ||
       request_mode.Format != format)
   {
     ERROR_LOG("Failed to find closest matching mode, hr={:08X}", static_cast<unsigned>(hr));
-    return false;
+    ret.reset();
+    return ret;
   }
 
   *output = intersecting_output.Get();
   intersecting_output->AddRef();
-  return true;
+  return ret;
 }
 
 Microsoft::WRL::ComPtr<IDXGIAdapter1> D3DCommon::GetAdapterByName(IDXGIFactory5* factory, std::string_view name)
@@ -343,7 +513,7 @@ Microsoft::WRL::ComPtr<IDXGIAdapter1> D3DCommon::GetChosenOrFirstAdapter(IDXGIFa
   return adapter;
 }
 
-std::string D3DCommon::GetAdapterName(IDXGIAdapter1* adapter)
+std::string D3DCommon::GetAdapterName(IDXGIAdapter1* adapter, GPUDriverType* out_driver_type)
 {
   std::string ret;
 
@@ -352,10 +522,20 @@ std::string D3DCommon::GetAdapterName(IDXGIAdapter1* adapter)
   if (SUCCEEDED(hr))
   {
     ret = StringUtil::WideStringToUTF8String(desc.Description);
+    if (out_driver_type)
+    {
+      // Handle WARP here.
+      if (desc.VendorId == 0x1414)
+        *out_driver_type = GPUDriverType::WARP;
+      else
+        *out_driver_type = GPUDevice::GuessDriverType(desc.VendorId, {}, ret);
+    }
   }
   else
   {
     ERROR_LOG("IDXGIAdapter1::GetDesc() returned {:08X}", static_cast<unsigned>(hr));
+    if (out_driver_type)
+      *out_driver_type = GPUDriverType::Unknown;
   }
 
   if (ret.empty())
@@ -424,6 +604,9 @@ std::optional<DynamicHeapArray<u8>> D3DCommon::CompileShaderWithFXC(u32 shader_m
                                                                     GPUShaderStage stage, std::string_view source,
                                                                     const char* entry_point, Error* error)
 {
+  if (!LoadD3DCompilerLibrary(error))
+    return {};
+
   const char* target;
   switch (shader_model)
   {
@@ -456,14 +639,15 @@ std::optional<DynamicHeapArray<u8>> D3DCommon::CompileShaderWithFXC(u32 shader_m
       return {};
   }
 
-  static constexpr UINT flags_non_debug = D3DCOMPILE_OPTIMIZATION_LEVEL3;
-  static constexpr UINT flags_debug = D3DCOMPILE_SKIP_OPTIMIZATION | D3DCOMPILE_DEBUG;
+  static constexpr UINT flags_non_debug = D3DCOMPILE_PACK_MATRIX_ROW_MAJOR | D3DCOMPILE_OPTIMIZATION_LEVEL3;
+  static constexpr UINT flags_debug =
+    D3DCOMPILE_PACK_MATRIX_ROW_MAJOR | D3DCOMPILE_SKIP_OPTIMIZATION | D3DCOMPILE_DEBUG;
 
   Microsoft::WRL::ComPtr<ID3DBlob> blob;
   Microsoft::WRL::ComPtr<ID3DBlob> error_blob;
   const HRESULT hr =
-    D3DCompile(source.data(), source.size(), "0", nullptr, nullptr, entry_point, target,
-               debug_device ? flags_debug : flags_non_debug, 0, blob.GetAddressOf(), error_blob.GetAddressOf());
+    s_libs.D3DCompile(source.data(), source.size(), "0", nullptr, nullptr, entry_point, target,
+                      debug_device ? flags_debug : flags_non_debug, 0, blob.GetAddressOf(), error_blob.GetAddressOf());
 
   std::string_view error_string;
   if (error_blob)
@@ -488,6 +672,29 @@ std::optional<DynamicHeapArray<u8>> D3DCommon::CompileShaderWithFXC(u32 shader_m
   return DynamicHeapArray<u8>(static_cast<const u8*>(blob->GetBufferPointer()), blob->GetBufferSize());
 }
 
+bool D3DCommon::LoadD3DCompilerLibrary(Error* error)
+{
+  if (s_libs.d3dcompiler_library.IsOpen())
+    return true;
+
+  // double check, another thread may have opened it
+  const std::unique_lock lock(s_libs.load_mutex);
+  if (s_libs.d3dcompiler_library.IsOpen())
+    return true;
+
+  if (!s_libs.d3dcompiler_library.Open(D3DCOMPILER_DLL_A, error))
+    return false;
+
+  if (!s_libs.d3dcompiler_library.GetSymbol("D3DCompile", &s_libs.D3DCompile))
+  {
+    Error::SetStringView(error, "Failed to load D3DCompile from d3dcompiler.dll");
+    s_libs.d3dcompiler_library.Close();
+    return false;
+  }
+
+  return true;
+}
+
 std::optional<DynamicHeapArray<u8>> D3DCommon::CompileShaderWithDXC(u32 shader_model, bool debug_device,
                                                                     GPUShaderStage stage, std::string_view source,
                                                                     const char* entry_point, Error* error)
@@ -497,7 +704,7 @@ std::optional<DynamicHeapArray<u8>> D3DCommon::CompileShaderWithDXC(u32 shader_m
 
   HRESULT hr;
   Microsoft::WRL::ComPtr<IDxcUtils> utils;
-  if (FAILED(hr = s_DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(utils.GetAddressOf())))) [[unlikely]]
+  if (FAILED(hr = s_libs.DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(utils.GetAddressOf())))) [[unlikely]]
   {
     Error::SetHResult(error, "DxcCreateInstance(CLSID_DxcUtils) failed: ", hr);
     return {};
@@ -512,7 +719,7 @@ std::optional<DynamicHeapArray<u8>> D3DCommon::CompileShaderWithDXC(u32 shader_m
   }
 
   Microsoft::WRL::ComPtr<IDxcCompiler> compiler;
-  if (FAILED(hr = s_DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(compiler.GetAddressOf())))) [[unlikely]]
+  if (FAILED(hr = s_libs.DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(compiler.GetAddressOf())))) [[unlikely]]
   {
     Error::SetHResult(error, "DxcCreateInstance(CLSID_DxcCompiler) failed: ", hr);
     return {};
@@ -537,13 +744,11 @@ std::optional<DynamicHeapArray<u8>> D3DCommon::CompileShaderWithDXC(u32 shader_m
   static constexpr const wchar_t* nondebug_arguments[] = {
     L"-Qstrip_reflect",
     L"-Qstrip_debug",
+    DXC_ARG_PACK_MATRIX_ROW_MAJOR,
     DXC_ARG_OPTIMIZATION_LEVEL3,
   };
   static constexpr const wchar_t* debug_arguments[] = {
-    L"-Qstrip_reflect",
-    DXC_ARG_DEBUG,
-    L"-Qembed_debug",
-    DXC_ARG_SKIP_OPTIMIZATIONS,
+    L"-Qstrip_reflect", DXC_ARG_DEBUG, L"-Qembed_debug", DXC_ARG_PACK_MATRIX_ROW_MAJOR, DXC_ARG_SKIP_OPTIMIZATIONS,
   };
   const wchar_t* const* arguments = debug_device ? debug_arguments : nondebug_arguments;
   const size_t arguments_size = debug_device ? std::size(debug_arguments) : std::size(nondebug_arguments);
@@ -589,20 +794,28 @@ std::optional<DynamicHeapArray<u8>> D3DCommon::CompileShaderWithDXC(u32 shader_m
 
 bool D3DCommon::LoadDXCompilerLibrary(Error* error)
 {
-  if (s_dxcompiler_library.IsOpen())
+  if (s_libs.dxcompiler_library.IsOpen())
     return true;
 
-  if (!s_dxcompiler_library.Open("dxcompiler.dll", error) ||
-      !s_dxcompiler_library.GetSymbol("DxcCreateInstance", &s_DxcCreateInstance))
+  // double check, another thread may have opened it
+  const std::unique_lock lock(s_libs.load_mutex);
+  if (s_libs.dxcompiler_library.IsOpen())
+    return true;
+
+  if (!s_libs.dxcompiler_library.Open("dxcompiler.dll", error))
+    return false;
+
+  if (!s_libs.dxcompiler_library.GetSymbol("DxcCreateInstance", &s_libs.DxcCreateInstance))
   {
-    s_dxcompiler_library.Close();
+    Error::SetStringView(error, "Failed to load DxcCreateInstance from dxcompiler.dll");
+    s_libs.dxcompiler_library.Close();
     return false;
   }
 
   return true;
 }
 
-static constexpr std::array<D3DCommon::DXGIFormatMapping, static_cast<int>(GPUTexture::Format::MaxCount)>
+static constexpr std::array<D3DCommon::DXGIFormatMapping, static_cast<int>(GPUTextureFormat::MaxCount)>
   s_format_mapping = {{
     // clang-format off
   // d3d_format                    srv_format                           rtv_format                      dsv_format
@@ -610,7 +823,8 @@ static constexpr std::array<D3DCommon::DXGIFormatMapping, static_cast<int>(GPUTe
   {DXGI_FORMAT_R8G8B8A8_UNORM,     DXGI_FORMAT_R8G8B8A8_UNORM,          DXGI_FORMAT_R8G8B8A8_UNORM,           DXGI_FORMAT_UNKNOWN               }, // RGBA8
   {DXGI_FORMAT_B8G8R8A8_UNORM,     DXGI_FORMAT_B8G8R8A8_UNORM,          DXGI_FORMAT_B8G8R8A8_UNORM,           DXGI_FORMAT_UNKNOWN               }, // BGRA8
   {DXGI_FORMAT_B5G6R5_UNORM,       DXGI_FORMAT_B5G6R5_UNORM,            DXGI_FORMAT_B5G6R5_UNORM,             DXGI_FORMAT_UNKNOWN               }, // RGB565
-  {DXGI_FORMAT_B5G5R5A1_UNORM,     DXGI_FORMAT_B5G5R5A1_UNORM,          DXGI_FORMAT_B5G5R5A1_UNORM,           DXGI_FORMAT_UNKNOWN               }, // RGBA5551
+  {DXGI_FORMAT_B5G5R5A1_UNORM,     DXGI_FORMAT_B5G5R5A1_UNORM,          DXGI_FORMAT_B5G5R5A1_UNORM,           DXGI_FORMAT_UNKNOWN               }, // RGB5A1
+  {DXGI_FORMAT_UNKNOWN,            DXGI_FORMAT_UNKNOWN,                 DXGI_FORMAT_UNKNOWN,                  DXGI_FORMAT_UNKNOWN               }, // A1BGR5
   {DXGI_FORMAT_R8_UNORM,           DXGI_FORMAT_R8_UNORM,                DXGI_FORMAT_R8_UNORM,                 DXGI_FORMAT_UNKNOWN               }, // R8
   {DXGI_FORMAT_R16_TYPELESS,       DXGI_FORMAT_R16_UNORM,               DXGI_FORMAT_UNKNOWN,                  DXGI_FORMAT_D16_UNORM             }, // D16
   {DXGI_FORMAT_R24G8_TYPELESS,     DXGI_FORMAT_R24_UNORM_X8_TYPELESS,   DXGI_FORMAT_R24_UNORM_X8_TYPELESS,    DXGI_FORMAT_D24_UNORM_S8_UINT     }, // D24S8
@@ -631,22 +845,27 @@ static constexpr std::array<D3DCommon::DXGIFormatMapping, static_cast<int>(GPUTe
   {DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,      DXGI_FORMAT_R16G16B16A16_FLOAT,       DXGI_FORMAT_UNKNOWN               }, // RGBA16F
   {DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,      DXGI_FORMAT_R32G32B32A32_FLOAT,       DXGI_FORMAT_UNKNOWN               }, // RGBA32F
   {DXGI_FORMAT_R10G10B10A2_UNORM,  DXGI_FORMAT_R10G10B10A2_UNORM,       DXGI_FORMAT_R10G10B10A2_UNORM,        DXGI_FORMAT_UNKNOWN               }, // RGB10A2
+  {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,     DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,      DXGI_FORMAT_UNKNOWN               }, // SRGBA8
+  {DXGI_FORMAT_BC1_UNORM,          DXGI_FORMAT_BC1_UNORM,               DXGI_FORMAT_UNKNOWN,                  DXGI_FORMAT_UNKNOWN               }, // BC1
+  {DXGI_FORMAT_BC2_UNORM,          DXGI_FORMAT_BC2_UNORM,               DXGI_FORMAT_UNKNOWN,                  DXGI_FORMAT_UNKNOWN               }, // BC2
+  {DXGI_FORMAT_BC3_UNORM,          DXGI_FORMAT_BC3_UNORM,               DXGI_FORMAT_UNKNOWN,                  DXGI_FORMAT_UNKNOWN               }, // BC3
+  {DXGI_FORMAT_BC7_UNORM,          DXGI_FORMAT_BC7_UNORM,               DXGI_FORMAT_UNKNOWN,                  DXGI_FORMAT_UNKNOWN               }, // BC7
     // clang-format on
   }};
 
-const D3DCommon::DXGIFormatMapping& D3DCommon::GetFormatMapping(GPUTexture::Format format)
+const D3DCommon::DXGIFormatMapping& D3DCommon::GetFormatMapping(GPUTextureFormat format)
 {
   DebugAssert(static_cast<u8>(format) < s_format_mapping.size());
   return s_format_mapping[static_cast<u8>(format)];
 }
 
-GPUTexture::Format D3DCommon::GetFormatForDXGIFormat(DXGI_FORMAT format)
+GPUTextureFormat D3DCommon::GetFormatForDXGIFormat(DXGI_FORMAT format)
 {
-  for (u32 i = 0; i < static_cast<u32>(GPUTexture::Format::MaxCount); i++)
+  for (u32 i = 0; i < static_cast<u32>(GPUTextureFormat::MaxCount); i++)
   {
     if (s_format_mapping[i].resource_format == format)
-      return static_cast<GPUTexture::Format>(i);
+      return static_cast<GPUTextureFormat>(i);
   }
 
-  return GPUTexture::Format::Unknown;
+  return GPUTextureFormat::Unknown;
 }

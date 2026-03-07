@@ -9,7 +9,7 @@
 
 class StateWrapper;
 
-class AudioStream;
+class CoreAudioStream;
 
 namespace SPU {
 
@@ -33,7 +33,7 @@ void DMARead(u32* words, u32 word_count);
 void DMAWrite(const u32* words, u32 word_count);
 
 // Render statistics debug window.
-void DrawDebugStateWindow();
+void DrawDebugStateWindow(float scale);
 
 // Executes the SPU, generating any pending samples.
 void GeneratePendingSamples();
@@ -47,7 +47,7 @@ std::array<u8, RAM_SIZE>& GetWritableRAM();
 bool IsAudioOutputMuted();
 void SetAudioOutputMuted(bool muted);
 
-AudioStream* GetOutputStream();
-void RecreateOutputStream();
+CoreAudioStream& GetOutputStream();
+void CreateOutputStream();
 
 }; // namespace SPU

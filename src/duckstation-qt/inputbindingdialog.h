@@ -1,10 +1,14 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
-#include "common/types.h"
+
 #include "ui_inputbindingdialog.h"
+
 #include "util/input_manager.h"
+
+#include "common/types.h"
+
 #include <QtWidgets/QDialog>
 #include <optional>
 #include <string>
@@ -20,13 +24,6 @@ public:
   InputBindingDialog(SettingsInterface* sif, InputBindingInfo::Type bind_type, std::string section_name,
                      std::string key_name, std::vector<std::string> bindings, QWidget* parent);
   ~InputBindingDialog();
-
-protected Q_SLOTS:
-  void onAddBindingButtonClicked();
-  void onRemoveBindingButtonClicked();
-  void onClearBindingsButtonClicked();
-  void onInputListenTimerTimeout();
-  void inputManagerHookCallback(InputBindingKey key, float value);
 
 protected:
   enum : u32
@@ -53,6 +50,12 @@ protected:
   void onDeadzoneChanged(int value);
   void onResetSensitivityClicked();
 
+  void onAddBindingButtonClicked();
+  void onRemoveBindingButtonClicked();
+  void onClearBindingsButtonClicked();
+  void onInputListenTimerTimeout();
+  void inputManagerHookCallback(InputBindingKey key, float value);
+
   Ui::InputBindingDialog m_ui;
 
   SettingsInterface* m_sif;
@@ -67,4 +70,7 @@ protected:
   u32 m_input_listen_remaining_seconds = 0;
   QPoint m_input_listen_start_position{};
   bool m_mouse_mapping_enabled = false;
+  bool m_sensor_mapping_enabled = false;
+
+  static InputBindingDialog* s_current_hook_dialog;
 };

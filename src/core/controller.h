@@ -1,12 +1,12 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
 #include "input_types.h"
-#include "settings.h"
 #include "types.h"
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <span>
@@ -17,19 +17,10 @@
 
 class SettingsInterface;
 class StateWrapper;
-class HostInterface;
 
 class Controller
 {
 public:
-  enum class VibrationCapabilities : u8
-  {
-    NoVibration,
-    LargeSmallMotors,
-    SingleMotor,
-    Count
-  };
-
   struct ControllerBindingInfo
   {
     const char* name;
@@ -48,10 +39,12 @@ public:
     const char* icon_name;
     std::span<const ControllerBindingInfo> bindings;
     std::span<const SettingInfo> settings;
-    VibrationCapabilities vibration_caps;
 
     /// Returns localized controller type name.
-    const char* GetDisplayName() const;
+    std::string_view GetDisplayName() const;
+
+    /// Returns localized controller type name.
+    std::string_view GetBindingDisplayName(const ControllerBindingInfo& bi) const;
   };
 
   /// Default stick deadzone/sensitivity.
@@ -59,7 +52,7 @@ public:
   static constexpr float DEFAULT_STICK_SENSITIVITY = 1.33f;
   static constexpr float DEFAULT_BUTTON_DEADZONE = 0.25f;
 
-  Controller(u32 index);
+  explicit Controller(u32 index);
   virtual ~Controller();
 
   /// Returns the type of controller.
@@ -83,33 +76,24 @@ public:
   /// Returns a bitmask of the current button states, 1 = on.
   virtual u32 GetButtonStateBits() const;
 
-  /// Returns true if the controller supports analog mode, and it is active.
-  virtual bool InAnalogMode() const;
-
   /// Returns analog input bytes packed as a u32. Values are specific to controller type.
   virtual std::optional<u32> GetAnalogInputBytes() const;
 
-  /// Returns the colour to use in the input overlay.
-  virtual u32 GetInputOverlayIconColor() const;
-
   /// Loads/refreshes any per-controller settings.
-  virtual void LoadSettings(SettingsInterface& si, const char* section, bool initial);
+  virtual void LoadSettings(const SettingsInterface& si, const char* section, bool initial);
 
   /// Creates a new controller of the specified type.
   static std::unique_ptr<Controller> Create(ControllerType type, u32 index);
 
-  /// Returns the default type for the specified port.
-  static const char* GetDefaultPadType(u32 pad);
-
-  /// Returns a list of controller type names. Pair of [name, display name].
-  static std::vector<std::pair<std::string, std::string>> GetControllerTypeNames();
-
-  /// Gets the integer code for an axis in the specified controller type.
-  static std::optional<u32> GetBindIndex(ControllerType type, std::string_view bind_name);
+  /// Returns a list of all controller types.
+  static const std::array<const ControllerInfo*, static_cast<size_t>(ControllerType::Count)>& GetControllerInfoList();
 
   /// Returns general information for the specified controller type.
-  static const ControllerInfo* GetControllerInfo(ControllerType type);
+  static const ControllerInfo& GetControllerInfo(ControllerType type);
   static const ControllerInfo* GetControllerInfo(std::string_view name);
+
+  /// Returns true if the specified coordinates are inside a circular deadzone.
+  static bool InCircularDeadzone(float deadzone, float pos_x, float pos_y);
 
   /// Converts a global pad index to a multitap port and slot.
   static std::tuple<u32, u32> ConvertPadToPortAndSlot(u32 index);
@@ -124,18 +108,16 @@ public:
   /// Returns the configuration section for the specified gamepad.
   static std::string GetSettingsSection(u32 pad);
 
-  /// Applies an analog deadzone/sensitivity.
-  static float ApplyAnalogDeadzoneSensitivity(float deadzone, float sensitivity, float value)
-  {
-    return (value < deadzone) ? 0.0f : ((value - deadzone) / (1.0f - deadzone) * sensitivity);
-  }
+  /// Returns a printable label for a given port.
+  static const char* GetPortDisplayName(u32 port, u32 slot, bool mtap);
+  static const char* GetPortDisplayName(u32 index);
 
-  /// Returns true if the specified coordinates are inside a circular deadzone.
-  static bool InCircularDeadzone(float deadzone, float pos_x, float pos_y);
+  /// List of controller indices in the order that they should be displayed.
+  static const std::array<u32, NUM_CONTROLLER_AND_CARD_PORTS> PortDisplayOrder;
 
-protected:
   /// Returns true if automatic analog mode can be used.
   static bool CanStartInAnalogMode(ControllerType ctype);
 
+protected:
   u32 m_index;
 };

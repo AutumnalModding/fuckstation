@@ -1,13 +1,13 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
 #include "common/types.h"
 
-static constexpr u32 SAVE_STATE_MAGIC = 0x43435544;
-static constexpr u32 SAVE_STATE_VERSION = 71;
-static constexpr u32 SAVE_STATE_MINIMUM_VERSION = 42;
+inline constexpr u32 SAVE_STATE_MAGIC = 0x43435544;
+inline constexpr u32 SAVE_STATE_VERSION = 83;
+inline constexpr u32 SAVE_STATE_MINIMUM_VERSION = 42;
 
 static_assert(SAVE_STATE_VERSION >= SAVE_STATE_MINIMUM_VERSION);
 
@@ -26,6 +26,7 @@ struct SAVE_STATE_HEADER
     None = 0,
     Deflate = 1,
     Zstandard = 2,
+    XZ = 3,
   };
 
   u32 magic;
@@ -36,7 +37,7 @@ struct SAVE_STATE_HEADER
   u32 media_path_length;
   u32 offset_to_media_path;
   u32 media_subimage_index;
-  
+
   // Screenshot compression added in version 69.
   // Uncompressed size not stored, it can be inferred from width/height.
   u32 screenshot_compression_type;

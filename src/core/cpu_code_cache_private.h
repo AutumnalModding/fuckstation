@@ -37,8 +37,6 @@ enum RegInfoFlags : u8
 
 struct InstructionInfo
 {
-  u32 pc; // TODO: Remove this, old recs still depend on it.
-
   bool is_branch_instruction : 1;
   bool is_direct_branch_instruction : 1;
   bool is_unconditional_branch_instruction : 1;
@@ -215,7 +213,7 @@ void InterpretUncachedBlock();
 
 void LogCurrentState();
 
-#if defined(_DEBUG) || false
+#if defined(_DEBUG) || defined(_DEVEL) || false
 // Enable disassembly of host assembly code.
 #define ENABLE_HOST_DISASSEMBLY 1
 #endif
@@ -239,6 +237,7 @@ const void* GetInterpretUncachedBlockFunction();
 void CompileOrRevalidateBlock(u32 start_pc);
 void DiscardAndRecompileBlock(u32 start_pc);
 const void* CreateBlockLink(Block* from_block, void* code, u32 newpc);
+const void* CreateSelfBlockLink(Block* block, void* code, const void* block_start);
 
 void AddLoadStoreInfo(void* code_address, u32 code_size, u32 guest_pc, const void* thunk_address);
 void AddLoadStoreInfo(void* code_address, u32 code_size, u32 guest_pc, u32 guest_block, TickCount cycles,
@@ -248,6 +247,7 @@ bool HasPreviouslyFaultedOnPC(u32 guest_pc);
 
 u32 EmitASMFunctions(void* code, u32 code_size);
 u32 EmitJump(void* code, const void* dst, bool flush_icache);
+void EmitAlignmentPadding(void* dst, size_t size);
 
 void DisassembleAndLogHostCode(const void* start, u32 size);
 u32 GetHostInstructionCount(const void* start, u32 size);
@@ -256,7 +256,6 @@ extern CodeLUTArray g_code_lut;
 
 extern NORETURN_FUNCTION_POINTER void (*g_enter_recompiler)();
 extern const void* g_compile_or_revalidate_block;
-extern const void* g_check_events_and_dispatch;
 extern const void* g_run_events_and_dispatch;
 extern const void* g_dispatcher;
 extern const void* g_block_dispatcher;

@@ -7,6 +7,7 @@
 
 #include "common/align.h"
 #include "common/assert.h"
+#include "common/error.h"
 #include "common/intrin.h"
 #include "common/log.h"
 #include "common/string_util.h"
@@ -15,7 +16,7 @@
 #include <limits>
 #include <tuple>
 
-LOG_CHANNEL(OpenGLDevice);
+LOG_CHANNEL(GPUDevice);
 
 // Looking across a range of GPUs, the optimal copy alignment for Vulkan drivers seems
 // to be between 1 (AMD/NV) and 64 (Intel). So, we'll go with 64 here.
@@ -25,74 +26,94 @@ static constexpr u32 TEXTURE_UPLOAD_ALIGNMENT = 64;
 // We need 32 here for AVX2, so 64 is also fine.
 static constexpr u32 TEXTURE_UPLOAD_PITCH_ALIGNMENT = 64;
 
-const std::tuple<GLenum, GLenum, GLenum>& OpenGLTexture::GetPixelFormatMapping(GPUTexture::Format format, bool gles)
+// Default upload alignment, for restoring.
+static constexpr u32 DEFAULT_UPLOAD_ALIGNMENT = 4;
+
+const std::tuple<GLenum, GLenum, GLenum>& OpenGLTexture::GetPixelFormatMapping(GPUTextureFormat format, bool gles)
 {
-  static constexpr std::array<std::tuple<GLenum, GLenum, GLenum>, static_cast<u32>(GPUTexture::Format::MaxCount)>
+  static constexpr std::array<std::tuple<GLenum, GLenum, GLenum>, static_cast<u32>(GPUTextureFormat::MaxCount)>
     mapping = {{
-      {},                                                       // Unknown
-      {GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE},                    // RGBA8
-      {GL_RGBA8, GL_BGRA, GL_UNSIGNED_BYTE},                    // BGRA8
-      {GL_RGB565, GL_RGB, GL_UNSIGNED_SHORT_5_6_5},             // RGB565
-      {GL_RGB5_A1, GL_BGRA, GL_UNSIGNED_SHORT_1_5_5_5_REV},     // RGBA5551
-      {GL_R8, GL_RED, GL_UNSIGNED_BYTE},                        // R8
-      {GL_DEPTH_COMPONENT16, GL_DEPTH_COMPONENT, GL_SHORT},     // D16
-      {GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL, GL_UNSIGNED_INT}, // D24S8
-      {GL_DEPTH_COMPONENT32F, GL_DEPTH_COMPONENT, GL_FLOAT},    // D32F
-      {GL_DEPTH32F_STENCIL8, GL_DEPTH_STENCIL, GL_FLOAT},       // D32FS8
-      {GL_R16, GL_RED, GL_UNSIGNED_SHORT},                      // R16
-      {GL_R16I, GL_RED_INTEGER, GL_SHORT},                      // R16I
-      {GL_R16UI, GL_RED_INTEGER, GL_UNSIGNED_SHORT},            // R16U
-      {GL_R16F, GL_RED, GL_HALF_FLOAT},                         // R16F
-      {GL_R32I, GL_RED_INTEGER, GL_INT},                        // R32I
-      {GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT},              // R32U
-      {GL_R32F, GL_RED, GL_FLOAT},                              // R32F
-      {GL_RG8, GL_RG_INTEGER, GL_UNSIGNED_BYTE},                // RG8
-      {GL_RG16F, GL_RG, GL_UNSIGNED_SHORT},                     // RG16
-      {GL_RG16F, GL_RG, GL_HALF_FLOAT},                         // RG16F
-      {GL_RG32F, GL_RG, GL_FLOAT},                              // RG32F
-      {GL_RGBA16, GL_RGBA, GL_UNSIGNED_BYTE},                   // RGBA16
-      {GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT},                     // RGBA16F
-      {GL_RGBA32F, GL_RGBA, GL_FLOAT},                          // RGBA32F
-      {GL_RGB10_A2, GL_BGRA, GL_UNSIGNED_INT_2_10_10_10_REV},   // RGB10A2
+      {},                                                                                       // Unknown
+      {GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE},                                                    // RGBA8
+      {GL_RGBA8, GL_BGRA, GL_UNSIGNED_BYTE},                                                    // BGRA8
+      {GL_RGB565, GL_RGB, GL_UNSIGNED_SHORT_5_6_5},                                             // RGB565
+      {},                                                                                       // RGB5A1
+      {GL_RGB5_A1, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1},                                         // A1BGR5
+      {GL_R8, GL_RED, GL_UNSIGNED_BYTE},                                                        // R8
+      {GL_DEPTH_COMPONENT16, GL_DEPTH_COMPONENT, GL_SHORT},                                     // D16
+      {GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL, GL_UNSIGNED_INT},                                 // D24S8
+      {GL_DEPTH_COMPONENT32F, GL_DEPTH_COMPONENT, GL_FLOAT},                                    // D32F
+      {GL_DEPTH32F_STENCIL8, GL_DEPTH_STENCIL, GL_FLOAT},                                       // D32FS8
+      {GL_R16, GL_RED, GL_UNSIGNED_SHORT},                                                      // R16
+      {GL_R16I, GL_RED_INTEGER, GL_SHORT},                                                      // R16I
+      {GL_R16UI, GL_RED_INTEGER, GL_UNSIGNED_SHORT},                                            // R16U
+      {GL_R16F, GL_RED, GL_HALF_FLOAT},                                                         // R16F
+      {GL_R32I, GL_RED_INTEGER, GL_INT},                                                        // R32I
+      {GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT},                                              // R32U
+      {GL_R32F, GL_RED, GL_FLOAT},                                                              // R32F
+      {GL_RG8, GL_RG_INTEGER, GL_UNSIGNED_BYTE},                                                // RG8
+      {GL_RG16F, GL_RG, GL_UNSIGNED_SHORT},                                                     // RG16
+      {GL_RG16F, GL_RG, GL_HALF_FLOAT},                                                         // RG16F
+      {GL_RG32F, GL_RG, GL_FLOAT},                                                              // RG32F
+      {GL_RGBA16, GL_RGBA, GL_UNSIGNED_BYTE},                                                   // RGBA16
+      {GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT},                                                     // RGBA16F
+      {GL_RGBA32F, GL_RGBA, GL_FLOAT},                                                          // RGBA32F
+      {GL_RGB10_A2, GL_BGRA, GL_UNSIGNED_INT_2_10_10_10_REV},                                   // RGB10A2
+      {GL_SRGB8_ALPHA8, GL_RGBA, GL_UNSIGNED_BYTE},                                             // SRGBA8
+      {GL_COMPRESSED_RGBA_S3TC_DXT1_EXT, GL_COMPRESSED_RGBA_S3TC_DXT1_EXT, GL_UNSIGNED_BYTE},   // BC1
+      {GL_COMPRESSED_RGBA_S3TC_DXT3_EXT, GL_COMPRESSED_RGBA_S3TC_DXT3_EXT, GL_UNSIGNED_BYTE},   // BC2
+      {GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, GL_UNSIGNED_BYTE},   // BC3
+      {GL_COMPRESSED_RGBA_BPTC_UNORM_ARB, GL_COMPRESSED_RGBA_BPTC_UNORM_ARB, GL_UNSIGNED_BYTE}, // BC7
     }};
 
   // GLES doesn't have the non-normalized 16-bit formats.. use float and hope for the best, lol.
-  static constexpr std::array<std::tuple<GLenum, GLenum, GLenum>, static_cast<u32>(GPUTexture::Format::MaxCount)>
+  static constexpr std::array<std::tuple<GLenum, GLenum, GLenum>, static_cast<u32>(GPUTextureFormat::MaxCount)>
     mapping_gles = {{
-      {},                                                       // Unknown
-      {GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE},                    // RGBA8
-      {GL_RGBA8, GL_BGRA, GL_UNSIGNED_BYTE},                    // BGRA8
-      {GL_RGB565, GL_RGB, GL_UNSIGNED_SHORT_5_6_5},             // RGB565
-      {GL_RGB5_A1, GL_BGRA, GL_UNSIGNED_SHORT_1_5_5_5_REV},     // RGBA5551
-      {GL_R8, GL_RED, GL_UNSIGNED_BYTE},                        // R8
-      {GL_DEPTH_COMPONENT16, GL_DEPTH_COMPONENT, GL_SHORT},     // D16
-      {GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL, GL_UNSIGNED_INT}, // D24S8
-      {GL_DEPTH_COMPONENT32F, GL_DEPTH_COMPONENT, GL_FLOAT},    // D32F
-      {GL_DEPTH32F_STENCIL8, GL_DEPTH_STENCIL, GL_FLOAT},       // D32FS8
-      {GL_R16F, GL_RED, GL_HALF_FLOAT},                         // R16
-      {GL_R16I, GL_RED_INTEGER, GL_SHORT},                      // R16I
-      {GL_R16UI, GL_RED_INTEGER, GL_UNSIGNED_SHORT},            // R16U
-      {GL_R16F, GL_RED, GL_HALF_FLOAT},                         // R16F
-      {GL_R32I, GL_RED_INTEGER, GL_INT},                        // R32I
-      {GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT},              // R32U
-      {GL_R32F, GL_RED, GL_FLOAT},                              // R32F
-      {GL_RG8, GL_RG, GL_UNSIGNED_BYTE},                        // RG8
-      {GL_RG16F, GL_RG, GL_HALF_FLOAT},                         // RG16
-      {GL_RG16F, GL_RG, GL_HALF_FLOAT},                         // RG16F
-      {GL_RG32F, GL_RG, GL_FLOAT},                              // RG32F
-      {GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT},                     // RGBA16
-      {GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT},                     // RGBA16F
-      {GL_RGBA32F, GL_RGBA, GL_FLOAT},                          // RGBA32F
-      {GL_RGB10_A2, GL_BGRA, GL_UNSIGNED_INT_2_10_10_10_REV},   // RGB10A2
+      {},                                                                                       // Unknown
+      {GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE},                                                    // RGBA8
+      {GL_RGBA8, GL_BGRA, GL_UNSIGNED_BYTE},                                                    // BGRA8
+      {GL_RGB565, GL_RGB, GL_UNSIGNED_SHORT_5_6_5},                                             // RGB565
+      {},                                                                                       // RGB5A1
+      {GL_RGB5_A1, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1},                                         // A1BGR5
+      {GL_R8, GL_RED, GL_UNSIGNED_BYTE},                                                        // R8
+      {GL_DEPTH_COMPONENT16, GL_DEPTH_COMPONENT, GL_SHORT},                                     // D16
+      {GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL, GL_UNSIGNED_INT},                                 // D24S8
+      {GL_DEPTH_COMPONENT32F, GL_DEPTH_COMPONENT, GL_FLOAT},                                    // D32F
+      {GL_DEPTH32F_STENCIL8, GL_DEPTH_STENCIL, GL_FLOAT},                                       // D32FS8
+      {GL_R16F, GL_RED, GL_HALF_FLOAT},                                                         // R16
+      {GL_R16I, GL_RED_INTEGER, GL_SHORT},                                                      // R16I
+      {GL_R16UI, GL_RED_INTEGER, GL_UNSIGNED_SHORT},                                            // R16U
+      {GL_R16F, GL_RED, GL_HALF_FLOAT},                                                         // R16F
+      {GL_R32I, GL_RED_INTEGER, GL_INT},                                                        // R32I
+      {GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT},                                              // R32U
+      {GL_R32F, GL_RED, GL_FLOAT},                                                              // R32F
+      {GL_RG8, GL_RG, GL_UNSIGNED_BYTE},                                                        // RG8
+      {GL_RG16F, GL_RG, GL_HALF_FLOAT},                                                         // RG16
+      {GL_RG16F, GL_RG, GL_HALF_FLOAT},                                                         // RG16F
+      {GL_RG32F, GL_RG, GL_FLOAT},                                                              // RG32F
+      {GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT},                                                     // RGBA16
+      {GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT},                                                     // RGBA16F
+      {GL_RGBA32F, GL_RGBA, GL_FLOAT},                                                          // RGBA32F
+      {GL_RGB10_A2, GL_BGRA, GL_UNSIGNED_INT_2_10_10_10_REV},                                   // RGB10A2
+      {GL_SRGB8_ALPHA8, GL_RGBA, GL_UNSIGNED_BYTE},                                             // SRGBA8
+      {GL_COMPRESSED_RGBA_S3TC_DXT1_EXT, GL_COMPRESSED_RGBA_S3TC_DXT1_EXT, GL_UNSIGNED_BYTE},   // BC1
+      {GL_COMPRESSED_RGBA_S3TC_DXT3_EXT, GL_COMPRESSED_RGBA_S3TC_DXT3_EXT, GL_UNSIGNED_BYTE},   // BC2
+      {GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, GL_UNSIGNED_BYTE},   // BC3
+      {GL_COMPRESSED_RGBA_BPTC_UNORM_ARB, GL_COMPRESSED_RGBA_BPTC_UNORM_ARB, GL_UNSIGNED_BYTE}, // BC7
     }};
 
   return gles ? mapping_gles[static_cast<u32>(format)] : mapping[static_cast<u32>(format)];
 }
 
-OpenGLTexture::OpenGLTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples, Type type, Format format,
-                             GLuint id)
+ALWAYS_INLINE static u32 GetUploadAlignment(u32 pitch)
+{
+  return ((pitch % 4) == 0) ? 4 : (((pitch % 2) == 0) ? 2 : 1);
+}
+
+OpenGLTexture::OpenGLTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples, Type type,
+                             GPUTextureFormat format, Flags flags, GLuint id)
   : GPUTexture(static_cast<u16>(width), static_cast<u16>(height), static_cast<u8>(layers), static_cast<u8>(levels),
-               static_cast<u8>(samples), type, format),
+               static_cast<u8>(samples), type, format, flags),
     m_id(id)
 {
 }
@@ -109,7 +130,8 @@ OpenGLTexture::~OpenGLTexture()
 
 bool OpenGLTexture::UseTextureStorage(bool multisampled)
 {
-  return GLAD_GL_ARB_texture_storage || (multisampled ? GLAD_GL_ES_VERSION_3_1 : GLAD_GL_ES_VERSION_3_0);
+  return (GLAD_GL_VERSION_4_2 || GLAD_GL_ARB_texture_storage) ||
+         (multisampled ? GLAD_GL_ES_VERSION_3_1 : GLAD_GL_ES_VERSION_3_0);
 }
 
 bool OpenGLTexture::UseTextureStorage() const
@@ -118,14 +140,15 @@ bool OpenGLTexture::UseTextureStorage() const
 }
 
 std::unique_ptr<OpenGLTexture> OpenGLTexture::Create(u32 width, u32 height, u32 layers, u32 levels, u32 samples,
-                                                     Type type, Format format, const void* data, u32 data_pitch)
+                                                     Type type, GPUTextureFormat format, Flags flags, const void* data,
+                                                     u32 data_pitch, Error* error)
 {
-  if (!ValidateConfig(width, height, layers, levels, samples, type, format))
+  if (!ValidateConfig(width, height, layers, levels, samples, type, format, flags, error))
     return nullptr;
 
   if (layers > 1 && data)
   {
-    ERROR_LOG("Loading texture array data not currently supported");
+    Error::SetStringView(error, "Loading texture array data not currently supported");
     return nullptr;
   }
 
@@ -159,6 +182,7 @@ std::unique_ptr<OpenGLTexture> OpenGLTexture::Create(u32 width, u32 height, u32 
   else
   {
     const bool use_texture_storage = UseTextureStorage(false);
+    const bool is_compressed = IsCompressedFormat(format);
     if (use_texture_storage)
     {
       if (layers > 1)
@@ -170,14 +194,14 @@ std::unique_ptr<OpenGLTexture> OpenGLTexture::Create(u32 width, u32 height, u32 
     if (!use_texture_storage || data)
     {
       const u32 pixel_size = GetPixelSize(format);
-      const u32 alignment = ((data_pitch % 4) == 0) ? 4 : (((data_pitch % 2) == 0) ? 2 : 1);
+      const u32 alignment = GetUploadAlignment(data_pitch);
       if (data)
       {
-        GPUDevice::GetStatistics().buffer_streamed += data_pitch * height;
+        GPUDevice::GetStatistics().buffer_streamed += CalcUploadSize(format, height, data_pitch);
         GPUDevice::GetStatistics().num_uploads++;
 
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, data_pitch / pixel_size);
-        if (alignment != 4)
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, CalcUploadRowLengthFromPitch(format, data_pitch));
+        if (alignment != DEFAULT_UPLOAD_ALIGNMENT)
           glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
       }
 
@@ -188,18 +212,55 @@ std::unique_ptr<OpenGLTexture> OpenGLTexture::Create(u32 width, u32 height, u32 
       {
         if (use_texture_storage)
         {
-          if (layers > 1)
-            glTexSubImage3D(target, i, 0, 0, 0, current_width, current_height, layers, gl_format, gl_type, data_ptr);
+          if (is_compressed)
+          {
+            const u32 size = CalcUploadSize(format, current_height, data_pitch);
+            if (layers > 1)
+            {
+              glCompressedTexSubImage3D(target, i, 0, 0, 0, current_width, current_height, layers, gl_format, size,
+                                        data_ptr);
+            }
+            else
+            {
+              glCompressedTexSubImage2D(target, i, 0, 0, current_width, current_height, gl_format, size, data_ptr);
+            }
+          }
           else
-            glTexSubImage2D(target, i, 0, 0, current_width, current_height, gl_format, gl_type, data_ptr);
+          {
+            if (layers > 1)
+              glTexSubImage3D(target, i, 0, 0, 0, current_width, current_height, layers, gl_format, gl_type, data_ptr);
+            else
+              glTexSubImage2D(target, i, 0, 0, current_width, current_height, gl_format, gl_type, data_ptr);
+          }
         }
         else
         {
-          if (layers > 1)
-            glTexImage3D(target, i, gl_internal_format, current_width, current_height, layers, 0, gl_format, gl_type,
-                         data_ptr);
+          if (is_compressed)
+          {
+            const u32 size = CalcUploadSize(format, current_height, data_pitch);
+            if (layers > 1)
+            {
+              glCompressedTexImage3D(target, i, gl_internal_format, current_width, current_height, layers, 0, size,
+                                     data_ptr);
+            }
+            else
+            {
+              glCompressedTexImage2D(target, i, gl_internal_format, current_width, current_height, 0, size, data_ptr);
+            }
+          }
           else
-            glTexImage2D(target, i, gl_internal_format, current_width, current_height, 0, gl_format, gl_type, data_ptr);
+          {
+            if (layers > 1)
+            {
+              glTexImage3D(target, i, gl_internal_format, current_width, current_height, layers, 0, gl_format, gl_type,
+                           data_ptr);
+            }
+            else
+            {
+              glTexImage2D(target, i, gl_internal_format, current_width, current_height, 0, gl_format, gl_type,
+                           data_ptr);
+            }
+          }
         }
 
         if (data_ptr)
@@ -214,8 +275,8 @@ std::unique_ptr<OpenGLTexture> OpenGLTexture::Create(u32 width, u32 height, u32 
 
       if (data)
       {
-        if (alignment != 4)
-          glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        if (alignment != DEFAULT_UPLOAD_ALIGNMENT)
+          glPixelStorei(GL_UNPACK_ALIGNMENT, DEFAULT_UPLOAD_ALIGNMENT);
         glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
       }
     }
@@ -227,15 +288,16 @@ std::unique_ptr<OpenGLTexture> OpenGLTexture::Create(u32 width, u32 height, u32 
     }
   }
 
-  GLenum error = glGetError();
-  if (error != GL_NO_ERROR)
+  const GLenum gl_error = glGetError();
+  if (gl_error != GL_NO_ERROR)
   {
-    ERROR_LOG("Failed to create texture: 0x{:X}", error);
+    Error::SetStringFmt(error, "Failed to create texture: 0x{:X}", gl_error);
     glDeleteTextures(1, &id);
     return nullptr;
   }
 
-  return std::unique_ptr<OpenGLTexture>(new OpenGLTexture(width, height, layers, levels, samples, type, format, id));
+  return std::unique_ptr<OpenGLTexture>(
+    new OpenGLTexture(width, height, layers, levels, samples, type, format, flags, id));
 }
 
 void OpenGLTexture::CommitClear()
@@ -246,14 +308,11 @@ void OpenGLTexture::CommitClear()
 bool OpenGLTexture::Update(u32 x, u32 y, u32 width, u32 height, const void* data, u32 pitch, u32 layer /*= 0*/,
                            u32 level /*= 0*/)
 {
-  // TODO: perf counters
-
   // Worth using the PBO? Driver probably knows better...
   const GLenum target = GetGLTarget();
   const auto [gl_internal_format, gl_format, gl_type] = GetPixelFormatMapping(m_format, OpenGLDevice::IsGLES());
-  const u32 preferred_pitch =
-    Common::AlignUpPow2(static_cast<u32>(width) * GetPixelSize(), TEXTURE_UPLOAD_PITCH_ALIGNMENT);
-  const u32 map_size = preferred_pitch * static_cast<u32>(height);
+  const u32 preferred_pitch = Common::AlignUpPow2(CalcUploadPitch(width), TEXTURE_UPLOAD_PITCH_ALIGNMENT);
+  const u32 map_size = CalcUploadSize(height, pitch);
   OpenGLStreamBuffer* sb = OpenGLDevice::GetTextureStreamBuffer();
 
   CommitClear();
@@ -267,20 +326,68 @@ bool OpenGLTexture::Update(u32 x, u32 y, u32 width, u32 height, const void* data
   if (!sb || map_size > sb->GetChunkSize())
   {
     GL_INS_FMT("Not using PBO for map size {}", map_size);
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, pitch / GetPixelSize());
-    glTexSubImage2D(target, layer, x, y, width, height, gl_format, gl_type, data);
+
+    const u32 alignment = GetUploadAlignment(pitch);
+    if (alignment != DEFAULT_UPLOAD_ALIGNMENT)
+      glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
+
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, CalcUploadRowLengthFromPitch(pitch));
+    if (IsCompressedFormat())
+    {
+      const u32 size = CalcUploadSize(height, pitch);
+      if (IsTextureArray())
+        glCompressedTexSubImage3D(target, level, x, y, layer, width, height, 1, gl_format, size, data);
+      else
+        glCompressedTexSubImage2D(target, level, x, y, width, height, gl_format, size, data);
+    }
+    else
+    {
+      if (IsTextureArray())
+        glTexSubImage3D(target, level, x, y, layer, width, height, 1, gl_format, gl_type, data);
+      else
+        glTexSubImage2D(target, level, x, y, width, height, gl_format, gl_type, data);
+    }
     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+
+    if (alignment != DEFAULT_UPLOAD_ALIGNMENT)
+      glPixelStorei(GL_UNPACK_ALIGNMENT, DEFAULT_UPLOAD_ALIGNMENT);
   }
   else
   {
     const auto map = sb->Map(TEXTURE_UPLOAD_ALIGNMENT, map_size);
-    StringUtil::StrideMemCpy(map.pointer, preferred_pitch, data, pitch, width * GetPixelSize(), height);
+    CopyTextureDataForUpload(width, height, m_format, map.pointer, preferred_pitch, data, pitch);
     sb->Unmap(map_size);
     sb->Bind();
 
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, preferred_pitch / GetPixelSize());
-    glTexSubImage2D(GL_TEXTURE_2D, layer, x, y, width, height, gl_format, gl_type,
-                    reinterpret_cast<void*>(static_cast<uintptr_t>(map.buffer_offset)));
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, CalcUploadRowLengthFromPitch(preferred_pitch));
+    if (IsCompressedFormat())
+    {
+      const u32 size = CalcUploadSize(height, pitch);
+      if (IsTextureArray())
+      {
+        glCompressedTexSubImage3D(target, level, x, y, layer, width, height, 1, gl_format, size,
+                                  reinterpret_cast<void*>(static_cast<uintptr_t>(map.buffer_offset)));
+      }
+      else
+      {
+        glCompressedTexSubImage2D(target, level, x, y, width, height, gl_format, size,
+                                  reinterpret_cast<void*>(static_cast<uintptr_t>(map.buffer_offset)));
+      }
+    }
+    else
+    {
+      if (IsTextureArray())
+      {
+        glTexSubImage3D(target, level, x, y, layer, width, height, 1, gl_format, gl_type,
+                        reinterpret_cast<void*>(static_cast<uintptr_t>(map.buffer_offset)));
+      }
+      else
+      {
+        glTexSubImage2D(target, level, x, y, width, height, gl_format, gl_type,
+                        reinterpret_cast<void*>(static_cast<uintptr_t>(map.buffer_offset)));
+      }
+    }
+
     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 
     sb->Unbind();
@@ -296,8 +403,8 @@ bool OpenGLTexture::Map(void** map, u32* map_stride, u32 x, u32 y, u32 width, u3
   if ((x + width) > GetMipWidth(level) || (y + height) > GetMipHeight(level) || layer > m_layers || level > m_levels)
     return false;
 
-  const u32 pitch = Common::AlignUpPow2(static_cast<u32>(width) * GetPixelSize(), TEXTURE_UPLOAD_PITCH_ALIGNMENT);
-  const u32 upload_size = pitch * static_cast<u32>(height);
+  const u32 pitch = Common::AlignUpPow2(CalcUploadPitch(width), TEXTURE_UPLOAD_PITCH_ALIGNMENT);
+  const u32 upload_size = CalcUploadSize(height, pitch);
   OpenGLStreamBuffer* sb = OpenGLDevice::GetTextureStreamBuffer();
   if (!sb || upload_size > sb->GetSize())
     return false;
@@ -320,8 +427,8 @@ void OpenGLTexture::Unmap()
 {
   CommitClear();
 
-  const u32 pitch = Common::AlignUpPow2(static_cast<u32>(m_map_width) * GetPixelSize(), TEXTURE_UPLOAD_PITCH_ALIGNMENT);
-  const u32 upload_size = pitch * static_cast<u32>(m_map_height);
+  const u32 pitch = Common::AlignUpPow2(CalcUploadPitch(m_map_width), TEXTURE_UPLOAD_PITCH_ALIGNMENT);
+  const u32 upload_size = CalcUploadSize(m_map_height, pitch);
 
   GPUDevice::GetStatistics().buffer_streamed += upload_size;
   GPUDevice::GetStatistics().num_uploads++;
@@ -335,18 +442,35 @@ void OpenGLTexture::Unmap()
   const GLenum target = GetGLTarget();
   glBindTexture(target, m_id);
 
-  glPixelStorei(GL_UNPACK_ROW_LENGTH, pitch / GetPixelSize());
+  glPixelStorei(GL_UNPACK_ROW_LENGTH, CalcUploadRowLengthFromPitch(pitch));
 
   const auto [gl_internal_format, gl_format, gl_type] = GetPixelFormatMapping(m_format, OpenGLDevice::IsGLES());
-  if (IsTextureArray())
+  if (IsCompressedFormat())
   {
-    glTexSubImage3D(target, m_map_level, m_map_x, m_map_y, m_map_layer, m_map_width, m_map_height, 1, gl_format,
-                    gl_type, reinterpret_cast<void*>(static_cast<uintptr_t>(m_map_offset)));
+    const u32 size = CalcUploadSize(m_map_height, pitch);
+    if (IsTextureArray())
+    {
+      glCompressedTexSubImage3D(target, m_map_level, m_map_x, m_map_y, m_map_layer, m_map_width, m_map_height, 1,
+                                gl_format, size, reinterpret_cast<void*>(static_cast<uintptr_t>(m_map_offset)));
+    }
+    else
+    {
+      glCompressedTexSubImage2D(target, m_map_level, m_map_x, m_map_y, m_map_width, m_map_height, gl_format, size,
+                                reinterpret_cast<void*>(static_cast<uintptr_t>(m_map_offset)));
+    }
   }
   else
   {
-    glTexSubImage2D(target, m_map_level, m_map_x, m_map_y, m_map_width, m_map_height, gl_format, gl_type,
-                    reinterpret_cast<void*>(static_cast<uintptr_t>(m_map_offset)));
+    if (IsTextureArray())
+    {
+      glTexSubImage3D(target, m_map_level, m_map_x, m_map_y, m_map_layer, m_map_width, m_map_height, 1, gl_format,
+                      gl_type, reinterpret_cast<void*>(static_cast<uintptr_t>(m_map_offset)));
+    }
+    else
+    {
+      glTexSubImage2D(target, m_map_level, m_map_x, m_map_y, m_map_width, m_map_height, gl_format, gl_type,
+                      reinterpret_cast<void*>(static_cast<uintptr_t>(m_map_offset)));
+    }
   }
 
   glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
@@ -356,18 +480,24 @@ void OpenGLTexture::Unmap()
   sb->Unbind();
 }
 
-void OpenGLTexture::SetDebugName(std::string_view name)
+void OpenGLTexture::GenerateMipmaps()
 {
-#ifdef _DEBUG
-  if (glObjectLabel)
-    glObjectLabel(GL_TEXTURE, m_id, static_cast<GLsizei>(name.length()), static_cast<const GLchar*>(name.data()));
-#endif
+  DebugAssert(HasFlag(Flags::AllowGenerateMipmaps));
+  OpenGLDevice::BindUpdateTextureUnit();
+  const GLenum target = GetGLTarget();
+  glBindTexture(target, m_id);
+  glGenerateMipmap(target);
+  glBindTexture(target, 0);
 }
 
-#if 0
-// If we don't have border clamp.. too bad, just hope for the best.
-if (!m_gl_context->IsGLES() || GLAD_GL_ES_VERSION_3_2 || GLAD_GL_NV_texture_border_clamp ||
-  GLAD_GL_EXT_texture_border_clamp || GLAD_GL_OES_texture_border_clamp)
+#ifdef ENABLE_GPU_OBJECT_NAMES
+
+void OpenGLTexture::SetDebugName(std::string_view name)
+{
+  if (glObjectLabel)
+    glObjectLabel(GL_TEXTURE, m_id, static_cast<GLsizei>(name.length()), static_cast<const GLchar*>(name.data()));
+}
+
 #endif
 
 //////////////////////////////////////////////////////////////////////////
@@ -381,15 +511,17 @@ OpenGLSampler::~OpenGLSampler()
   OpenGLDevice::GetInstance().UnbindSampler(m_id);
 }
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
+
 void OpenGLSampler::SetDebugName(std::string_view name)
 {
-#ifdef _DEBUG
   if (glObjectLabel)
     glObjectLabel(GL_SAMPLER, m_id, static_cast<GLsizei>(name.length()), static_cast<const GLchar*>(name.data()));
-#endif
 }
 
-std::unique_ptr<GPUSampler> OpenGLDevice::CreateSampler(const GPUSampler::Config& config)
+#endif
+
+std::unique_ptr<GPUSampler> OpenGLDevice::CreateSampler(const GPUSampler::Config& config, Error* error /* = nullptr */)
 {
   static constexpr std::array<GLenum, static_cast<u8>(GPUSampler::AddressMode::MaxCount)> ta = {{
     GL_REPEAT,          // Repeat
@@ -417,7 +549,7 @@ std::unique_ptr<GPUSampler> OpenGLDevice::CreateSampler(const GPUSampler::Config
   glGenSamplers(1, &sampler);
   if (glGetError() != GL_NO_ERROR)
   {
-    ERROR_LOG("Failed to create sampler: {:X}", sampler);
+    Error::SetStringFmt(error, "Failed to create sampler: {:X}", sampler);
     return {};
   }
 
@@ -534,7 +666,8 @@ void OpenGLDevice::CommitRTClearInFB(OpenGLTexture* tex, u32 idx)
     case GPUTexture::State::Invalidated:
     {
       const GLenum attachment = GL_COLOR_ATTACHMENT0 + idx;
-      glInvalidateFramebuffer(GL_DRAW_FRAMEBUFFER, 1, &attachment);
+      if (glInvalidateFramebuffer)
+        glInvalidateFramebuffer(GL_DRAW_FRAMEBUFFER, 1, &attachment);
       tex->SetState(GPUTexture::State::Dirty);
     }
     break;
@@ -572,7 +705,8 @@ void OpenGLDevice::CommitDSClearInFB(OpenGLTexture* tex)
     case GPUTexture::State::Invalidated:
     {
       const GLenum attachment = GL_DEPTH_ATTACHMENT;
-      glInvalidateFramebuffer(GL_DRAW_FRAMEBUFFER, 1, &attachment);
+      if (glInvalidateFramebuffer)
+        glInvalidateFramebuffer(GL_DRAW_FRAMEBUFFER, 1, &attachment);
       tex->SetState(GPUTexture::State::Dirty);
     }
     break;
@@ -667,19 +801,21 @@ void OpenGLTextureBuffer::Unmap(u32 used_elements)
   m_buffer->Unmap(size);
 }
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
+
 void OpenGLTextureBuffer::SetDebugName(std::string_view name)
 {
-#ifdef _DEBUG
   if (glObjectLabel)
   {
     glObjectLabel(GL_TEXTURE, m_buffer->GetGLBufferId(), static_cast<GLsizei>(name.length()),
                   static_cast<const GLchar*>(name.data()));
   }
-#endif
 }
 
+#endif
+
 std::unique_ptr<GPUTextureBuffer> OpenGLDevice::CreateTextureBuffer(GPUTextureBuffer::Format format,
-                                                                    u32 size_in_elements)
+                                                                    u32 size_in_elements, Error* error)
 {
   const bool use_ssbo = OpenGLDevice::GetInstance().GetFeatures().texture_buffers_emulated_with_ssbo;
   const u32 buffer_size = GPUTextureBuffer::GetElementSize(format) * size_in_elements;
@@ -690,13 +826,13 @@ std::unique_ptr<GPUTextureBuffer> OpenGLDevice::CreateTextureBuffer(GPUTextureBu
     glGetInteger64v(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &max_ssbo_size);
     if (static_cast<GLint64>(buffer_size) > max_ssbo_size)
     {
-      ERROR_LOG("Buffer size of {} not supported, max is {}", buffer_size, max_ssbo_size);
+      Error::SetStringFmt(error, "Buffer size of {} not supported, max is {}", buffer_size, max_ssbo_size);
       return {};
     }
   }
 
   const GLenum target = (use_ssbo ? GL_SHADER_STORAGE_BUFFER : GL_TEXTURE_BUFFER);
-  std::unique_ptr<OpenGLStreamBuffer> buffer = OpenGLStreamBuffer::Create(target, buffer_size);
+  std::unique_ptr<OpenGLStreamBuffer> buffer = OpenGLStreamBuffer::Create(target, buffer_size, error);
   if (!buffer)
     return {};
   buffer->Unbind();
@@ -708,7 +844,7 @@ std::unique_ptr<GPUTextureBuffer> OpenGLDevice::CreateTextureBuffer(GPUTextureBu
     glGenTextures(1, &texture_id);
     if (const GLenum err = glGetError(); err != GL_NO_ERROR)
     {
-      ERROR_LOG("Failed to create texture for buffer: 0x{:X}", err);
+      Error::SetStringFmt(error, "Failed to create texture for buffer: 0x{:X}", err);
       return {};
     }
 
@@ -721,11 +857,9 @@ std::unique_ptr<GPUTextureBuffer> OpenGLDevice::CreateTextureBuffer(GPUTextureBu
     new OpenGLTextureBuffer(format, size_in_elements, std::move(buffer), texture_id));
 }
 
-OpenGLDownloadTexture::OpenGLDownloadTexture(u32 width, u32 height, GPUTexture::Format format, bool imported,
-                                             GLuint buffer_id, u8* cpu_buffer, u32 buffer_size, const u8* map_ptr,
-                                             u32 map_pitch)
-  : GPUDownloadTexture(width, height, format, imported), m_buffer_id(buffer_id), m_buffer_size(buffer_size),
-    m_cpu_buffer(cpu_buffer)
+OpenGLDownloadTexture::OpenGLDownloadTexture(u32 width, u32 height, GPUTextureFormat format, bool imported,
+                                             GLuint buffer_id, u8* cpu_buffer, const u8* map_ptr, u32 map_pitch)
+  : GPUDownloadTexture(width, height, format, imported), m_buffer_id(buffer_id), m_cpu_buffer(cpu_buffer)
 {
   m_map_pointer = map_ptr;
   m_current_pitch = map_pitch;
@@ -753,8 +887,9 @@ OpenGLDownloadTexture::~OpenGLDownloadTexture()
   }
 }
 
-std::unique_ptr<OpenGLDownloadTexture> OpenGLDownloadTexture::Create(u32 width, u32 height, GPUTexture::Format format,
-                                                                     void* memory, size_t memory_size, u32 memory_pitch)
+std::unique_ptr<OpenGLDownloadTexture> OpenGLDownloadTexture::Create(u32 width, u32 height, GPUTextureFormat format,
+                                                                     void* memory, size_t memory_size, u32 memory_pitch,
+                                                                     Error* error)
 {
   const u32 buffer_pitch =
     memory ? memory_pitch :
@@ -783,24 +918,27 @@ std::unique_ptr<OpenGLDownloadTexture> OpenGLDownloadTexture::Create(u32 width, 
 
     if (!buffer_map)
     {
-      ERROR_LOG("Failed to map persistent download buffer");
+      Error::SetStringView(error, "Failed to map persistent download buffer");
       glDeleteBuffers(1, &buffer_id);
       return {};
     }
 
-    return std::unique_ptr<OpenGLDownloadTexture>(new OpenGLDownloadTexture(
-      width, height, format, false, buffer_id, nullptr, buffer_size, buffer_map, buffer_pitch));
+    return std::unique_ptr<OpenGLDownloadTexture>(
+      new OpenGLDownloadTexture(width, height, format, false, buffer_id, nullptr, buffer_map, buffer_pitch));
   }
 
   // Fallback to glReadPixels() + CPU buffer.
   const bool imported = (memory != nullptr);
   u8* cpu_buffer =
     imported ? static_cast<u8*>(memory) : static_cast<u8*>(Common::AlignedMalloc(buffer_size, VECTOR_ALIGNMENT));
-  if (!cpu_buffer)
+  if (!cpu_buffer) [[unlikely]]
+  {
+    Error::SetStringView(error, "Failed to get client-side memory pointer.");
     return {};
+  }
 
   return std::unique_ptr<OpenGLDownloadTexture>(
-    new OpenGLDownloadTexture(width, height, format, imported, 0, cpu_buffer, buffer_size, cpu_buffer, buffer_pitch));
+    new OpenGLDownloadTexture(width, height, format, imported, 0, cpu_buffer, cpu_buffer, buffer_pitch));
 }
 
 void OpenGLDownloadTexture::CopyFromTexture(u32 dst_x, u32 dst_y, GPUTexture* src, u32 src_x, u32 src_y, u32 width,
@@ -843,7 +981,7 @@ void OpenGLDownloadTexture::CopyFromTexture(u32 dst_x, u32 dst_y, GPUTexture* sr
 
   const auto [gl_internal_format, gl_format, gl_type] =
     OpenGLTexture::GetPixelFormatMapping(srcgl->GetFormat(), dev.IsGLES());
-  if (GLAD_GL_VERSION_4_5 || GLAD_GL_ARB_get_texture_sub_image)
+  if (dev.m_use_get_texture_sub_image)
   {
     glGetTextureSubImage(srcgl->GetGLId(), src_level, src_x, src_y, 0, width, height, 1, gl_format, gl_type,
                          m_current_pitch * height, m_cpu_buffer + copy_offset);
@@ -902,6 +1040,8 @@ void OpenGLDownloadTexture::Flush()
   m_sync = {};
 }
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
+
 void OpenGLDownloadTexture::SetDebugName(std::string_view name)
 {
   if (name.empty())
@@ -911,16 +1051,18 @@ void OpenGLDownloadTexture::SetDebugName(std::string_view name)
     glObjectLabel(GL_BUFFER, m_buffer_id, static_cast<GLsizei>(name.length()), name.data());
 }
 
-std::unique_ptr<GPUDownloadTexture> OpenGLDevice::CreateDownloadTexture(u32 width, u32 height,
-                                                                        GPUTexture::Format format)
+#endif
+
+std::unique_ptr<GPUDownloadTexture> OpenGLDevice::CreateDownloadTexture(u32 width, u32 height, GPUTextureFormat format,
+                                                                        Error* error /* = nullptr */)
 {
-  return OpenGLDownloadTexture::Create(width, height, format, nullptr, 0, 0);
+  return OpenGLDownloadTexture::Create(width, height, format, nullptr, 0, 0, error);
 }
 
-std::unique_ptr<GPUDownloadTexture> OpenGLDevice::CreateDownloadTexture(u32 width, u32 height,
-                                                                        GPUTexture::Format format, void* memory,
-                                                                        size_t memory_size, u32 memory_stride)
+std::unique_ptr<GPUDownloadTexture> OpenGLDevice::CreateDownloadTexture(u32 width, u32 height, GPUTextureFormat format,
+                                                                        void* memory, size_t memory_size,
+                                                                        u32 memory_stride, Error* error /* = nullptr */)
 {
   // not _really_ memory importing, but PBOs are broken on Intel....
-  return OpenGLDownloadTexture::Create(width, height, format, memory, memory_size, memory_stride);
+  return OpenGLDownloadTexture::Create(width, height, format, memory, memory_size, memory_stride, error);
 }

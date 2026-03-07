@@ -31,7 +31,7 @@ public:
   ALWAYS_INLINE Type GetType() const { return m_type; }
   ALWAYS_INLINE bool IsValid() const { return (m_type != Type::None); }
   ALWAYS_INLINE const std::string& GetDescription() const { return m_description; }
-  ALWAYS_INLINE std::string TakeDescription() { return std::move(m_description); }
+  ALWAYS_INLINE std::string&& TakeDescription() { return std::move(m_description); }
 
   void Clear();
 
@@ -68,6 +68,7 @@ public:
 #endif
 
   // helpers for setting
+  static bool IsValid(Error* errptr);
   static void Clear(Error* errptr);
   static void SetErrno(Error* errptr, int err);
   static void SetErrno(Error* errptr, std::string_view prefix, int err);
@@ -141,6 +142,6 @@ private:
   void AddPrefixFmtArgs(fmt::string_view fmt, fmt::format_args args);
   void AddSuffixFmtArgs(fmt::string_view fmt, fmt::format_args args);
 
-  Type m_type = Type::None;
   std::string m_description;
+  Type m_type = Type::None;
 };

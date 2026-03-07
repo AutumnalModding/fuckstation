@@ -15,7 +15,7 @@
 
 #include <cstring>
 
-LOG_CHANNEL(PSFLoader);
+LOG_CHANNEL(FileLoader);
 
 namespace PSFLoader {
 static bool LoadLibraryPSF(const std::string& path, bool use_pc_sp, Error* error, u32 depth = 0);
@@ -193,14 +193,12 @@ bool PSFLoader::LoadLibraryPSF(const std::string& path, bool use_pc_sp, Error* e
     const std::string lib_path = Path::BuildRelativePath(path, lib_name.value());
     INFO_LOG("Loading parent PSF '{}'", Path::GetFileName(lib_path));
 
-    // We should use the initial SP/PC from the **first** parent lib.
-    const bool lib_use_pc_sp = (depth == 0);
-    if (!LoadLibraryPSF(lib_path.c_str(), lib_use_pc_sp, error, depth + 1))
+    // We should use the initial SP/PC from the deepest **first** parent lib.
+    if (!LoadLibraryPSF(lib_path.c_str(), use_pc_sp, error, depth + 1))
       return false;
 
     // Don't apply the PC/SP from the minipsf file.
-    if (lib_use_pc_sp)
-      use_pc_sp = false;
+    use_pc_sp = false;
   }
 
   // apply the main psf

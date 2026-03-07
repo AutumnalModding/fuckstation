@@ -1730,7 +1730,7 @@ Unread messages: {}</source>
     </message>
 </context>
 <context>
-    <name>AutoUpdaterDialog</name>
+    <name>AutoUpdaterWindow</name>
     <message>
         <location filename="../autoupdaterdialog.ui" line="17"/>
         <location filename="../autoupdaterdialog.cpp" line="236"/>
@@ -5102,7 +5102,7 @@ Diese Datei kann mehrere Gigabyte groß sein, achte also auf die Abnutzung der S
     </message>
 </context>
 <context>
-    <name>EmuThread</name>
+    <name>CoreThread</name>
     <message>
         <location filename="../qthost.cpp" line="564"/>
         <source>Error</source>
@@ -8067,7 +8067,7 @@ Error was:</source>
     </message>
     <message>
         <location filename="../../core/fullscreen_ui.cpp" line="7190"/>
-        <source>Saved {:%c}</source>
+        <source>Saved {}</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -9618,7 +9618,7 @@ Rekursives Durchsuchen benötigt mehr Zeit, erkennt allerdings auch Dateien in U
     </message>
     <message>
         <location filename="../generalsettingswidget.ui" line="32"/>
-        <source>Behaviour</source>
+        <source>Behavior</source>
         <translation>Betriebsverhalten</translation>
     </message>
     <message>

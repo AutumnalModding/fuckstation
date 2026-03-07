@@ -12,11 +12,6 @@
 
 namespace CPU {
 
-// Memory address mask used for fetching as well as loadstores (removes cached/uncached/user/kernel bits).
-enum : PhysicalMemoryAddress
-{
-  PHYSICAL_MEMORY_ADDRESS_MASK = 0x1FFFFFFF
-};
 enum : u32
 {
   INSTRUCTION_SIZE = sizeof(u32)
@@ -115,9 +110,6 @@ enum class InstructionOp : u8
   swc2 = 58,
   swc3 = 59,
 };
-constexpr u8 INSTRUCTION_COP_BITS = 0x10;
-constexpr u8 INSTRUCTION_COP_MASK = 0x3C;
-constexpr u8 INSTRUCTION_COP_N_MASK = 0x03;
 
 enum class InstructionFunct : u8
 {
@@ -219,11 +211,6 @@ union Instruction
     ALWAYS_INLINE Cop0Instruction Cop0Op() const { return static_cast<Cop0Instruction>(bits & UINT32_C(0x3F)); }
     ALWAYS_INLINE u32 Cop2Index() const { return ((bits >> 11) & 0x1F) | ((bits >> 17) & 0x20); }
   } cop;
-
-  bool IsCop2Instruction() const
-  {
-    return (op == InstructionOp::cop2 || op == InstructionOp::lwc2 || op == InstructionOp::swc2);
-  }
 };
 
 // Instruction helpers.

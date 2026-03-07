@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com> and contributors.
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com> and contributors.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
@@ -49,13 +49,12 @@ public:
 
   static const Controller::ControllerInfo INFO;
 
-  NeGconRumble(u32 index);
+  explicit NeGconRumble(u32 index);
   ~NeGconRumble() override;
 
   static std::unique_ptr<NeGconRumble> Create(u32 index);
 
   ControllerType GetType() const override;
-  bool InAnalogMode() const override;
 
   void Reset() override;
   bool DoState(StateWrapper& sw, bool apply_input_state) override;
@@ -69,7 +68,7 @@ public:
   u32 GetButtonStateBits() const override;
   std::optional<u32> GetAnalogInputBytes() const override;
 
-  void LoadSettings(SettingsInterface& si, const char* section, bool initial) override;
+  void LoadSettings(const SettingsInterface& si, const char* section, bool initial) override;
 
 private:
   using MotorState = std::array<u8, NUM_MOTORS>;
@@ -88,14 +87,17 @@ private:
     GetSetRumble       // 0x4D
   };
 
+  static constexpr s16 DEFAULT_SMALL_MOTOR_VIBRATION_BIAS = 8;
+  static constexpr s16 DEFAULT_LARGE_MOTOR_VIBRATION_BIAS = 8;
+
+  static constexpr u32 HALFAXIS_BIND_START_INDEX = static_cast<u32>(Button::Count);
+  static constexpr u32 MOTOR_BIND_START_INDEX = HALFAXIS_BIND_START_INDEX + static_cast<u32>(HalfAxis::Count);
+  static constexpr u32 LED_BIND_START_INDEX = MOTOR_BIND_START_INDEX + NUM_MOTORS;
+
+  static const Controller::ControllerBindingInfo s_binding_info[];
+
+  std::array<s16, NUM_MOTORS> m_vibration_bias{DEFAULT_LARGE_MOTOR_VIBRATION_BIAS, DEFAULT_SMALL_MOTOR_VIBRATION_BIAS};
   bool m_force_analog_on_reset = true;
-  bool m_analog_dpad_in_digital_mode = false;
-  float m_analog_deadzone = 0.0f;
-  float m_analog_sensitivity = 1.33f;
-  float m_button_deadzone = 0.0f;
-  u8 m_rumble_bias = 8;
-  u8 m_invert_left_stick = 0;
-  u8 m_invert_right_stick = 0;
 
   bool m_analog_mode = false;
   bool m_analog_locked = false;
@@ -143,7 +145,7 @@ private:
   void SetAnalogMode(bool enabled, bool show_message);
   void ProcessAnalogModeToggle();
   void SetMotorState(u32 motor, u8 value);
-  void UpdateHostVibration();
+  float GetMotorStrength(u32 motor) const;
   u8 GetExtraButtonMaskLSB() const;
   void ResetRumbleConfig();
   void SetMotorStateForConfigIndex(int index, u8 value);

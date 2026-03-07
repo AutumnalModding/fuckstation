@@ -12,6 +12,8 @@
 #include <tuple>
 #include <vector>
 
+class Error;
+
 class OpenGLStreamBuffer
 {
 public:
@@ -24,7 +26,9 @@ public:
   void Bind();
   void Unbind();
 
+#if defined(_DEBUG) || defined(_DEVEL)
   void SetDebugName(std::string_view name);
+#endif
 
   struct MappingResult
   {
@@ -42,7 +46,7 @@ public:
   /// Returns the minimum granularity of blocks which sync objects will be created around.
   virtual u32 GetChunkSize() const = 0;
 
-  static std::unique_ptr<OpenGLStreamBuffer> Create(GLenum target, u32 size);
+  static std::unique_ptr<OpenGLStreamBuffer> Create(GLenum target, u32 size, Error* error = nullptr);
 
 protected:
   OpenGLStreamBuffer(GLenum target, GLuint buffer_id, u32 size);

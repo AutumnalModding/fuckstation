@@ -1,15 +1,21 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "win32_raw_input_source.h"
 #include "input_manager.h"
 
+#include "core/video_thread.h"
+
+#include "util/translation.h"
+
 #include "common/assert.h"
+#include "common/error.h"
 #include "common/log.h"
 #include "common/string_util.h"
 
 #include "fmt/format.h"
 
+#include <algorithm>
 #include <cmath>
 #include <hidsdi.h>
 #include <hidusage.h>
@@ -29,7 +35,7 @@ Win32RawInputSource::Win32RawInputSource() = default;
 
 Win32RawInputSource::~Win32RawInputSource() = default;
 
-bool Win32RawInputSource::Initialize(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock)
+bool Win32RawInputSource::Initialize(const SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock)
 {
   if (!RegisterDummyClass())
   {
@@ -43,28 +49,27 @@ bool Win32RawInputSource::Initialize(SettingsInterface& si, std::unique_lock<std
     return false;
   }
 
-  if (!OpenDevices())
-  {
-    ERROR_LOG("Failed to open devices");
-    return false;
-  }
+  // "Disconnect" the normal Mouse device added by InputManager.
+  Host::OnInputDeviceDisconnected(MakeGenericControllerDeviceKey(InputSourceType::Pointer, 0),
+                                  InputManager::GetPointerDeviceName(0));
 
+  ReloadDevices();
   return true;
 }
 
-void Win32RawInputSource::UpdateSettings(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock)
+void Win32RawInputSource::UpdateSettings(const SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock)
 {
-}
-
-bool Win32RawInputSource::ReloadDevices()
-{
-  return false;
 }
 
 void Win32RawInputSource::Shutdown()
 {
   CloseDevices();
+  UnregisterRawInput();
   DestroyDummyWindow();
+
+  // Restore the normal Mouse device. If we're shutting down, this won't do much.
+  Host::OnInputDeviceConnected(MakeGenericControllerDeviceKey(InputSourceType::Pointer, 0),
+                               InputManager::GetPointerDeviceName(0), TRANSLATE_SV("InputManager", "Mouse"));
 }
 
 void Win32RawInputSource::PollEvents()
@@ -72,11 +77,20 @@ void Win32RawInputSource::PollEvents()
   // noop, handled by message pump
 }
 
-std::vector<std::pair<std::string, std::string>> Win32RawInputSource::EnumerateDevices()
+std::optional<float> Win32RawInputSource::GetCurrentValue(InputBindingKey key)
 {
-  std::vector<std::pair<std::string, std::string>> ret;
+  // not really used
+  return std::nullopt;
+}
+
+InputManager::DeviceList Win32RawInputSource::EnumerateDevices()
+{
+  InputManager::DeviceList ret;
   for (u32 pointer_index = 0; pointer_index < static_cast<u32>(m_mice.size()); pointer_index++)
-    ret.emplace_back(InputManager::GetPointerDeviceName(pointer_index), GetMouseDeviceName(pointer_index));
+  {
+    ret.emplace_back(MakeGenericControllerDeviceKey(InputSourceType::Pointer, pointer_index),
+                     InputManager::GetPointerDeviceName(pointer_index), GetMouseDeviceName(pointer_index));
+  }
 
   return ret;
 }
@@ -90,6 +104,15 @@ void Win32RawInputSource::UpdateMotorState(InputBindingKey large_key, InputBindi
 {
 }
 
+void Win32RawInputSource::UpdateLEDState(InputBindingKey key, float intensity)
+{
+}
+
+bool Win32RawInputSource::ContainsDevice(std::string_view device) const
+{
+  return false;
+}
+
 std::optional<InputBindingKey> Win32RawInputSource::ParseKeyString(std::string_view device, std::string_view binding)
 {
   return std::nullopt;
@@ -100,14 +123,32 @@ TinyString Win32RawInputSource::ConvertKeyToString(InputBindingKey key)
   return {};
 }
 
-TinyString Win32RawInputSource::ConvertKeyToIcon(InputBindingKey key)
+TinyString Win32RawInputSource::ConvertKeyToIcon(InputBindingKey key, InputManager::BindingIconMappingFunction mapper)
 {
   return {};
 }
 
-std::vector<InputBindingKey> Win32RawInputSource::EnumerateMotors()
+void Win32RawInputSource::SetSubclassPollDeviceList(InputSubclass subclass,
+                                                    const std::span<const InputBindingKey>* devices)
+{
+}
+
+std::unique_ptr<ForceFeedbackDevice> Win32RawInputSource::CreateForceFeedbackDevice(std::string_view device,
+                                                                                    Error* error)
+{
+  Error::SetStringView(error, "Not supported on this input source.");
+  return {};
+}
+
+InputManager::DeviceEffectList Win32RawInputSource::EnumerateEffects(std::optional<InputBindingInfo::Type> type,
+                                                                     std::optional<InputBindingKey> for_device)
 {
   return {};
+}
+
+u32 Win32RawInputSource::GetPollableDeviceCount() const
+{
+  return static_cast<u32>(m_mice.size());
 }
 
 bool Win32RawInputSource::GetGenericBindingMapping(std::string_view device, GenericInputBindingMapping* mapping)
@@ -212,72 +253,156 @@ error:
 #endif
 }
 
-bool Win32RawInputSource::OpenDevices()
+bool Win32RawInputSource::IsAcceptableRawInputMouse(const RAWINPUTDEVICELIST& rid)
 {
-  UINT num_devices = 0;
-  if (GetRawInputDeviceList(nullptr, &num_devices, sizeof(RAWINPUTDEVICELIST)) == static_cast<UINT>(-1) ||
-      num_devices == 0)
+  if (rid.dwType == RIM_TYPEMOUSE)
+  {
+    // Make sure it's a real mouse with buttons.
+    // My goal with this was to stop my silly Corsair keyboard from showing up as a mouse... but it reports 32 buttons.
+    RID_DEVICE_INFO devinfo = {
+      .cbSize = sizeof(devinfo),
+      .dwType = RIM_TYPEMOUSE,
+      .mouse = {},
+    };
+    UINT devinfo_size = sizeof(devinfo);
+    if (GetRawInputDeviceInfoW(rid.hDevice, RIDI_DEVICEINFO, &devinfo, &devinfo_size) <= 0 ||
+        devinfo.mouse.dwNumberOfButtons == 0)
+    {
+      return false;
+    }
+
+    return true;
+  }
+  else
   {
     return false;
   }
+}
 
-  std::vector<RAWINPUTDEVICELIST> devices(num_devices);
-  if (GetRawInputDeviceList(devices.data(), &num_devices, sizeof(RAWINPUTDEVICELIST)) == static_cast<UINT>(-1))
-    return false;
-  devices.resize(num_devices);
-
-  for (const RAWINPUTDEVICELIST& rid : devices)
+bool Win32RawInputSource::ReloadDevices()
+{
+  std::vector<RAWINPUTDEVICELIST> devices;
+  UINT num_devices = 0;
+  if (GetRawInputDeviceList(nullptr, &num_devices, sizeof(RAWINPUTDEVICELIST)) != static_cast<UINT>(-1) &&
+      num_devices > 0)
   {
-    if (rid.dwType == RIM_TYPEMOUSE)
-    {
-      // Make sure it's a real mouse with buttons.
-      // My goal with this was to stop my silly Corsair keyboard from showing up as a mouse... but it reports 32
-      // buttons.
-      RID_DEVICE_INFO devinfo = {
-        .cbSize = sizeof(devinfo),
-        .dwType = RIM_TYPEMOUSE,
-      };
-      UINT devinfo_size = sizeof(devinfo);
-      if (GetRawInputDeviceInfoW(rid.hDevice, RIDI_DEVICEINFO, &devinfo, &devinfo_size) <= 0 ||
-          devinfo.mouse.dwNumberOfButtons == 0)
-      {
-        continue;
-      }
+    devices.resize(num_devices);
+    if (GetRawInputDeviceList(devices.data(), &num_devices, sizeof(RAWINPUTDEVICELIST)) != static_cast<UINT>(-1))
+      devices.resize(num_devices);
+    else
+      devices.clear();
+  }
 
-      m_mice.push_back({.device = rid.hDevice, .button_state = 0, .last_x = 0, .last_y = 0});
+  // close any devices no longer in the list
+  bool any_changed = false;
+  for (size_t i = 0; i < m_mice.size(); i++)
+  {
+    MouseState& ms = m_mice[i];
+    if (!ms.device)
+      continue;
+
+    if (std::ranges::none_of(devices, [&ms](const RAWINPUTDEVICELIST& rid) { return rid.hDevice == ms.device; }))
+    {
+      DEV_LOG("Detected raw input device {} removal", i);
+
+      ms = {};
+
+      InputManager::OnInputDeviceDisconnected(
+        MakeGenericControllerDeviceKey(InputSourceType::Pointer, static_cast<u32>(i)),
+        InputManager::GetPointerDeviceName(static_cast<u32>(i)));
+
+      any_changed = true;
     }
   }
 
-  DEV_LOG("Found {} mice", m_mice.size());
-
-  // Grab all mouse input.
-  if (!m_mice.empty())
+  for (const RAWINPUTDEVICELIST& rid : devices)
   {
-    const RAWINPUTDEVICE rrid = {HID_USAGE_PAGE_GENERIC, HID_USAGE_GENERIC_MOUSE, 0, m_dummy_window};
-    if (!RegisterRawInputDevices(&rrid, 1, sizeof(rrid)))
-      return false;
+    // Already tracking?
+    if (std::ranges::any_of(m_mice, [&rid](const MouseState& ms) { return (rid.hDevice == ms.device); }))
+      continue;
 
-    for (u32 i = 0; i < static_cast<u32>(m_mice.size()); i++)
-      InputManager::OnInputDeviceConnected(InputManager::GetPointerDeviceName(i), GetMouseDeviceName(i));
+    if (!IsAcceptableRawInputMouse(rid))
+      continue;
+
+    // Find a free slot. Might have been closed above.
+    auto iter = std::ranges::find_if(m_mice, [](const MouseState& ms) { return !ms.device; });
+    if (iter == m_mice.end())
+    {
+      m_mice.push_back({});
+      iter = std::prev(m_mice.end());
+    }
+
+    iter->device = rid.hDevice;
+    iter->button_state = 0;
+    iter->last_x = 0;
+    iter->last_y = 0;
+
+    const u32 pointer_index = static_cast<u32>(std::distance(m_mice.begin(), iter));
+    InputManager::OnInputDeviceConnected(MakeGenericControllerDeviceKey(InputSourceType::Pointer, pointer_index),
+                                         InputManager::GetPointerDeviceName(pointer_index),
+                                         GetMouseDeviceName(pointer_index));
+
+    any_changed = true;
   }
 
-  return true;
+  // Drop any trailing closed devices.
+  while (!m_mice.empty() && !m_mice.back().device)
+    m_mice.pop_back();
+
+  const size_t num_mice = std::ranges::count_if(m_mice, [](const MouseState& ms) { return (ms.device != nullptr); });
+  DEV_LOG("Found {} mice", num_mice);
+
+  if (num_mice > 0)
+    EnsureRawInputRegistered();
+  else
+    UnregisterRawInput();
+
+  return any_changed;
 }
 
 void Win32RawInputSource::CloseDevices()
 {
-  if (!m_mice.empty())
-  {
-    const RAWINPUTDEVICE rrid = {HID_USAGE_PAGE_GENERIC, HID_USAGE_GENERIC_KEYBOARD, RIDEV_REMOVE, m_dummy_window};
-    RegisterRawInputDevices(&rrid, 1, sizeof(rrid));
+  if (m_mice.empty())
+    return;
 
-    for (u32 i = 0; i < static_cast<u32>(m_mice.size()); i++)
-    {
-      InputManager::OnInputDeviceDisconnected(InputManager::MakePointerAxisKey(i, InputPointerAxis::X),
-                                              InputManager::GetPointerDeviceName(i));
-    }
-    m_mice.clear();
+  for (size_t i = 0; i < m_mice.size(); i++)
+  {
+    if (!m_mice[i].device)
+      continue;
+
+    InputManager::OnInputDeviceDisconnected(
+      MakeGenericControllerDeviceKey(InputSourceType::Pointer, static_cast<u32>(i)),
+      InputManager::GetPointerDeviceName(static_cast<u32>(i)));
   }
+
+  m_mice.clear();
+}
+
+void Win32RawInputSource::EnsureRawInputRegistered()
+{
+  if (m_raw_input_registered)
+    return;
+
+  const RAWINPUTDEVICE rrid = {HID_USAGE_PAGE_GENERIC, HID_USAGE_GENERIC_MOUSE, 0, m_dummy_window};
+  if (!RegisterRawInputDevices(&rrid, 1, sizeof(rrid)))
+  {
+    ERROR_LOG("RegisterRawInputDevices() failed: {}", GetLastError());
+    return;
+  }
+
+  m_raw_input_registered = true;
+}
+
+void Win32RawInputSource::UnregisterRawInput()
+{
+  if (!m_raw_input_registered)
+    return;
+
+  const RAWINPUTDEVICE rrid = {HID_USAGE_PAGE_GENERIC, HID_USAGE_GENERIC_KEYBOARD, RIDEV_REMOVE, m_dummy_window};
+  if (!RegisterRawInputDevices(&rrid, 1, sizeof(rrid)))
+    ERROR_LOG("RegisterRawInputDevices() to remove failed: {}", GetLastError());
+
+  m_raw_input_registered = false;
 }
 
 bool Win32RawInputSource::ProcessRawInputEvent(const RAWINPUT* event)
@@ -291,16 +416,6 @@ bool Win32RawInputSource::ProcessRawInputEvent(const RAWINPUT* event)
         continue;
 
       const RAWMOUSE& rm = event->data.mouse;
-
-      s32 dx = rm.lLastX;
-      s32 dy = rm.lLastY;
-
-      // handle absolute positioned devices
-      if ((rm.usFlags & MOUSE_MOVE_ABSOLUTE) == MOUSE_MOVE_ABSOLUTE)
-      {
-        dx -= std::exchange(dx, state.last_x);
-        dy -= std::exchange(dy, state.last_y);
-      }
 
       unsigned long button_mask =
         (rm.usButtonFlags & (rm.usButtonFlags ^ std::exchange(state.button_state, rm.usButtonFlags))) &
@@ -320,10 +435,55 @@ bool Win32RawInputSource::ProcessRawInputEvent(const RAWINPUT* event)
         button_mask &= ~(1u << bit_index);
       }
 
-      if (dx != 0)
-        InputManager::UpdatePointerRelativeDelta(pointer_index, InputPointerAxis::X, static_cast<float>(dx), true);
-      if (dy != 0)
-        InputManager::UpdatePointerRelativeDelta(pointer_index, InputPointerAxis::Y, static_cast<float>(dy), true);
+      // handle absolute positioned devices
+      if ((rm.usFlags & MOUSE_MOVE_ABSOLUTE) == MOUSE_MOVE_ABSOLUTE)
+      {
+        // https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-rawmouse#remarks
+        RECT rect;
+        if (rm.usFlags & MOUSE_VIRTUAL_DESKTOP)
+        {
+          rect.left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+          rect.top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+          rect.right = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+          rect.bottom = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        }
+        else
+        {
+          rect.left = 0;
+          rect.top = 0;
+          rect.right = GetSystemMetrics(SM_CXSCREEN);
+          rect.bottom = GetSystemMetrics(SM_CYSCREEN);
+        }
+
+        int absolute_x = MulDiv(rm.lLastX, rect.right, USHRT_MAX) + rect.left;
+        int absolute_y = MulDiv(rm.lLastY, rect.bottom, USHRT_MAX) + rect.top;
+
+        // This is truely awful. But for something that isn't used much, it's the easiest way to get the render rect...
+        const WindowInfo& render_wi = VideoThread::GetRenderWindowInfo();
+        if (render_wi.type == WindowInfoType::Win32 && GetWindowRect(static_cast<HWND>(render_wi.window_handle), &rect))
+        {
+          absolute_x -= rect.left;
+          absolute_y -= rect.top;
+        }
+
+        InputManager::UpdatePointerAbsolutePosition(pointer_index, static_cast<float>(absolute_x),
+                                                    static_cast<float>(absolute_y), true);
+      }
+      else
+      {
+        // relative is easy
+        if (rm.lLastX != 0)
+        {
+          InputManager::UpdatePointerPositionRelativeDelta(pointer_index, InputPointerAxis::X,
+                                                           static_cast<float>(rm.lLastX));
+        }
+
+        if (rm.lLastY != 0)
+        {
+          InputManager::UpdatePointerPositionRelativeDelta(pointer_index, InputPointerAxis::Y,
+                                                           static_cast<float>(rm.lLastY));
+        }
+      }
 
       return true;
     }

@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'data/resources/gamedb.yaml'
+      - 'data/resources/discsets.yaml'
       - 'data/resources/discdb.yaml'
   push:
     branches:
@@ -11,17 +12,19 @@ on:
       - dev
     paths:
       - 'data/resources/gamedb.yaml'
+      - 'data/resources/discsets.yaml'
       - 'data/resources/discdb.yaml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   gamedb-lint:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-slim
     timeout-minutes: 120
     steps:
-    - uses: actions/checkout@v4.1.1
-      with:
-        fetch-depth: 0
+    - uses: actions/checkout@v6
 
     - name: Install Packages
       shell: bash
@@ -32,6 +35,10 @@ jobs:
     - name: Check GameDB
       shell: bash
       run: yamllint -c extras/yamllint-config.yaml -s -f github data/resources/gamedb.yaml
+
+    - name: Check Disc Sets
+      shell: bash
+      run: yamllint -c extras/yamllint-config.yaml -s -f github data/resources/discsets.yaml
 
     - name: Check DiscDB
       shell: bash

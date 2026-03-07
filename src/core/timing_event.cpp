@@ -10,6 +10,7 @@
 
 #include "common/assert.h"
 #include "common/log.h"
+#include "common/small_string.h"
 #include "common/thirdparty/SmallVector.h"
 
 LOG_CHANNEL(TimingEvents);
@@ -86,6 +87,11 @@ void TimingEvents::UpdateCPUDowncount()
 TimingEvent** TimingEvents::GetHeadEventPtr()
 {
   return &s_state.active_events_head;
+}
+
+void TimingEvents::SetGlobalTickCounter(GlobalTicks ticks)
+{
+  s_state.global_tick_counter = ticks;
 }
 
 void TimingEvents::SortEvent(TimingEvent* event)
@@ -382,7 +388,7 @@ void TimingEvents::RunEvents()
 
 void TimingEvents::CommitLeftoverTicks()
 {
-#ifdef _DEBUG
+#if defined(_DEBUG) || defined(_DEVEL)
   if (s_state.event_run_tick_counter > s_state.global_tick_counter)
     DEV_LOG("Late-running {} ticks before execution", s_state.event_run_tick_counter - s_state.global_tick_counter);
 #endif

@@ -20,6 +20,16 @@ void InputSource::UpdateMotorState(InputBindingKey large_key, InputBindingKey sm
     UpdateMotorState(small_key, small_intensity);
 }
 
+InputBindingKey InputSource::MakeGenericControllerDeviceKey(InputSourceType clazz, u32 controller_index)
+{
+  InputBindingKey key = {};
+  key.source_type = clazz;
+  key.source_index = controller_index;
+  key.source_subtype = InputSubclass::None;
+  key.data = 0;
+  return key;
+}
+
 InputBindingKey InputSource::MakeGenericControllerAxisKey(InputSourceType clazz, u32 controller_index, s32 axis_index)
 {
   InputBindingKey key = {};
@@ -52,6 +62,17 @@ InputBindingKey InputSource::MakeGenericControllerHatKey(InputSourceType clazz, 
   return key;
 }
 
+InputBindingKey InputSource::MakeGenericControllerSensorKey(InputSourceType clazz, u32 controller_index,
+                                                            u32 sensor_index)
+{
+  InputBindingKey key = {};
+  key.source_type = clazz;
+  key.source_index = controller_index;
+  key.source_subtype = InputSubclass::ControllerSensor;
+  key.data = sensor_index;
+  return key;
+}
+
 InputBindingKey InputSource::MakeGenericControllerMotorKey(InputSourceType clazz, u32 controller_index, s32 motor_index)
 {
   InputBindingKey key = {};
@@ -62,8 +83,7 @@ InputBindingKey InputSource::MakeGenericControllerMotorKey(InputSourceType clazz
   return key;
 }
 
-std::optional<InputBindingKey> InputSource::ParseGenericControllerKey(InputSourceType clazz,
-                                                                      std::string_view source,
+std::optional<InputBindingKey> InputSource::ParseGenericControllerKey(InputSourceType clazz, std::string_view source,
                                                                       std::string_view sub_binding)
 {
   // try to find the number, this function doesn't care about whether it's xinput or sdl or whatever
@@ -131,7 +151,7 @@ std::string InputSource::ConvertGenericControllerKeyToString(InputBindingKey key
 {
   if (key.source_subtype == InputSubclass::ControllerAxis)
   {
-    const char* modifier = "";
+    const char* modifier;
     switch (key.modifier)
     {
       case InputModifier::None:
@@ -142,6 +162,9 @@ std::string InputSource::ConvertGenericControllerKeyToString(InputBindingKey key
         break;
       case InputModifier::FullAxis:
         modifier = "Full";
+        break;
+      default:
+        modifier = "";
         break;
     }
     return fmt::format("{}-{}/{}Axis{}", InputManager::InputSourceToString(key.source_type),

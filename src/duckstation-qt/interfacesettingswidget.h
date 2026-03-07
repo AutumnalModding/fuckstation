@@ -17,22 +17,17 @@ public:
   explicit InterfaceSettingsWidget(SettingsWindow* dialog, QWidget* parent);
   ~InterfaceSettingsWidget();
 
-  static void populateLanguageDropdown(QComboBox* cb);
-
-Q_SIGNALS:
-  void themeChanged();
-
-private Q_SLOTS:
-  void onRenderToSeparateWindowChanged();
-  void onLanguageChanged();
+  static void setupLanguageCombo(QComboBox* const cb);
+  static void setupThemeCombo(QComboBox* const cb);
 
 private:
+  void updateRenderToSeparateWindowOptions();
+  void onLanguageChanged();
+  void updateDisableStyleSheetsEnabled();
+  void checkForUpdates();
+
   Ui::InterfaceSettingsWidget m_ui;
 
   SettingsWindow* m_dialog;
-
-public:
-  static const char* THEME_NAMES[];
-  static const char* THEME_VALUES[];
-  static const char* DEFAULT_THEME_NAME;
+  QCheckBox* m_disable_style_sheets = nullptr;
 };

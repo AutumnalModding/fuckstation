@@ -1,6 +1,15 @@
-set(FMT_INSTALL OFF CACHE BOOL "")
+set(_saved_CMAKE_MESSAGE_LOG_LEVEL ${CMAKE_MESSAGE_LOG_LEVEL})
+set(CMAKE_MESSAGE_LOG_LEVEL NOTICE)
+
 add_subdirectory(fmt EXCLUDE_FROM_ALL)
 disable_compiler_warnings_for_target(fmt)
+# Prevent fmt from being built with exceptions, or being thrown at call sites.
+target_compile_definitions(fmt PUBLIC
+  "FMT_EXCEPTIONS=0"
+  "FMT_USE_RTTI=0"
+  "FMT_CPP_LIB_FILESYSTEM=0"
+)
+
 add_subdirectory(minizip EXCLUDE_FROM_ALL)
 disable_compiler_warnings_for_target(minizip)
 add_subdirectory(lzma EXCLUDE_FROM_ALL)
@@ -11,8 +20,6 @@ add_subdirectory(xxhash EXCLUDE_FROM_ALL)
 disable_compiler_warnings_for_target(xxhash)
 add_subdirectory(imgui EXCLUDE_FROM_ALL)
 disable_compiler_warnings_for_target(imgui)
-add_subdirectory(simpleini EXCLUDE_FROM_ALL)
-disable_compiler_warnings_for_target(simpleini)
 add_subdirectory(vulkan EXCLUDE_FROM_ALL)
 add_subdirectory(googletest EXCLUDE_FROM_ALL)
 add_subdirectory(fast_float EXCLUDE_FROM_ALL)
@@ -55,3 +62,4 @@ if(WIN32)
   add_subdirectory(winpixeventruntime EXCLUDE_FROM_ALL)
 endif()
 
+set(CMAKE_MESSAGE_LOG_LEVEL ${_saved_CMAKE_MESSAGE_LOG_LEVEL})

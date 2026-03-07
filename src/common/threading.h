@@ -1,7 +1,8 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
+
 #include "types.h"
 
 #if defined(__APPLE__)
@@ -46,6 +47,9 @@ public:
   operator void*() const { return m_native_handle; }
   operator bool() const { return (m_native_handle != nullptr); }
 
+  bool operator==(const ThreadHandle& other) const;
+  bool operator!=(const ThreadHandle& other) const;
+
   /// Returns the amount of CPU time consumed by the thread, at the GetThreadTicksPerSecond() frequency.
   u64 GetCPUTime() const;
 
@@ -53,17 +57,21 @@ public:
   /// Obviously, only works up to 64 processors.
   bool SetAffinity(u64 processor_mask) const;
 
+  /// Returns true if the calling thread matches this handle.
+  bool IsCallingThread() const;
+
 #ifdef __APPLE__
   /// Only available on MacOS, sets a period/maximum time for the scheduler.
-  bool SetTimeConstraints(bool enabled, u64 period, u64 typical_time, u64 maximum_time);
+  bool SetTimeConstraints(bool enabled, u64 period, u64 typical_time, u64 maximum_time) const;
 #endif
 
 protected:
   void* m_native_handle = nullptr;
 
   // We need the thread ID for affinity adjustments on Linux.
-#if defined(__linux__)
+#if defined(_WIN32) || defined(__linux__)
   unsigned int m_native_id = 0;
+  u32 m_stack_size = 0;
 #endif
 };
 
@@ -104,13 +112,27 @@ protected:
   static void* ThreadProc(void* param);
 #endif
 
+#if !defined(_WIN32) && !defined(__linux__)
+  // Stored in ThreadHandle to save 8 bytes.
   u32 m_stack_size = 0;
+#endif
 };
 
-/// A semaphore that may not have a fast userspace path
-/// (Used in other semaphore-based algorithms where the semaphore is just used for its thread sleep/wake ability)
+/// A semaphore that requires a system call to wake/sleep.
 class KernelSemaphore
 {
+public:
+  KernelSemaphore();
+  KernelSemaphore(const KernelSemaphore&) = delete;
+  ~KernelSemaphore();
+
+  KernelSemaphore& operator=(const KernelSemaphore&) = delete;
+
+  void Post();
+  void Wait();
+  bool TryWait();
+
+private:
 #if defined(_WIN32)
   void* m_sema;
 #elif defined(__APPLE__)
@@ -118,12 +140,6 @@ class KernelSemaphore
 #else
   sem_t m_sema;
 #endif
-public:
-  KernelSemaphore();
-  ~KernelSemaphore();
-  void Post();
-  void Wait();
-  bool TryWait();
 };
 
 } // namespace Threading

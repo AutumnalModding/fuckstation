@@ -1,0 +1,79 @@
+name: 🐧 Linux AppImage
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-appimage-build:
+    name: "${{ matrix.name }}"
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    strategy:
+      matrix:
+        include:
+          - name: "x64"
+            asset: "DuckStation-x64.AppImage"
+            artifact: "linux-x64-appimage"
+            cmakeoptions: ""
+          - name: "x64 SSE2"
+            asset: "DuckStation-x64-SSE2.AppImage"
+            artifact: "linux-x64-sse2-appimage"
+            cmakeoptions: "-DDISABLE_SSE4=ON"
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Install Packages
+      run: scripts/appimage/install-packages.sh
+
+    - name: Download Dependencies
+      run: |
+        DEPS_VERSION=$(cat dep/PREBUILT-VERSION)
+        cd dep/prebuilt
+        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/dependencies/releases/download/$DEPS_VERSION/deps-linux-x64.tar.xz"
+        tar -xf "deps-linux-x64.tar.xz"
+        rm "deps-linux-x64.tar.xz"
+
+    - name: Download Patch Archives
+      shell: bash
+      run: |
+        cd data/resources
+        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/chtdb/releases/download/latest/cheats.zip"
+        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/chtdb/releases/download/latest/patches.zip"
+
+    - name: Tag as Preview Release
+      if: github.ref == 'refs/heads/master'
+      run: |
+        echo '#pragma once' > src/scmversion/tag.h
+        echo '#define UPDATER_RELEASE_CHANNEL "preview"' >> src/scmversion/tag.h
+        echo '#define UPDATER_RELEASE_IS_OFFICIAL 1' >> src/scmversion/tag.h
+
+    - name: Tag as Stable Release
+      if: github.ref == 'refs/heads/dev'
+      run: |
+        echo '#pragma once' > src/scmversion/tag.h
+        echo '#define UPDATER_RELEASE_CHANNEL "latest"' >> src/scmversion/tag.h
+        echo '#define UPDATER_RELEASE_IS_OFFICIAL 1' >> src/scmversion/tag.h
+
+    - name: Compile Build
+      shell: bash
+      run: |
+        mkdir build
+        cd build
+        cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmakeoptions }} -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_EXE_LINKER_FLAGS_INIT="-fuse-ld=lld" -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld" -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld" ..
+        cmake --build . --parallel
+        cd ..
+        scripts/appimage/make-appimage.sh $(realpath .) $(realpath ./build) "${{ matrix.asset }}"
+
+    - name: Upload AppImage
+      uses: actions/upload-artifact@v6
+      with:
+        name: "${{ matrix.artifact }}"
+        path: "${{ matrix.asset }}"
+        compression-level: 0
+        if-no-files-found: error

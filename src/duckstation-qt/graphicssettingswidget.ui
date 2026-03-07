@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>584</width>
-    <height>477</height>
+    <width>736</width>
+    <height>551</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -31,7 +31,7 @@
      <property name="title">
       <string/>
      </property>
-     <layout class="QFormLayout" name="formLayout">
+     <layout class="QGridLayout" name="gridLayout_18" columnstretch="0,1">
       <item row="0" column="0">
        <widget class="QLabel" name="label">
         <property name="text">
@@ -43,7 +43,7 @@
        <widget class="QComboBox" name="renderer"/>
       </item>
       <item row="1" column="0">
-       <widget class="QLabel" name="label_5">
+       <widget class="QLabel" name="adapterLabel">
         <property name="text">
          <string>Adapter:</string>
         </property>
@@ -85,7 +85,10 @@
          <property name="title">
           <string/>
          </property>
-         <layout class="QFormLayout" name="formLayout_2">
+         <layout class="QGridLayout" name="gridLayout_4" columnstretch="0,1">
+          <property name="topMargin">
+           <number>6</number>
+          </property>
           <item row="0" column="0">
            <widget class="QLabel" name="resolutionScaleLabel">
             <property name="text">
@@ -130,14 +133,47 @@
             </property>
            </widget>
           </item>
+          <item row="2" column="1">
+           <widget class="QComboBox" name="textureFiltering"/>
+          </item>
+          <item row="3" column="0">
+           <widget class="QLabel" name="spriteTextureFilteringLabel">
+            <property name="text">
+             <string>Sprite Texture Filtering:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <widget class="QComboBox" name="spriteTextureFiltering"/>
+          </item>
           <item row="4" column="0">
+           <widget class="QLabel" name="gpuDitheringModeLabel">
+            <property name="text">
+             <string>Dithering:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="4" column="1">
+           <widget class="QComboBox" name="gpuDitheringMode"/>
+          </item>
+          <item row="5" column="0">
+           <widget class="QLabel" name="label_3">
+            <property name="text">
+             <string>Deinterlacing:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="5" column="1">
+           <widget class="QComboBox" name="displayDeinterlacing"/>
+          </item>
+          <item row="6" column="0">
            <widget class="QLabel" name="label_6">
             <property name="text">
              <string>Aspect Ratio:</string>
             </property>
            </widget>
           </item>
-          <item row="4" column="1">
+          <item row="6" column="1">
            <layout class="QHBoxLayout" name="horizontalLayout_2" stretch="1,0,0,0">
             <item>
              <widget class="QComboBox" name="displayAspectRatio"/>
@@ -171,104 +207,81 @@
             </item>
            </layout>
           </item>
-          <item row="5" column="0">
-           <widget class="QLabel" name="label_3">
-            <property name="text">
-             <string>Deinterlacing:</string>
-            </property>
-           </widget>
-          </item>
-          <item row="5" column="1">
-           <widget class="QComboBox" name="displayDeinterlacing"/>
-          </item>
-          <item row="6" column="0">
+          <item row="7" column="0">
            <widget class="QLabel" name="label_7">
             <property name="text">
              <string>Crop:</string>
             </property>
            </widget>
           </item>
-          <item row="6" column="1">
+          <item row="7" column="1">
            <widget class="QComboBox" name="displayCropMode"/>
           </item>
-          <item row="7" column="0">
+          <item row="8" column="0">
            <widget class="QLabel" name="label_8">
             <property name="text">
              <string>Scaling:</string>
             </property>
            </widget>
           </item>
-          <item row="7" column="1">
+          <item row="8" column="1">
            <widget class="QComboBox" name="displayScaling"/>
           </item>
-          <item row="9" column="0" colspan="2">
+          <item row="9" column="0">
+           <widget class="QLabel" name="label_9">
+            <property name="text">
+             <string>FMV Scaling:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="9" column="1">
+           <widget class="QComboBox" name="displayScaling24Bit"/>
+          </item>
+          <item row="10" column="0" colspan="2">
            <layout class="QGridLayout" name="gridLayout_2">
-            <item row="0" column="1">
-             <widget class="QCheckBox" name="widescreenHack">
-              <property name="text">
-               <string>Widescreen Rendering</string>
-              </property>
-             </widget>
-            </item>
-            <item row="2" column="0">
-             <widget class="QCheckBox" name="force43For24Bit">
-              <property name="text">
-               <string>Force 4:3 For FMVs</string>
-              </property>
-             </widget>
-            </item>
-            <item row="2" column="1">
-             <widget class="QCheckBox" name="chromaSmoothingFor24Bit">
-              <property name="text">
-               <string>FMV Chroma Smoothing</string>
-              </property>
-             </widget>
-            </item>
             <item row="0" column="0">
-             <widget class="QCheckBox" name="trueColor">
-              <property name="text">
-               <string>True Color Rendering</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="0">
              <widget class="QCheckBox" name="pgxpEnable">
               <property name="text">
                <string>PGXP Geometry Correction</string>
               </property>
              </widget>
             </item>
-            <item row="1" column="1">
+            <item row="0" column="1">
              <widget class="QCheckBox" name="pgxpDepthBuffer">
               <property name="text">
                <string>PGXP Depth Buffer (Low Compatibility)</string>
               </property>
              </widget>
             </item>
+            <item row="1" column="0">
+             <widget class="QCheckBox" name="force43For24Bit">
+              <property name="text">
+               <string>Force 4:3 For FMVs</string>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="1">
+             <widget class="QCheckBox" name="chromaSmoothingFor24Bit">
+              <property name="text">
+               <string>FMV Chroma Smoothing</string>
+              </property>
+             </widget>
+            </item>
+            <item row="2" column="0">
+             <widget class="QCheckBox" name="widescreenHack">
+              <property name="text">
+               <string>Widescreen Rendering</string>
+              </property>
+             </widget>
+            </item>
+            <item row="2" column="1">
+             <widget class="QCheckBox" name="forceRoundedTexcoords">
+              <property name="text">
+               <string>Round Upscaled Texture Coordinates</string>
+              </property>
+             </widget>
+            </item>
            </layout>
-          </item>
-          <item row="2" column="1">
-           <widget class="QComboBox" name="textureFiltering"/>
-          </item>
-          <item row="3" column="0">
-           <widget class="QLabel" name="label_9">
-            <property name="text">
-             <string>Sprite Texture Filtering:</string>
-            </property>
-           </widget>
-          </item>
-          <item row="3" column="1">
-           <widget class="QComboBox" name="spriteTextureFiltering"/>
-          </item>
-          <item row="8" column="0">
-           <widget class="QLabel" name="forceVideoTimingLabel">
-            <property name="text">
-             <string>Force Video Timing:</string>
-            </property>
-           </widget>
-          </item>
-          <item row="8" column="1">
-           <widget class="QComboBox" name="forceVideoTiming"/>
           </item>
          </layout>
         </widget>
@@ -280,8 +293,8 @@
          </property>
          <property name="sizeHint" stdset="0">
           <size>
-           <width>20</width>
-           <height>75</height>
+           <width>0</width>
+           <height>0</height>
           </size>
          </property>
         </spacer>
@@ -296,6 +309,9 @@
        <property name="leftMargin">
         <number>0</number>
        </property>
+       <property name="topMargin">
+        <number>6</number>
+       </property>
        <property name="rightMargin">
         <number>0</number>
        </property>
@@ -307,7 +323,7 @@
          <property name="title">
           <string>Display Options</string>
          </property>
-         <layout class="QFormLayout" name="formLayout_7">
+         <layout class="QGridLayout" name="gridLayout_11" columnstretch="0,1" columnminimumwidth="120,0">
           <item row="0" column="0">
            <widget class="QLabel" name="exclusiveFullscreenLabel">
             <property name="text">
@@ -332,38 +348,6 @@
             </property>
            </widget>
           </item>
-          <item row="2" column="0" colspan="2">
-           <layout class="QGridLayout" name="advancedDisplayOptionsLayout">
-            <item row="1" column="0">
-             <widget class="QCheckBox" name="disableMailboxPresentation">
-              <property name="text">
-               <string>Disable Mailbox Presentation</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="1">
-             <widget class="QCheckBox" name="blitSwapChain">
-              <property name="text">
-               <string>Use Blit Swap Chain</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="0">
-             <widget class="QCheckBox" name="automaticallyResizeWindow">
-              <property name="text">
-               <string>Automatically Resize Window</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="1">
-             <widget class="QCheckBox" name="stretchDisplayVertically">
-              <property name="text">
-               <string>Stretch Vertically</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
           <item row="1" column="1">
            <layout class="QHBoxLayout" name="horizontalLayout">
             <item>
@@ -371,6 +355,145 @@
             </item>
             <item>
              <widget class="QComboBox" name="displayRotation"/>
+            </item>
+           </layout>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="displayFineCropModeLabel">
+            <property name="text">
+             <string>Fine Crop Mode:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <layout class="QHBoxLayout" name="horizontalLayout_4" stretch="1,0">
+            <item>
+             <widget class="QComboBox" name="displayFineCropMode"/>
+            </item>
+            <item>
+             <widget class="QPushButton" name="displayFineCropReset">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
+              <property name="toolTip">
+               <string>Reset Fine Cropping</string>
+              </property>
+              <property name="icon">
+               <iconset theme="delete-back-2-line"/>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item row="3" column="0">
+           <widget class="QLabel" name="displayFineCropLabel">
+            <property name="text">
+             <string>Fine Crop Size:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <layout class="QHBoxLayout" name="horizontalLayout_3" stretch="0,1,0,1,0,1,0,1">
+            <item>
+             <widget class="QLabel" name="displayFineCropLeftLabel">
+              <property name="text">
+               <string>Left:</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QSpinBox" name="displayFineCropLeft">
+              <property name="suffix">
+               <string>px</string>
+              </property>
+              <property name="minimum">
+               <number>-32768</number>
+              </property>
+              <property name="maximum">
+               <number>32767</number>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="displayFineCropTopLabel">
+              <property name="text">
+               <string>Top:</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QSpinBox" name="displayFineCropTop">
+              <property name="suffix">
+               <string>px</string>
+              </property>
+              <property name="minimum">
+               <number>-32768</number>
+              </property>
+              <property name="maximum">
+               <number>32767</number>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="displayFineCropRightLabel">
+              <property name="text">
+               <string>Right:</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QSpinBox" name="displayFineCropRight">
+              <property name="suffix">
+               <string>px</string>
+              </property>
+              <property name="minimum">
+               <number>-32768</number>
+              </property>
+              <property name="maximum">
+               <number>32767</number>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="displayFineCropBottomLabel">
+              <property name="text">
+               <string>Bottom:</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QSpinBox" name="displayFineCropBottom">
+              <property name="suffix">
+               <string>px</string>
+              </property>
+              <property name="minimum">
+               <number>-32768</number>
+              </property>
+              <property name="maximum">
+               <number>32767</number>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item row="4" column="0" colspan="2">
+           <layout class="QGridLayout" name="advancedDisplayOptionsLayout">
+            <item row="0" column="0">
+             <widget class="QCheckBox" name="disableMailboxPresentation">
+              <property name="text">
+               <string>Disable Mailbox Presentation</string>
+              </property>
+             </widget>
+            </item>
+            <item row="0" column="1">
+             <widget class="QCheckBox" name="blitSwapChain">
+              <property name="text">
+               <string>Use Blit Swap Chain</string>
+              </property>
+             </widget>
             </item>
            </layout>
           </item>
@@ -382,7 +505,7 @@
          <property name="title">
           <string>Rendering Options</string>
          </property>
-         <layout class="QFormLayout" name="formLayout_6">
+         <layout class="QGridLayout" name="gridLayout_12" columnstretch="0,1" columnminimumwidth="120,0">
           <item row="0" column="0">
            <widget class="QLabel" name="msaaModeLabel">
             <property name="text">
@@ -405,28 +528,46 @@
           </item>
           <item row="2" column="0" colspan="2">
            <layout class="QGridLayout" name="gridLayout_5">
-            <item row="0" column="1">
-             <widget class="QCheckBox" name="scaledDithering">
+            <item row="0" column="0">
+             <widget class="QCheckBox" name="gpuThread">
               <property name="text">
-               <string>Scaled Dithering</string>
+               <string>Threaded Rendering</string>
               </property>
              </widget>
+            </item>
+            <item row="0" column="1">
+             <layout class="QHBoxLayout" name="horizontalLayout_12" stretch="0,0">
+              <item>
+               <widget class="QLabel" name="maxQueuedFramesLabel">
+                <property name="text">
+                 <string>Max Queued Frames:</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QSpinBox" name="maxQueuedFrames">
+                <property name="maximum">
+                 <number>10</number>
+                </property>
+               </widget>
+              </item>
+             </layout>
             </item>
             <item row="1" column="0">
-             <widget class="QCheckBox" name="forceRoundedTexcoords">
+             <widget class="QCheckBox" name="modulationCrop">
               <property name="text">
-               <string>Round Upscaled Texture Coordinates</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="0">
-             <widget class="QCheckBox" name="accurateBlending">
-              <property name="text">
-               <string>Accurate Blending</string>
+               <string>Texture Modulation Cropping (&quot;Old/v0 GPU&quot;)</string>
               </property>
              </widget>
             </item>
             <item row="1" column="1">
+             <widget class="QCheckBox" name="scaledInterlacing">
+              <property name="text">
+               <string>Scaled Interlacing</string>
+              </property>
+             </widget>
+            </item>
+            <item row="2" column="0">
              <widget class="QCheckBox" name="useSoftwareRendererForReadbacks">
               <property name="text">
                <string>Software Renderer Readbacks</string>
@@ -446,7 +587,7 @@
          <property name="sizeHint" stdset="0">
           <size>
            <width>20</width>
-           <height>40</height>
+           <height>0</height>
           </size>
          </property>
         </spacer>
@@ -475,7 +616,10 @@
          <property name="title">
           <string/>
          </property>
-         <layout class="QFormLayout" name="formLayout_4">
+         <layout class="QGridLayout" name="gridLayout_13" columnstretch="0,1">
+          <property name="topMargin">
+           <number>6</number>
+          </property>
           <item row="0" column="0">
            <widget class="QLabel" name="pgxpGeometryToleranceLabel">
             <property name="text">
@@ -515,26 +659,12 @@
           <item row="1" column="1">
            <widget class="QDoubleSpinBox" name="pgxpDepthClearThreshold">
             <property name="maximum">
-             <double>4096.000000000000000</double>
+             <double>65536.000000000000000</double>
             </property>
            </widget>
           </item>
           <item row="2" column="0" colspan="2">
            <layout class="QGridLayout" name="gridLayout">
-            <item row="0" column="1">
-             <widget class="QCheckBox" name="pgxpColorCorrection">
-              <property name="text">
-               <string>Perspective Correct Colors</string>
-              </property>
-             </widget>
-            </item>
-            <item row="2" column="1">
-             <widget class="QCheckBox" name="pgxpVertexCache">
-              <property name="text">
-               <string>Vertex Cache</string>
-              </property>
-             </widget>
-            </item>
             <item row="0" column="0">
              <widget class="QCheckBox" name="pgxpTextureCorrection">
               <property name="text">
@@ -542,17 +672,10 @@
               </property>
              </widget>
             </item>
-            <item row="2" column="0">
-             <widget class="QCheckBox" name="pgxpCPU">
+            <item row="0" column="1">
+             <widget class="QCheckBox" name="pgxpColorCorrection">
               <property name="text">
-               <string>CPU Mode</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="1">
-             <widget class="QCheckBox" name="pgxpPreserveProjPrecision">
-              <property name="text">
-               <string>Preserve Projection Precision</string>
+               <string>Perspective Correct Colors</string>
               </property>
              </widget>
             </item>
@@ -563,10 +686,38 @@
               </property>
              </widget>
             </item>
+            <item row="1" column="1">
+             <widget class="QCheckBox" name="pgxpPreserveProjPrecision">
+              <property name="text">
+               <string>Preserve Projection Precision</string>
+              </property>
+             </widget>
+            </item>
+            <item row="2" column="0">
+             <widget class="QCheckBox" name="pgxpCPU">
+              <property name="text">
+               <string>CPU Mode</string>
+              </property>
+             </widget>
+            </item>
+            <item row="2" column="1">
+             <widget class="QCheckBox" name="pgxpVertexCache">
+              <property name="text">
+               <string>Vertex Cache</string>
+              </property>
+             </widget>
+            </item>
             <item row="3" column="0">
              <widget class="QCheckBox" name="pgxpDisableOn2DPolygons">
               <property name="text">
                <string>Disable on 2D Polygons</string>
+              </property>
+             </widget>
+            </item>
+            <item row="3" column="1">
+             <widget class="QCheckBox" name="pgxpTransparentDepthTest">
+              <property name="text">
+               <string>Depth Test Transparent Polygons</string>
               </property>
              </widget>
             </item>
@@ -583,469 +734,7 @@
          <property name="sizeHint" stdset="0">
           <size>
            <width>20</width>
-           <height>215</height>
-          </size>
-         </property>
-        </spacer>
-       </item>
-      </layout>
-     </widget>
-     <widget class="QWidget" name="osdTab">
-      <attribute name="title">
-       <string>OSD</string>
-      </attribute>
-      <layout class="QVBoxLayout" name="verticalLayout_6">
-       <property name="leftMargin">
-        <number>0</number>
-       </property>
-       <property name="topMargin">
-        <number>0</number>
-       </property>
-       <property name="rightMargin">
-        <number>0</number>
-       </property>
-       <property name="bottomMargin">
-        <number>0</number>
-       </property>
-       <item>
-        <widget class="QGroupBox" name="groupBox_8">
-         <property name="title">
-          <string/>
-         </property>
-         <layout class="QFormLayout" name="formLayout_5">
-          <item row="0" column="0">
-           <widget class="QLabel" name="label_29">
-            <property name="text">
-             <string>OSD Scale:</string>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="1">
-           <widget class="QSpinBox" name="osdScale">
-            <property name="suffix">
-             <string>%</string>
-            </property>
-            <property name="minimum">
-             <number>25</number>
-            </property>
-            <property name="maximum">
-             <number>500</number>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="0" colspan="2">
-           <layout class="QGridLayout" name="gridLayout_3">
-            <item row="1" column="1">
-             <widget class="QCheckBox" name="showFPS">
-              <property name="text">
-               <string>Show FPS</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="0">
-             <widget class="QCheckBox" name="showOSDMessages">
-              <property name="text">
-               <string>Show OSD Messages</string>
-              </property>
-             </widget>
-            </item>
-            <item row="2" column="0">
-             <widget class="QCheckBox" name="showCPU">
-              <property name="text">
-               <string>Show CPU Usage</string>
-              </property>
-             </widget>
-            </item>
-            <item row="3" column="0">
-             <widget class="QCheckBox" name="showGPUStatistics">
-              <property name="text">
-               <string>Show GPU Statistics</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="0">
-             <widget class="QCheckBox" name="showSpeed">
-              <property name="text">
-               <string>Show Emulation Speed</string>
-              </property>
-             </widget>
-            </item>
-            <item row="2" column="1">
-             <widget class="QCheckBox" name="showGPU">
-              <property name="text">
-               <string>Show GPU Usage</string>
-              </property>
-             </widget>
-            </item>
-            <item row="5" column="1">
-             <widget class="QCheckBox" name="showSettings">
-              <property name="text">
-               <string>Show Settings</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="1">
-             <widget class="QCheckBox" name="showStatusIndicators">
-              <property name="text">
-               <string>Show Status Indicators</string>
-              </property>
-             </widget>
-            </item>
-            <item row="5" column="0">
-             <widget class="QCheckBox" name="showInput">
-              <property name="text">
-               <string>Show Controller Input</string>
-              </property>
-             </widget>
-            </item>
-            <item row="4" column="0">
-             <widget class="QCheckBox" name="showFrameTimes">
-              <property name="text">
-               <string>Show Frame Times</string>
-              </property>
-             </widget>
-            </item>
-            <item row="3" column="1">
-             <widget class="QCheckBox" name="showResolution">
-              <property name="text">
-               <string>Show Resolution</string>
-              </property>
-             </widget>
-            </item>
-            <item row="4" column="1">
-             <widget class="QCheckBox" name="showLatencyStatistics">
-              <property name="text">
-               <string>Show Latency Statistics</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-         </layout>
-        </widget>
-       </item>
-       <item>
-        <spacer name="verticalSpacer_5">
-         <property name="orientation">
-          <enum>Qt::Orientation::Vertical</enum>
-         </property>
-         <property name="sizeHint" stdset="0">
-          <size>
-           <width>20</width>
-           <height>164</height>
-          </size>
-         </property>
-        </spacer>
-       </item>
-      </layout>
-     </widget>
-     <widget class="QWidget" name="captureTab">
-      <attribute name="title">
-       <string>Capture</string>
-      </attribute>
-      <layout class="QVBoxLayout" name="verticalLayout_8">
-       <property name="leftMargin">
-        <number>0</number>
-       </property>
-       <property name="rightMargin">
-        <number>0</number>
-       </property>
-       <property name="bottomMargin">
-        <number>0</number>
-       </property>
-       <item>
-        <widget class="QGroupBox" name="groupBox_10">
-         <property name="title">
-          <string>Screenshots</string>
-         </property>
-         <layout class="QFormLayout" name="formLayout_3">
-          <item row="0" column="0">
-           <widget class="QLabel" name="label_21">
-            <property name="text">
-             <string>Screenshot Size:</string>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="1">
-           <layout class="QHBoxLayout" name="horizontalLayout_5" stretch="1,0,0,0">
-            <item>
-             <widget class="QComboBox" name="screenshotSize"/>
-            </item>
-            <item>
-             <widget class="QComboBox" name="screenshotFormat"/>
-            </item>
-            <item>
-             <widget class="QLabel" name="label_44">
-              <property name="text">
-               <string>Quality:</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QSpinBox" name="screenshotQuality">
-              <property name="suffix">
-               <string>%</string>
-              </property>
-              <property name="minimum">
-               <number>1</number>
-              </property>
-              <property name="maximum">
-               <number>100</number>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-         </layout>
-        </widget>
-       </item>
-       <item>
-        <widget class="QGroupBox" name="captureTabGroupBox">
-         <property name="title">
-          <string>Media Capture</string>
-         </property>
-         <layout class="QFormLayout" name="captureTabGroupBoxLayout">
-          <item row="0" column="0">
-           <widget class="QLabel" name="label_2">
-            <property name="text">
-             <string>Backend:</string>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="1">
-           <widget class="QComboBox" name="mediaCaptureBackend"/>
-          </item>
-          <item row="1" column="0">
-           <widget class="QLabel" name="captureContainerLabel">
-            <property name="text">
-             <string>Container:</string>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="1">
-           <widget class="QComboBox" name="captureContainer"/>
-          </item>
-          <item row="2" column="0" colspan="2">
-           <layout class="QGridLayout" name="captureOptionLayout" columnstretch="1,1">
-            <property name="horizontalSpacing">
-             <number>20</number>
-            </property>
-            <property name="verticalSpacing">
-             <number>10</number>
-            </property>
-            <item row="1" column="1">
-             <widget class="QWidget" name="audioCaptureOptions" native="true">
-              <layout class="QFormLayout" name="audioCaptureOptionsLayout">
-               <property name="leftMargin">
-                <number>0</number>
-               </property>
-               <property name="topMargin">
-                <number>0</number>
-               </property>
-               <property name="rightMargin">
-                <number>0</number>
-               </property>
-               <property name="bottomMargin">
-                <number>0</number>
-               </property>
-               <item row="0" column="0">
-                <widget class="QLabel" name="audioCaptureCodecLabel">
-                 <property name="text">
-                  <string>Codec:</string>
-                 </property>
-                </widget>
-               </item>
-               <item row="0" column="1">
-                <widget class="QComboBox" name="audioCaptureCodec"/>
-               </item>
-               <item row="1" column="0">
-                <widget class="QLabel" name="audioCaptureBitrateLabel">
-                 <property name="text">
-                  <string>Bitrate:</string>
-                 </property>
-                </widget>
-               </item>
-               <item row="1" column="1">
-                <widget class="QSpinBox" name="audioCaptureBitrate">
-                 <property name="suffix">
-                  <string> kbps</string>
-                 </property>
-                 <property name="minimum">
-                  <number>16</number>
-                 </property>
-                 <property name="maximum">
-                  <number>2048</number>
-                 </property>
-                 <property name="singleStep">
-                  <number>1</number>
-                 </property>
-                 <property name="value">
-                  <number>128</number>
-                 </property>
-                </widget>
-               </item>
-               <item row="2" column="0" colspan="2">
-                <widget class="QCheckBox" name="enableAudioCaptureArguments">
-                 <property name="text">
-                  <string>Extra Arguments</string>
-                 </property>
-                </widget>
-               </item>
-               <item row="3" column="0" colspan="2">
-                <widget class="QLineEdit" name="audioCaptureArguments"/>
-               </item>
-              </layout>
-             </widget>
-            </item>
-            <item row="0" column="1">
-             <widget class="QCheckBox" name="enableAudioCapture">
-              <property name="text">
-               <string>Capture Audio</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="0">
-             <widget class="QWidget" name="videoCaptureOptions" native="true">
-              <layout class="QFormLayout" name="videoCaptureOptionsLayout">
-               <property name="leftMargin">
-                <number>0</number>
-               </property>
-               <property name="topMargin">
-                <number>0</number>
-               </property>
-               <property name="rightMargin">
-                <number>0</number>
-               </property>
-               <property name="bottomMargin">
-                <number>0</number>
-               </property>
-               <item row="0" column="0">
-                <widget class="QLabel" name="videoCaptureCodecLabel">
-                 <property name="text">
-                  <string>Codec:</string>
-                 </property>
-                </widget>
-               </item>
-               <item row="0" column="1">
-                <widget class="QComboBox" name="videoCaptureCodec"/>
-               </item>
-               <item row="1" column="0">
-                <widget class="QLabel" name="videoCaptureBitrateLabel">
-                 <property name="text">
-                  <string>Bitrate:</string>
-                 </property>
-                </widget>
-               </item>
-               <item row="1" column="1">
-                <widget class="QSpinBox" name="videoCaptureBitrate">
-                 <property name="suffix">
-                  <string extracomment="Unit that will appear next to a number. Alter the space or whatever is needed before the text depending on your language."> kbps</string>
-                 </property>
-                 <property name="minimum">
-                  <number>100</number>
-                 </property>
-                 <property name="maximum">
-                  <number>100000</number>
-                 </property>
-                 <property name="singleStep">
-                  <number>100</number>
-                 </property>
-                 <property name="value">
-                  <number>6000</number>
-                 </property>
-                </widget>
-               </item>
-               <item row="2" column="0">
-                <widget class="QLabel" name="videoCaptureResolutionLabel">
-                 <property name="text">
-                  <string>Resolution:</string>
-                 </property>
-                </widget>
-               </item>
-               <item row="2" column="1">
-                <layout class="QHBoxLayout" name="videoCaptureSizeLayout" stretch="1,0,1,0">
-                 <item>
-                  <widget class="QSpinBox" name="videoCaptureWidth">
-                   <property name="minimum">
-                    <number>320</number>
-                   </property>
-                   <property name="maximum">
-                    <number>32768</number>
-                   </property>
-                   <property name="singleStep">
-                    <number>16</number>
-                   </property>
-                   <property name="value">
-                    <number>640</number>
-                   </property>
-                  </widget>
-                 </item>
-                 <item>
-                  <widget class="QLabel" name="xLabel">
-                   <property name="text">
-                    <string>x</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item>
-                  <widget class="QSpinBox" name="videoCaptureHeight">
-                   <property name="minimum">
-                    <number>240</number>
-                   </property>
-                   <property name="maximum">
-                    <number>32768</number>
-                   </property>
-                   <property name="singleStep">
-                    <number>16</number>
-                   </property>
-                   <property name="value">
-                    <number>480</number>
-                   </property>
-                  </widget>
-                 </item>
-                 <item>
-                  <widget class="QCheckBox" name="videoCaptureResolutionAuto">
-                   <property name="text">
-                    <string>Auto</string>
-                   </property>
-                  </widget>
-                 </item>
-                </layout>
-               </item>
-               <item row="4" column="0" colspan="2">
-                <widget class="QLineEdit" name="videoCaptureArguments"/>
-               </item>
-               <item row="3" column="0" colspan="2">
-                <widget class="QCheckBox" name="enableVideoCaptureArguments">
-                 <property name="text">
-                  <string>Extra Arguments</string>
-                 </property>
-                </widget>
-               </item>
-              </layout>
-             </widget>
-            </item>
-            <item row="0" column="0">
-             <widget class="QCheckBox" name="enableVideoCapture">
-              <property name="text">
-               <string>Capture Video</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-         </layout>
-        </widget>
-       </item>
-       <item>
-        <spacer name="verticalSpacer_7">
-         <property name="orientation">
-          <enum>Qt::Orientation::Vertical</enum>
-         </property>
-         <property name="sizeHint" stdset="0">
-          <size>
-           <width>20</width>
-           <height>295</height>
+           <height>0</height>
           </size>
          </property>
         </spacer>
@@ -1054,11 +743,14 @@
      </widget>
      <widget class="QWidget" name="tabTextureReplacements">
       <attribute name="title">
-       <string>Texture Replacements</string>
+       <string>Texture Replacement</string>
       </attribute>
-      <layout class="QVBoxLayout" name="verticalLayout_2">
+      <layout class="QVBoxLayout" name="tabTextureReplacementsLayout">
        <property name="leftMargin">
         <number>0</number>
+       </property>
+       <property name="topMargin">
+        <number>6</number>
        </property>
        <property name="rightMargin">
         <number>0</number>
@@ -1067,35 +759,78 @@
         <number>0</number>
        </property>
        <item>
-        <widget class="QGroupBox" name="groupBox_5">
+        <widget class="QGroupBox" name="groupBox_12">
          <property name="title">
           <string>General Settings</string>
          </property>
-         <layout class="QFormLayout" name="formLayout_8">
-          <item row="0" column="0" colspan="2">
-           <layout class="QGridLayout" name="gridLayout_6">
-            <item row="0" column="0">
-             <widget class="QCheckBox" name="vramWriteReplacement">
+         <layout class="QGridLayout" name="gridLayout_9">
+          <item row="0" column="0">
+           <widget class="QCheckBox" name="enableTextureCache">
+            <property name="text">
+             <string>Enable Texture Cache</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QCheckBox" name="preloadTextureReplacements">
+            <property name="text">
+             <string>Preload Texture Replacements</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="groupBox_5">
+         <property name="title">
+          <string>Texture Replacement</string>
+         </property>
+         <layout class="QGridLayout" name="gridLayout_6">
+          <item row="0" column="0">
+           <widget class="QCheckBox" name="enableTextureReplacements">
+            <property name="text">
+             <string>Enable Texture Replacement</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <layout class="QHBoxLayout" name="horizontalLayout_6">
+            <item>
+             <widget class="QCheckBox" name="enableTextureDumping">
               <property name="text">
-               <string>Enable VRAM Write Replacement</string>
+               <string>Enable Texture Dumping</string>
               </property>
              </widget>
             </item>
-            <item row="0" column="1">
-             <widget class="QCheckBox" name="preloadTextureReplacements">
-              <property name="text">
-               <string>Preload Texture Replacements</string>
+            <item>
+             <widget class="QPushButton" name="textureReplacementOptions">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
               </property>
-             </widget>
-            </item>
-            <item row="1" column="0">
-             <widget class="QCheckBox" name="useOldMDECRoutines">
-              <property name="text">
-               <string>Use Old MDEC Routines</string>
+              <property name="icon">
+               <iconset theme="settings-3-line"/>
               </property>
              </widget>
             </item>
            </layout>
+          </item>
+          <item row="1" column="0">
+           <widget class="QCheckBox" name="alwaysTrackUploads">
+            <property name="text">
+             <string>Always Track Uploads</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QCheckBox" name="dumpReplacedTextures">
+            <property name="text">
+             <string>Dump Replaced Textures</string>
+            </property>
+           </widget>
           </item>
          </layout>
         </widget>
@@ -1103,70 +838,69 @@
        <item>
         <widget class="QGroupBox" name="groupBox_4">
          <property name="title">
-          <string>VRAM Write Dumping</string>
+          <string>VRAM Write (Background) Replacement</string>
          </property>
-         <layout class="QFormLayout" name="formLayout_9">
-          <item row="0" column="0" colspan="2">
-           <layout class="QGridLayout" name="gridLayout_7">
-            <item row="0" column="0">
-             <widget class="QCheckBox" name="vramWriteDumping">
-              <property name="text">
-               <string>Enable VRAM Write Dumping</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="1">
-             <widget class="QCheckBox" name="setVRAMWriteAlphaChannel">
-              <property name="text">
-               <string>Set Alpha Channel</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-          <item row="1" column="0">
-           <widget class="QLabel" name="vramWriteDumpThresholdLabel">
+         <layout class="QGridLayout" name="gridLayout_7">
+          <item row="0" column="0">
+           <widget class="QCheckBox" name="vramWriteReplacement">
             <property name="text">
-             <string>Dump Size Threshold:</string>
+             <string>Enable VRAM Write Replacement</string>
             </property>
            </widget>
           </item>
+          <item row="0" column="1">
+           <widget class="QCheckBox" name="vramWriteDumping">
+            <property name="text">
+             <string>Enable VRAM Write Dumping</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QCheckBox" name="useOldMDECRoutines">
+            <property name="text">
+             <string>Use Old MDEC Routines</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="texturesDirectoryGroup">
+         <property name="title">
+          <string>Textures Directory</string>
+         </property>
+         <layout class="QGridLayout" name="gridLayout_10">
+          <item row="0" column="0" colspan="4">
+           <widget class="QLabel" name="texturesDirectoryLabel">
+            <property name="text">
+             <string>Directory to load replacement textures from, and save dumps to.</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLineEdit" name="texturesDirectory"/>
+          </item>
           <item row="1" column="1">
-           <layout class="QHBoxLayout" name="horizontalLayout_6" stretch="1,0,1">
-            <item>
-             <widget class="QSpinBox" name="minDumpedVRAMWriteWidth">
-              <property name="suffix">
-               <string>px</string>
-              </property>
-              <property name="minimum">
-               <number>1</number>
-              </property>
-              <property name="maximum">
-               <number>1024</number>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLabel" name="vramWriteDumpThresholdSeparator">
-              <property name="text">
-               <string>x</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QSpinBox" name="minDumpedVRAMWriteHeight">
-              <property name="suffix">
-               <string>px</string>
-              </property>
-              <property name="minimum">
-               <number>1</number>
-              </property>
-              <property name="maximum">
-               <number>512</number>
-              </property>
-             </widget>
-            </item>
-           </layout>
+           <widget class="QPushButton" name="texturesDirectoryBrowse">
+            <property name="text">
+             <string>Browse...</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QPushButton" name="texturesDirectoryOpen">
+            <property name="text">
+             <string>Open...</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="3">
+           <widget class="QPushButton" name="texturesDirectoryReset">
+            <property name="text">
+             <string>Reset</string>
+            </property>
+           </widget>
           </item>
          </layout>
         </widget>
@@ -1179,7 +913,7 @@
          <property name="sizeHint" stdset="0">
           <size>
            <width>20</width>
-           <height>40</height>
+           <height>0</height>
           </size>
          </property>
         </spacer>
@@ -1194,6 +928,9 @@
        <property name="leftMargin">
         <number>0</number>
        </property>
+       <property name="topMargin">
+        <number>6</number>
+       </property>
        <property name="rightMargin">
         <number>0</number>
        </property>
@@ -1205,7 +942,7 @@
          <property name="title">
           <string>Rendering Options</string>
          </property>
-         <layout class="QFormLayout" name="formLayout_11">
+         <layout class="QGridLayout" name="gridLayout_22" columnstretch="0,1" columnminimumwidth="160,0">
           <item row="0" column="0">
            <widget class="QLabel" name="gpuWireframeModeLabel">
             <property name="text">
@@ -1216,16 +953,31 @@
           <item row="0" column="1">
            <widget class="QComboBox" name="gpuWireframeMode"/>
           </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="gpuDumpGroup">
+         <property name="title">
+          <string>GPU Dump Recording/Playback</string>
+         </property>
+         <layout class="QGridLayout" name="gridLayout_17" columnstretch="0,1" columnminimumwidth="160,0">
+          <item row="0" column="0">
+           <widget class="QLabel" name="groupDumpCompressionModeLabel">
+            <property name="text">
+             <string>Dump Compression Mode:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QComboBox" name="gpuDumpCompressionMode"/>
+          </item>
           <item row="1" column="0" colspan="2">
-           <layout class="QGridLayout" name="gridLayout_4">
-            <item row="0" column="0">
-             <widget class="QCheckBox" name="gpuThread">
-              <property name="text">
-               <string>Threaded Rendering</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
+           <widget class="QCheckBox" name="gpuDumpFastReplayMode">
+            <property name="text">
+             <string>Fast Dump Playback</string>
+            </property>
+           </widget>
           </item>
          </layout>
         </widget>
@@ -1235,66 +987,90 @@
          <property name="title">
           <string>Device Options</string>
          </property>
-         <layout class="QFormLayout" name="formLayout_10">
-          <item row="0" column="0" colspan="2">
-           <layout class="QGridLayout" name="gridLayout_8">
-            <item row="2" column="1">
-             <widget class="QCheckBox" name="disableTextureCopyToSelf">
-              <property name="text">
-               <string>Disable Texture Copy To Self</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="0">
-             <widget class="QCheckBox" name="useDebugDevice">
-              <property name="text">
-               <string>Use Debug Device</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="0">
-             <widget class="QCheckBox" name="disableDualSource">
-              <property name="text">
-               <string>Disable Dual-Source Blending</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="1">
-             <widget class="QCheckBox" name="disableFramebufferFetch">
-              <property name="text">
-               <string>Disable Framebuffer Fetch</string>
-              </property>
-             </widget>
-            </item>
-            <item row="2" column="0">
-             <widget class="QCheckBox" name="disableTextureBuffers">
-              <property name="text">
-               <string>Disable Texture Buffers</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="1">
-             <widget class="QCheckBox" name="disableShaderCache">
-              <property name="text">
-               <string>Disable Shader Cache</string>
-              </property>
-             </widget>
-            </item>
-            <item row="3" column="0">
-             <widget class="QCheckBox" name="disableMemoryImport">
-              <property name="text">
-               <string>Disable Memory Import</string>
-              </property>
-             </widget>
-            </item>
-            <item row="3" column="1">
-             <widget class="QCheckBox" name="disableRasterOrderViews">
-              <property name="text">
-               <string>Disable Rasterizer Order Views</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
+         <layout class="QGridLayout" name="gridLayout_8">
+          <item row="0" column="0">
+           <widget class="QCheckBox" name="useDebugDevice">
+            <property name="text">
+             <string>Use Debug Device</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QCheckBox" name="useGPUBasedValidation">
+            <property name="text">
+             <string>Use GPU-Based Validation</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QCheckBox" name="preferGLESContext">
+            <property name="text">
+             <string>Prefer OpenGL ES Context</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QCheckBox" name="disableShaderCache">
+            <property name="text">
+             <string>Disable Shader Cache</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QCheckBox" name="disableCompressedTextures">
+            <property name="text">
+             <string>Disable Compressed Textures</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QCheckBox" name="disableDualSource">
+            <property name="text">
+             <string>Disable Dual-Source Blending</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="0">
+           <widget class="QCheckBox" name="disableFramebufferFetch">
+            <property name="text">
+             <string>Disable Framebuffer Fetch</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <widget class="QCheckBox" name="disableTextureBuffers">
+            <property name="text">
+             <string>Disable Texture Buffers</string>
+            </property>
+           </widget>
+          </item>
+          <item row="4" column="0">
+           <widget class="QCheckBox" name="disableTextureCopyToSelf">
+            <property name="text">
+             <string>Disable Texture Copy To Self</string>
+            </property>
+           </widget>
+          </item>
+          <item row="4" column="1">
+           <widget class="QCheckBox" name="disableMemoryImport">
+            <property name="text">
+             <string>Disable Memory Import</string>
+            </property>
+           </widget>
+          </item>
+          <item row="5" column="0">
+           <widget class="QCheckBox" name="disableRasterOrderViews">
+            <property name="text">
+             <string>Disable Rasterizer Order Views</string>
+            </property>
+           </widget>
+          </item>
+          <item row="5" column="1">
+           <widget class="QCheckBox" name="disableComputeShaders">
+            <property name="text">
+             <string>Disable Compute Shaders</string>
+            </property>
+           </widget>
           </item>
          </layout>
         </widget>
@@ -1307,7 +1083,7 @@
          <property name="sizeHint" stdset="0">
           <size>
            <width>20</width>
-           <height>244</height>
+           <height>0</height>
           </size>
          </property>
         </spacer>

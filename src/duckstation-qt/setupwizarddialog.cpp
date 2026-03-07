@@ -1,23 +1,32 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "setupwizarddialog.h"
+#include "achievementlogindialog.h"
+#include "biossettingswidget.h"
+#include "controllerbindingwidgets.h"
 #include "controllersettingwidgetbinder.h"
+#include "graphicssettingswidget.h"
 #include "interfacesettingswidget.h"
 #include "mainwindow.h"
 #include "qthost.h"
 #include "qtutils.h"
 #include "settingwidgetbinder.h"
 
+#include "core/achievements.h"
+#include "core/bios.h"
 #include "core/controller.h"
+#include "core/core.h"
 
 #include "util/input_manager.h"
+#include "util/translation.h"
 
 #include "common/file_system.h"
+#include "common/string_util.h"
 
 #include "fmt/format.h"
 
-#include <QtWidgets/QMessageBox>
+#include "moc_setupwizarddialog.cpp"
 
 SetupWizardDialog::SetupWizardDialog()
 {
@@ -27,12 +36,6 @@ SetupWizardDialog::SetupWizardDialog()
 }
 
 SetupWizardDialog::~SetupWizardDialog() = default;
-
-void SetupWizardDialog::resizeEvent(QResizeEvent* event)
-{
-  QDialog::resizeEvent(event);
-  resizeDirectoryListColumns();
-}
 
 bool SetupWizardDialog::canShowNextPage()
 {
@@ -44,8 +47,8 @@ bool SetupWizardDialog::canShowNextPage()
     {
       if (!BIOS::HasAnyBIOSImages())
       {
-        if (QMessageBox::question(
-              this, tr("Warning"),
+        if (QtUtils::MessageBoxQuestion(
+              this, tr("No BIOS Image Found"),
               tr("No BIOS images were found. DuckStation WILL NOT be able to run games without a BIOS image.\n\nAre "
                  "you sure you wish to continue without selecting a BIOS image?")) != QMessageBox::Yes)
         {
@@ -57,10 +60,10 @@ bool SetupWizardDialog::canShowNextPage()
 
     case Page_GameList:
     {
-      if (m_ui.searchDirectoryList->rowCount() == 0)
+      if (m_ui.searchDirectoryList->topLevelItemCount() == 0)
       {
-        if (QMessageBox::question(
-              this, tr("Warning"),
+        if (QtUtils::MessageBoxQuestion(
+              this, tr("No Game Directories Selected"),
               tr("No game directories have been selected. You will have to manually open any game dumps you "
                  "want to play, DuckStation's list will be empty.\n\nAre you sure you want to continue?")) !=
             QMessageBox::Yes)
@@ -105,20 +108,6 @@ void SetupWizardDialog::nextPage()
   m_ui.pages->setCurrentIndex(new_page);
   updatePageLabels(current_page);
   updatePageButtons();
-  pageChangedTo(new_page);
-}
-
-void SetupWizardDialog::pageChangedTo(int page)
-{
-  switch (page)
-  {
-    case Page_GameList:
-      resizeDirectoryListColumns();
-      break;
-
-    default:
-      break;
-  }
 }
 
 void SetupWizardDialog::updatePageLabels(int prev_page)
@@ -145,9 +134,10 @@ void SetupWizardDialog::updatePageButtons()
 
 void SetupWizardDialog::confirmCancel()
 {
-  if (QMessageBox::question(this, tr("Cancel Setup"),
-                            tr("Are you sure you want to cancel DuckStation setup?\n\nAny changes have been saved, and "
-                               "the wizard will run again next time you start DuckStation.")) != QMessageBox::Yes)
+  if (QtUtils::MessageBoxQuestion(
+        this, tr("Cancel Setup"),
+        tr("Are you sure you want to cancel DuckStation setup?\n\nAny changes have been saved, and "
+           "the wizard will run again next time you start DuckStation.")) != QMessageBox::Yes)
   {
     return;
   }
@@ -159,47 +149,48 @@ void SetupWizardDialog::setupUi()
 {
   m_ui.setupUi(this);
 
-  m_ui.logo->setPixmap(
-    QPixmap(QString::fromUtf8(Path::Combine(EmuFolders::Resources, "images" FS_OSPATH_SEPARATOR_STR "duck.png"))));
-
+  const QPixmap app_logo = QtHost::GetAppLogo();
+  setWindowIcon(app_logo);
+  m_ui.logo->setPixmap(app_logo);
   m_ui.pages->setCurrentIndex(0);
 
   m_page_labels[Page_Language] = m_ui.labelLanguage;
   m_page_labels[Page_BIOS] = m_ui.labelBIOS;
   m_page_labels[Page_GameList] = m_ui.labelGameList;
   m_page_labels[Page_Controller] = m_ui.labelController;
+  m_page_labels[Page_Graphics] = m_ui.labelGraphics;
+  m_page_labels[Page_Achievements] = m_ui.labelAchievements;
   m_page_labels[Page_Complete] = m_ui.labelComplete;
 
   connect(m_ui.back, &QPushButton::clicked, this, &SetupWizardDialog::previousPage);
   connect(m_ui.next, &QPushButton::clicked, this, &SetupWizardDialog::nextPage);
   connect(m_ui.cancel, &QPushButton::clicked, this, &SetupWizardDialog::confirmCancel);
 
-  setupLanguagePage();
+  setupLanguagePage(true);
   setupBIOSPage();
   setupGameListPage();
   setupControllerPage(true);
+  setupGraphicsPage(true);
+  setupAchievementsPage(true);
 }
 
-void SetupWizardDialog::setupLanguagePage()
+void SetupWizardDialog::setupLanguagePage(bool initial)
 {
-  SettingWidgetBinder::BindWidgetToEnumSetting(nullptr, m_ui.theme, "UI", "Theme", InterfaceSettingsWidget::THEME_NAMES,
-                                               InterfaceSettingsWidget::THEME_VALUES,
-                                               InterfaceSettingsWidget::DEFAULT_THEME_NAME, "InterfaceSettingsWidget");
-  connect(m_ui.theme, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &SetupWizardDialog::themeChanged);
+  SettingWidgetBinder::DisconnectWidget(m_ui.theme);
+  m_ui.theme->clear();
+  InterfaceSettingsWidget::setupThemeCombo(m_ui.theme);
 
-  InterfaceSettingsWidget::populateLanguageDropdown(m_ui.language);
-  SettingWidgetBinder::BindWidgetToStringSetting(nullptr, m_ui.language, "Main", "Language",
-                                                 QtHost::GetDefaultLanguage());
+  SettingWidgetBinder::DisconnectWidget(m_ui.language);
+  m_ui.language->clear();
+  InterfaceSettingsWidget::setupLanguageCombo(m_ui.language);
   connect(m_ui.language, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
           &SetupWizardDialog::languageChanged);
 
-  SettingWidgetBinder::BindWidgetToBoolSetting(nullptr, m_ui.autoUpdateEnabled, "AutoUpdater", "CheckAtStartup", true);
-}
-
-void SetupWizardDialog::themeChanged()
-{
-  // Main window gets recreated at the end here anyway, so it's fine to just yolo it.
-  QtHost::UpdateApplicationTheme();
+  if (initial)
+  {
+    SettingWidgetBinder::BindWidgetToBoolSetting(nullptr, m_ui.autoUpdateEnabled, "AutoUpdater", "CheckAtStartup",
+                                                 true);
+  }
 }
 
 void SetupWizardDialog::languageChanged()
@@ -207,7 +198,10 @@ void SetupWizardDialog::languageChanged()
   // Skip the recreation, since we don't have many dynamic UI elements.
   QtHost::UpdateApplicationLanguage(this);
   m_ui.retranslateUi(this);
+  setupLanguagePage(false);
   setupControllerPage(false);
+  setupGraphicsPage(false);
+  setupAchievementsPage(false);
 }
 
 void SetupWizardDialog::setupBIOSPage()
@@ -230,30 +224,26 @@ void SetupWizardDialog::refreshBiosList()
   BIOSSettingsWidget::populateDropDownForRegion(ConsoleRegion::NTSC_J, m_ui.imageNTSCJ, list, false);
   BIOSSettingsWidget::populateDropDownForRegion(ConsoleRegion::PAL, m_ui.imagePAL, list, false);
 
-  BIOSSettingsWidget::setDropDownValue(m_ui.imageNTSCU, Host::GetBaseStringSettingValue("BIOS", "PathNTSCU"), false);
-  BIOSSettingsWidget::setDropDownValue(m_ui.imageNTSCJ, Host::GetBaseStringSettingValue("BIOS", "PathNTSCJ"), false);
-  BIOSSettingsWidget::setDropDownValue(m_ui.imagePAL, Host::GetBaseStringSettingValue("BIOS", "PathPAL"), false);
+  BIOSSettingsWidget::setDropDownValue(m_ui.imageNTSCU, Core::GetBaseStringSettingValue("BIOS", "PathNTSCU"), false);
+  BIOSSettingsWidget::setDropDownValue(m_ui.imageNTSCJ, Core::GetBaseStringSettingValue("BIOS", "PathNTSCJ"), false);
+  BIOSSettingsWidget::setDropDownValue(m_ui.imagePAL, Core::GetBaseStringSettingValue("BIOS", "PathPAL"), false);
 }
 
 void SetupWizardDialog::setupGameListPage()
 {
-  m_ui.searchDirectoryList->setSelectionMode(QAbstractItemView::SingleSelection);
-  m_ui.searchDirectoryList->setSelectionBehavior(QAbstractItemView::SelectRows);
-  m_ui.searchDirectoryList->setAlternatingRowColors(true);
-  m_ui.searchDirectoryList->setShowGrid(false);
-  m_ui.searchDirectoryList->horizontalHeader()->setHighlightSections(false);
-  m_ui.searchDirectoryList->verticalHeader()->hide();
-  m_ui.searchDirectoryList->setCurrentIndex({});
   m_ui.searchDirectoryList->setContextMenuPolicy(Qt::ContextMenuPolicy::CustomContextMenu);
+  QtUtils::SetColumnWidthsForTreeView(m_ui.searchDirectoryList, {-1, 100});
 
-  connect(m_ui.searchDirectoryList, &QTableWidget::customContextMenuRequested, this,
+  connect(m_ui.searchDirectoryList, &QTreeWidget::customContextMenuRequested, this,
           &SetupWizardDialog::onDirectoryListContextMenuRequested);
   connect(m_ui.addSearchDirectoryButton, &QPushButton::clicked, this,
           &SetupWizardDialog::onAddSearchDirectoryButtonClicked);
   connect(m_ui.removeSearchDirectoryButton, &QPushButton::clicked, this,
           &SetupWizardDialog::onRemoveSearchDirectoryButtonClicked);
-  connect(m_ui.searchDirectoryList, &QTableWidget::itemSelectionChanged, this,
+  connect(m_ui.searchDirectoryList, &QTreeWidget::itemSelectionChanged, this,
           &SetupWizardDialog::onSearchDirectoryListSelectionChanged);
+  connect(m_ui.searchDirectoryList, &QTreeWidget::itemChanged, this,
+          &SetupWizardDialog::onSearchDirectoryListItemChanged);
 
   refreshDirectoryList();
 }
@@ -266,13 +256,16 @@ void SetupWizardDialog::onDirectoryListContextMenuRequested(const QPoint& point)
 
   const int row = selection[0].row();
 
-  QMenu menu;
-  menu.addAction(tr("Remove"), [this]() { onRemoveSearchDirectoryButtonClicked(); });
-  menu.addSeparator();
-  menu.addAction(tr("Open Directory..."), [this, row]() {
-    QtUtils::OpenURL(this, QUrl::fromLocalFile(m_ui.searchDirectoryList->item(row, 0)->text()));
+  QMenu* const menu = QtUtils::NewPopupMenu(this);
+  menu->addAction(QIcon::fromTheme("folder-reduce-line"), tr("Remove"), this,
+                  &SetupWizardDialog::onRemoveSearchDirectoryButtonClicked);
+  menu->addSeparator();
+  menu->addAction(QIcon::fromTheme("folder-open-line"), tr("Open Directory..."), [this, row]() {
+    const QTreeWidgetItem* const item = m_ui.searchDirectoryList->topLevelItem(row);
+    if (item)
+      QtUtils::OpenURL(this, QUrl::fromLocalFile(item->text(0)));
   });
-  menu.exec(m_ui.searchDirectoryList->mapToGlobal(point));
+  menu->popup(m_ui.searchDirectoryList->mapToGlobal(point));
 }
 
 void SetupWizardDialog::onAddSearchDirectoryButtonClicked()
@@ -282,33 +275,35 @@ void SetupWizardDialog::onAddSearchDirectoryButtonClicked()
   if (dir.isEmpty())
     return;
 
-  QMessageBox::StandardButton selection =
-    QMessageBox::question(this, tr("Scan Recursively?"),
-                          tr("Would you like to scan the directory \"%1\" recursively?\n\nScanning recursively takes "
-                             "more time, but will identify files in subdirectories.")
-                            .arg(dir),
-                          QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
-  if (selection == QMessageBox::Cancel)
+  QMessageBox::StandardButton selection = QtUtils::MessageBoxQuestion(
+    this, tr("Scan Recursively?"),
+    tr("Would you like to scan the directory \"%1\" recursively?\n\nScanning recursively takes "
+       "more time, but will identify files in subdirectories.")
+      .arg(dir),
+    QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
+  if (selection != QMessageBox::Yes && selection != QMessageBox::No)
     return;
 
   const bool recursive = (selection == QMessageBox::Yes);
   const std::string spath = dir.toStdString();
-  Host::RemoveValueFromBaseStringListSetting("GameList", recursive ? "Paths" : "RecursivePaths", spath.c_str());
-  Host::AddValueToBaseStringListSetting("GameList", recursive ? "RecursivePaths" : "Paths", spath.c_str());
+  Core::RemoveValueFromBaseStringListSetting("GameList", recursive ? "Paths" : "RecursivePaths", spath.c_str());
+  Core::AddValueToBaseStringListSetting("GameList", recursive ? "RecursivePaths" : "Paths", spath.c_str());
   Host::CommitBaseSettingChanges();
   refreshDirectoryList();
 }
 
 void SetupWizardDialog::onRemoveSearchDirectoryButtonClicked()
 {
-  const int row = m_ui.searchDirectoryList->currentRow();
-  std::unique_ptr<QTableWidgetItem> item((row >= 0) ? m_ui.searchDirectoryList->takeItem(row, 0) : nullptr);
+  const QModelIndex index = m_ui.searchDirectoryList->currentIndex();
+  const QTreeWidgetItem* const item = m_ui.searchDirectoryList->takeTopLevelItem(index.row());
   if (!item)
     return;
 
-  const std::string spath = item->text().toStdString();
-  if (!Host::RemoveValueFromBaseStringListSetting("GameList", "Paths", spath.c_str()) &&
-      !Host::RemoveValueFromBaseStringListSetting("GameList", "RecursivePaths", spath.c_str()))
+  const std::string spath = item->text(0).toStdString();
+  delete item;
+
+  if (!Core::RemoveValueFromBaseStringListSetting("GameList", "Paths", spath.c_str()) &&
+      !Core::RemoveValueFromBaseStringListSetting("GameList", "RecursivePaths", spath.c_str()))
   {
     return;
   }
@@ -322,57 +317,50 @@ void SetupWizardDialog::onSearchDirectoryListSelectionChanged()
   m_ui.removeSearchDirectoryButton->setEnabled(!m_ui.searchDirectoryList->selectedItems().isEmpty());
 }
 
+void SetupWizardDialog::onSearchDirectoryListItemChanged(QTreeWidgetItem* item, int column)
+{
+  if (column != 1)
+    return;
+
+  const std::string path = item->text(0).toStdString();
+  if (item->checkState(1) == Qt::Checked)
+  {
+    Core::RemoveValueFromBaseStringListSetting("GameList", "Paths", path.c_str());
+    Core::AddValueToBaseStringListSetting("GameList", "RecursivePaths", path.c_str());
+  }
+  else
+  {
+    Core::RemoveValueFromBaseStringListSetting("GameList", "RecursivePaths", path.c_str());
+    Core::AddValueToBaseStringListSetting("GameList", "Paths", path.c_str());
+  }
+
+  Host::CommitBaseSettingChanges();
+}
+
 void SetupWizardDialog::addPathToTable(const std::string& path, bool recursive)
 {
-  const int row = m_ui.searchDirectoryList->rowCount();
-  m_ui.searchDirectoryList->insertRow(row);
-
-  QTableWidgetItem* item = new QTableWidgetItem();
-  item->setText(QString::fromStdString(path));
-  item->setFlags(item->flags() & ~(Qt::ItemIsEditable));
-  m_ui.searchDirectoryList->setItem(row, 0, item);
-
-  QCheckBox* cb = new QCheckBox(m_ui.searchDirectoryList);
-  m_ui.searchDirectoryList->setCellWidget(row, 1, cb);
-  cb->setChecked(recursive);
-
-  connect(cb, &QCheckBox::checkStateChanged, [item](Qt::CheckState state) {
-    const std::string path(item->text().toStdString());
-    if (state == Qt::Checked)
-    {
-      Host::RemoveValueFromBaseStringListSetting("GameList", "Paths", path.c_str());
-      Host::AddValueToBaseStringListSetting("GameList", "RecursivePaths", path.c_str());
-    }
-    else
-    {
-      Host::RemoveValueFromBaseStringListSetting("GameList", "RecursivePaths", path.c_str());
-      Host::AddValueToBaseStringListSetting("GameList", "Paths", path.c_str());
-    }
-    Host::CommitBaseSettingChanges();
-  });
+  QTreeWidgetItem* const item = new QTreeWidgetItem();
+  item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+  item->setText(0, QString::fromStdString(path));
+  item->setCheckState(1, recursive ? Qt::Checked : Qt::Unchecked);
+  m_ui.searchDirectoryList->addTopLevelItem(item);
 }
 
 void SetupWizardDialog::refreshDirectoryList()
 {
   QSignalBlocker sb(m_ui.searchDirectoryList);
-  while (m_ui.searchDirectoryList->rowCount() > 0)
-    m_ui.searchDirectoryList->removeRow(0);
+  m_ui.searchDirectoryList->clear();
 
-  std::vector<std::string> path_list = Host::GetBaseStringListSetting("GameList", "Paths");
+  std::vector<std::string> path_list = Core::GetBaseStringListSetting("GameList", "Paths");
   for (const std::string& entry : path_list)
     addPathToTable(entry, false);
 
-  path_list = Host::GetBaseStringListSetting("GameList", "RecursivePaths");
+  path_list = Core::GetBaseStringListSetting("GameList", "RecursivePaths");
   for (const std::string& entry : path_list)
     addPathToTable(entry, true);
 
   m_ui.searchDirectoryList->sortByColumn(0, Qt::AscendingOrder);
   m_ui.removeSearchDirectoryButton->setEnabled(false);
-}
-
-void SetupWizardDialog::resizeDirectoryListColumns()
-{
-  QtUtils::ResizeColumnsForTableView(m_ui.searchDirectoryList, {-1, 100});
 }
 
 void SetupWizardDialog::setupControllerPage(bool initial)
@@ -383,7 +371,7 @@ void SetupWizardDialog::setupControllerPage(bool initial)
   {
     QComboBox* type_combo;
     QLabel* mapping_result;
-    QToolButton* mapping_button;
+    QPushButton* mapping_button;
   };
   const PadWidgets pad_widgets[NUM_PADS] = {
     {m_ui.controller1Type, m_ui.controller1Mapping, m_ui.controller1AutomaticMapping},
@@ -404,35 +392,20 @@ void SetupWizardDialog::setupControllerPage(bool initial)
     const std::string section = fmt::format("Pad{}", port + 1);
     const PadWidgets& w = pad_widgets[port];
 
-    for (u32 i = 0; i < static_cast<u32>(ControllerType::Count); i++)
-    {
-      const ControllerType ctype = static_cast<ControllerType>(i);
-      const Controller::ControllerInfo* cinfo = Controller::GetControllerInfo(ctype);
-      if (!cinfo)
-        continue;
-
-      w.type_combo->addItem(qApp->translate("ControllerType", cinfo->display_name), QString::fromUtf8(cinfo->name));
-    }
+    for (const Controller::ControllerInfo* cinfo : Controller::GetControllerInfoList())
+      w.type_combo->addItem(QtUtils::StringViewToQString(cinfo->GetDisplayName()), QString::fromUtf8(cinfo->name));
 
     ControllerSettingWidgetBinder::BindWidgetToInputProfileString(
-      nullptr, w.type_combo, section, "Type", Controller::GetControllerInfo(Controller::GetDefaultPadType(port))->name);
+      nullptr, w.type_combo, section, "Type",
+      Controller::GetControllerInfo(Settings::GetDefaultControllerType(port)).name);
 
-    w.mapping_result->setText((port == 0) ? tr("Default (Keyboard)") : tr("Default (None)"));
+    w.mapping_result->setText(findCurrentDeviceForPort(port));
 
     if (initial)
     {
       connect(w.mapping_button, &QAbstractButton::clicked, this,
               [this, port, label = w.mapping_result]() { openAutomaticMappingMenu(port, label); });
     }
-  }
-
-  if (initial)
-  {
-    // Trigger enumeration to populate the device list.
-    connect(g_emu_thread, &EmuThread::onInputDevicesEnumerated, this, &SetupWizardDialog::onInputDevicesEnumerated);
-    connect(g_emu_thread, &EmuThread::onInputDeviceConnected, this, &SetupWizardDialog::onInputDeviceConnected);
-    connect(g_emu_thread, &EmuThread::onInputDeviceDisconnected, this, &SetupWizardDialog::onInputDeviceDisconnected);
-    g_emu_thread->enumerateInputDevices();
   }
 
   if (!initial)
@@ -446,31 +419,37 @@ void SetupWizardDialog::updateStylesheets()
 {
 }
 
+QString SetupWizardDialog::findCurrentDeviceForPort(u32 port) const
+{
+  const auto lock = Core::GetSettingsLock();
+  return QString::fromStdString(InputManager::GetPhysicalDeviceForController(*Core::GetBaseSettingsLayer(), port));
+}
+
 void SetupWizardDialog::openAutomaticMappingMenu(u32 port, QLabel* update_label)
 {
-  QMenu menu(this);
+  QMenu* const menu = QtUtils::NewPopupMenu(this);
   bool added = false;
 
-  for (const auto& [identifier, device_name] : m_device_list)
+  for (const InputDeviceListModel::Device& dev : g_core_thread->getInputDeviceListModel()->getDeviceList())
   {
     // we set it as data, because the device list could get invalidated while the menu is up
-    const QString qidentifier = QString::fromStdString(identifier);
-    QAction* action =
-      menu.addAction(QStringLiteral("%1 (%2)").arg(qidentifier).arg(QString::fromStdString(device_name)));
-    action->setData(qidentifier);
-    connect(action, &QAction::triggered, this, [this, port, update_label, action]() {
-      doDeviceAutomaticBinding(port, update_label, action->data().toString());
-    });
+    menu->addAction(
+      InputDeviceListModel::getIconForKey(dev.key), QStringLiteral("%1 (%2)").arg(dev.identifier).arg(dev.display_name),
+      [this, port, update_label, device = dev.identifier]() { doDeviceAutomaticBinding(port, update_label, device); });
     added = true;
   }
 
-  if (!added)
+  if (added)
   {
-    QAction* action = menu.addAction(tr("No devices available"));
-    action->setEnabled(false);
+    menu->addAction(tr("Multiple Devices..."),
+                    [this, port, update_label]() { doMultipleDeviceAutomaticBinding(port, update_label); });
+  }
+  else
+  {
+    menu->addAction(tr("No devices available"))->setEnabled(false);
   }
 
-  menu.exec(QCursor::pos());
+  menu->popup(QCursor::pos());
 }
 
 void SetupWizardDialog::doDeviceAutomaticBinding(u32 port, QLabel* update_label, const QString& device)
@@ -479,8 +458,8 @@ void SetupWizardDialog::doDeviceAutomaticBinding(u32 port, QLabel* update_label,
     InputManager::GetGenericBindingMapping(device.toStdString());
   if (mapping.empty())
   {
-    QMessageBox::critical(
-      this, tr("Automatic Binding"),
+    QtUtils::AsyncMessageBox(
+      this, QMessageBox::Critical, tr("Automatic Binding Failed"),
       tr("No generic bindings were generated for device '%1'. The controller/source may not support automatic "
          "mapping.")
         .arg(device));
@@ -489,8 +468,8 @@ void SetupWizardDialog::doDeviceAutomaticBinding(u32 port, QLabel* update_label,
 
   bool result;
   {
-    auto lock = Host::GetSettingsLock();
-    result = InputManager::MapController(*Host::Internal::GetBaseSettingsLayer(), port, mapping);
+    const auto lock = Core::GetSettingsLock();
+    result = InputManager::MapController(*Core::GetBaseSettingsLayer(), port, mapping, true);
   }
   if (!result)
     return;
@@ -500,24 +479,168 @@ void SetupWizardDialog::doDeviceAutomaticBinding(u32 port, QLabel* update_label,
   update_label->setText(device);
 }
 
-void SetupWizardDialog::onInputDevicesEnumerated(const std::vector<std::pair<std::string, std::string>>& devices)
+void SetupWizardDialog::doMultipleDeviceAutomaticBinding(u32 port, QLabel* update_label)
 {
-  m_device_list = devices;
+  QDialog* const dialog = new MultipleDeviceAutobindDialog(this, nullptr, port);
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
+  connect(dialog, &QDialog::accepted, this,
+          [this, port, update_label] { update_label->setText(findCurrentDeviceForPort(port)); });
+  dialog->open();
 }
 
-void SetupWizardDialog::onInputDeviceConnected(const std::string& identifier, const std::string& device_name)
+void SetupWizardDialog::setupGraphicsPage(bool initial)
 {
-  m_device_list.emplace_back(identifier, device_name);
-}
+  SettingWidgetBinder::DisconnectWidget(m_ui.resolutionScale);
+  m_ui.resolutionScale->clear();
+  GraphicsSettingsWidget::populateUpscalingModes(m_ui.resolutionScale);
+  SettingWidgetBinder::BindWidgetToIntSetting(nullptr, m_ui.resolutionScale, "GPU", "ResolutionScale", 1);
 
-void SetupWizardDialog::onInputDeviceDisconnected(const std::string& identifier)
-{
-  for (auto iter = m_device_list.begin(); iter != m_device_list.end(); ++iter)
+  SettingWidgetBinder::DisconnectWidget(m_ui.textureFiltering);
+  m_ui.textureFiltering->clear();
+  SettingWidgetBinder::DisconnectWidget(m_ui.spriteTextureFiltering);
+  m_ui.spriteTextureFiltering->clear();
+
+  SettingWidgetBinder::BindWidgetToEnumSetting(nullptr, m_ui.textureFiltering, "GPU", "TextureFilter",
+                                               &Settings::ParseTextureFilterName, &Settings::GetTextureFilterName,
+                                               &Settings::GetTextureFilterDisplayName,
+                                               Settings::DEFAULT_GPU_TEXTURE_FILTER, GPUTextureFilter::Count);
+  SettingWidgetBinder::BindWidgetToEnumSetting(nullptr, m_ui.spriteTextureFiltering, "GPU", "SpriteTextureFilter",
+                                               &Settings::ParseTextureFilterName, &Settings::GetTextureFilterName,
+                                               &Settings::GetTextureFilterDisplayName,
+                                               Settings::DEFAULT_GPU_TEXTURE_FILTER, GPUTextureFilter::Count);
+
+  SettingWidgetBinder::DisconnectWidget(m_ui.gpuDitheringMode);
+  m_ui.gpuDitheringMode->clear();
+
+  SettingWidgetBinder::BindWidgetToEnumSetting(nullptr, m_ui.gpuDitheringMode, "GPU", "DitheringMode",
+                                               &Settings::ParseGPUDitheringModeName, &Settings::GetGPUDitheringModeName,
+                                               &Settings::GetGPUDitheringModeDisplayName,
+                                               Settings::DEFAULT_GPU_DITHERING_MODE, GPUDitheringMode::MaxCount);
+
+  SettingWidgetBinder::DisconnectWidget(m_ui.displayAspectRatio);
+  m_ui.displayAspectRatio->clear();
+
+  GraphicsSettingsWidget::createAspectRatioSetting(m_ui.displayAspectRatio, m_ui.customAspectRatioNumerator,
+                                                   m_ui.customAspectRatioSeparator, m_ui.customAspectRatioDenominator,
+                                                   nullptr);
+
+  SettingWidgetBinder::DisconnectWidget(m_ui.displayCropMode);
+  m_ui.displayCropMode->clear();
+
+  SettingWidgetBinder::BindWidgetToEnumSetting(nullptr, m_ui.displayCropMode, "Display", "CropMode",
+                                               &Settings::ParseDisplayCropMode, &Settings::GetDisplayCropModeName,
+                                               &Settings::GetDisplayCropModeDisplayName,
+                                               Settings::DEFAULT_DISPLAY_CROP_MODE, DisplayCropMode::MaxCount);
+
+  SettingWidgetBinder::DisconnectWidget(m_ui.displayScaling);
+  m_ui.displayScaling->clear();
+
+  SettingWidgetBinder::BindWidgetToEnumSetting(nullptr, m_ui.displayScaling, "Display", "Scaling",
+                                               &Settings::ParseDisplayScaling, &Settings::GetDisplayScalingName,
+                                               &Settings::GetDisplayScalingDisplayName,
+                                               Settings::DEFAULT_DISPLAY_SCALING, DisplayScalingMode::Count);
+
+  SettingWidgetBinder::DisconnectWidget(m_ui.displayScaling24Bit);
+  m_ui.displayScaling24Bit->clear();
+  SettingWidgetBinder::BindWidgetToEnumSetting(nullptr, m_ui.displayScaling24Bit, "Display", "Scaling24Bit",
+                                               &Settings::ParseDisplayScaling, &Settings::GetDisplayScalingName,
+                                               &Settings::GetDisplayScalingDisplayName,
+                                               Settings::DEFAULT_DISPLAY_SCALING, DisplayScalingMode::Count);
+
+  if (initial)
   {
-    if (iter->first == identifier)
-    {
-      m_device_list.erase(iter);
-      break;
-    }
+    SettingWidgetBinder::BindWidgetToBoolSetting(nullptr, m_ui.pgxpEnable, "GPU", "PGXPEnable", false);
+    SettingWidgetBinder::BindWidgetToBoolSetting(nullptr, m_ui.widescreenHack, "GPU", "WidescreenHack", false);
   }
+}
+
+void SetupWizardDialog::setupAchievementsPage(bool initial)
+{
+  if (initial)
+  {
+    m_ui.achievementsIconLabel->setPixmap(QPixmap(QtHost::GetResourceQPath("images/ra-icon.webp", true)));
+    QFont title_font(m_ui.achievementsTitleLabel->font());
+    title_font.setBold(true);
+    title_font.setPixelSize(20);
+    m_ui.achievementsTitleLabel->setFont(title_font);
+
+    SettingWidgetBinder::BindWidgetToBoolSetting(nullptr, m_ui.enable, "Cheevos", "Enabled", false);
+    SettingWidgetBinder::BindWidgetToBoolSetting(nullptr, m_ui.hardcoreMode, "Cheevos", "ChallengeMode", false);
+    connect(m_ui.enable, &QCheckBox::checkStateChanged, this, &SetupWizardDialog::updateAchievementsEnableState);
+    connect(m_ui.loginButton, &QPushButton::clicked, this, &SetupWizardDialog::onAchievementsLoginLogoutClicked);
+    connect(m_ui.viewProfile, &QPushButton::clicked, this, &SetupWizardDialog::onAchievementsViewProfileClicked);
+  }
+
+  updateAchievementsEnableState();
+  updateAchievementsLoginState();
+}
+
+void SetupWizardDialog::updateAchievementsEnableState()
+{
+  const bool enabled = Core::GetBaseBoolSettingValue("Cheevos", "Enabled", false);
+  m_ui.hardcoreMode->setEnabled(enabled);
+}
+
+void SetupWizardDialog::updateAchievementsLoginState()
+{
+  const std::string username(Core::GetBaseStringSettingValue("Cheevos", "Username"));
+  const bool logged_in = !username.empty();
+
+  if (logged_in)
+  {
+    const u64 login_unix_timestamp =
+      StringUtil::FromChars<u64>(Core::GetBaseStringSettingValue("Cheevos", "LoginTimestamp", "0")).value_or(0);
+    const QString login_timestamp =
+      QtHost::FormatNumber(Host::NumberFormatType::ShortDateTime, static_cast<s64>(login_unix_timestamp));
+    m_ui.loginStatus->setText(
+      tr("Username: %1\nLogin token generated on %2.").arg(QString::fromStdString(username)).arg(login_timestamp));
+    m_ui.loginButton->setText(tr("Logout"));
+  }
+  else
+  {
+    m_ui.loginStatus->setText(tr("Not Logged In."));
+    m_ui.loginButton->setText(tr("Login..."));
+  }
+
+  m_ui.viewProfile->setEnabled(logged_in);
+}
+
+void SetupWizardDialog::onAchievementsLoginLogoutClicked()
+{
+  if (!Core::GetBaseStringSettingValue("Cheevos", "Username").empty())
+  {
+    Host::RunOnCoreThread([]() { Achievements::Logout(); }, true);
+    updateAchievementsLoginState();
+    return;
+  }
+
+  AchievementLoginDialog* login = new AchievementLoginDialog(this, Achievements::LoginRequestReason::UserInitiated);
+  connect(login, &AchievementLoginDialog::accepted, this, &SetupWizardDialog::onAchievementsLoginCompleted);
+  login->open();
+}
+
+void SetupWizardDialog::onAchievementsLoginCompleted()
+{
+  updateAchievementsEnableState();
+  updateAchievementsLoginState();
+
+  // Login can enable achievements/hardcore.
+  if (!m_ui.enable->isChecked() && Core::GetBaseBoolSettingValue("Cheevos", "Enabled", false))
+  {
+    m_ui.enable->setChecked(true);
+    updateAchievementsLoginState();
+  }
+  if (!m_ui.hardcoreMode->isChecked() && Core::GetBaseBoolSettingValue("Cheevos", "ChallengeMode", false))
+    m_ui.hardcoreMode->setChecked(true);
+}
+
+void SetupWizardDialog::onAchievementsViewProfileClicked()
+{
+  const std::string username(Core::GetBaseStringSettingValue("Cheevos", "Username"));
+  if (username.empty())
+    return;
+
+  const QByteArray encoded_username(QUrl::toPercentEncoding(QString::fromStdString(username)));
+  QtUtils::OpenURL(
+    this, QUrl(QStringLiteral("https://retroachievements.org/user/%1").arg(QString::fromUtf8(encoded_username))));
 }

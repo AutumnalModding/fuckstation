@@ -1,0 +1,102 @@
+name: 🐧 Linux Cross-Compiled AppImage
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: "${{ matrix.arch }}"
+    strategy:
+      fail-fast: true
+      matrix:
+        arch: ["arm64", "armhf"]
+
+    runs-on: ubuntu-22.04
+    container:
+      image: ghcr.io/duckstation/cross-build-${{ matrix.arch }}:latest
+
+    timeout-minutes: 240
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Download Dependencies
+      run: |
+        DEPS_VERSION=$(cat dep/PREBUILT-VERSION)
+        cd dep/prebuilt
+        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/dependencies/releases/download/$DEPS_VERSION/deps-linux-x64.tar.xz"
+        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/dependencies/releases/download/$DEPS_VERSION/deps-linux-cross-${{matrix.arch}}.tar.xz"
+        tar -xf "deps-linux-x64.tar.xz"
+        tar -xf "deps-linux-cross-${{matrix.arch}}.tar.xz"
+        rm "deps-linux-x64.tar.xz" "deps-linux-cross-${{matrix.arch}}.tar.xz"
+
+    - name: Download Patch Archives
+      shell: bash
+      run: |
+        cd data/resources
+        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/chtdb/releases/download/latest/cheats.zip"
+        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/chtdb/releases/download/latest/patches.zip"
+
+    # Work around container ownership issue
+    - name: Set Safe Directory
+      shell: bash
+      run: git config --global --add safe.directory "*"
+
+    - name: Create Binary Aliases
+      run: |
+        ln -s llvm-strip-19 /usr/bin/llvm-strip
+
+    - name: Set Up Toolchain File
+      run: |
+        cp "dep/prebuilt/linux-cross-${{matrix.arch}}/toolchain.cmake" "$HOME/toolchain.cmake"
+        echo "set(CMAKE_FIND_ROOT_PATH \"$PWD/dep/prebuilt/linux-cross-${{matrix.arch}};/${{matrix.arch}}-chroot\")" >> "$HOME/toolchain.cmake"
+        echo "set(QT_HOST_PATH \"$PWD/dep/prebuilt/linux-x64\")" >> "$HOME/toolchain.cmake"
+        echo "set(LCONVERT_EXE \"$PWD/dep/prebuilt/linux-x64/bin/lconvert\")" >> "$HOME/toolchain.cmake"
+        echo "set(CMAKE_C_COMPILER clang-19)" >> "$HOME/toolchain.cmake"
+        echo "set(CMAKE_C_COMPILER_AR llvm-ar-19)" >> "$HOME/toolchain.cmake"
+        echo "set(CMAKE_C_COMPILER_RANLIB llvm-ranlib-19)" >> "$HOME/toolchain.cmake"
+        echo "set(CMAKE_CXX_COMPILER clang++-19)" >> "$HOME/toolchain.cmake"
+        echo "set(CMAKE_CXX_COMPILER_AR llvm-ar-19)" >> "$HOME/toolchain.cmake"
+        echo "set(CMAKE_CXX_COMPILER_RANLIB llvm-ranlib-19)" >> "$HOME/toolchain.cmake"
+        echo "set(CMAKE_EXE_LINKER_FLAGS_INIT "-fuse-ld=lld")" >> "$HOME/toolchain.cmake"
+        echo "set(CMAKE_MODULE_LINKER_FLAGS_INIT "-fuse-ld=lld")" >> "$HOME/toolchain.cmake"
+        echo "set(CMAKE_SHARED_LINKER_FLAGS_INIT "-fuse-ld=lld")" >> "$HOME/toolchain.cmake"
+
+    - name: Tag as Preview Release
+      if: github.ref == 'refs/heads/master'
+      run: |
+        echo '#pragma once' > src/scmversion/tag.h
+        echo '#define UPDATER_RELEASE_CHANNEL "preview"' >> src/scmversion/tag.h
+        echo '#define UPDATER_RELEASE_IS_OFFICIAL 1' >> src/scmversion/tag.h
+
+    - name: Tag as Stable Release
+      if: github.ref == 'refs/heads/dev'
+      run: |
+        echo '#pragma once' > src/scmversion/tag.h
+        echo '#define UPDATER_RELEASE_CHANNEL "latest"' >> src/scmversion/tag.h
+        echo '#define UPDATER_RELEASE_IS_OFFICIAL 1' >> src/scmversion/tag.h
+
+    - name: Generate CMake
+      shell: bash
+      run: |
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_TOOLCHAIN_FILE="$HOME/toolchain.cmake" -DHOST_MIN_PAGE_SIZE=4096 -DHOST_MAX_PAGE_SIZE=16384 -DHOST_CACHE_LINE_SIZE=64 -DBUILD_QT_FRONTEND=ON -DBUILD_MINI_FRONTEND=ON
+
+    - name: Compile Build
+      shell: bash
+      run: |
+        cmake --build build --parallel
+        scripts/appimage/make-cross-appimage.sh duckstation-qt ${{ matrix.arch }} "$(realpath build)" "/${{ matrix.arch }}-chroot"
+        scripts/appimage/make-cross-appimage.sh -inject-libc duckstation-mini ${{ matrix.arch }} "$(realpath build)" "/${{ matrix.arch }}-chroot"
+
+    - name: Upload AppImages
+      uses: actions/upload-artifact@v6
+      with:
+        name: "linux-${{ matrix.arch }}-appimage"
+        path: "DuckStation-*.AppImage"
+        compression-level: 0
+        if-no-files-found: error

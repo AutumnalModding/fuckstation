@@ -1,0 +1,73 @@
+name: 🍎 MacOS
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-build:
+    name: "Universal"
+    runs-on: macos-15
+    timeout-minutes: 240
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Use Xcode 26
+      run: sudo xcode-select -s /Applications/Xcode_26.0.app
+
+    - name: Download Metal Toolchain
+      run: xcodebuild -downloadComponent MetalToolchain
+
+    - name: Download Dependencies
+      run: |
+        DEPS_VERSION=$(cat dep/PREBUILT-VERSION)
+        cd dep/prebuilt
+        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/dependencies/releases/download/$DEPS_VERSION/deps-macos-universal.tar.xz"
+        tar -xf "deps-macos-universal.tar.xz"
+        rm "deps-macos-universal.tar.xz"
+
+    - name: Download Patch Archives
+      shell: bash
+      run: |
+        cd data/resources
+        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/chtdb/releases/download/latest/cheats.zip"
+        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/chtdb/releases/download/latest/patches.zip"
+
+    - name: Tag as Preview Release
+      if: github.ref == 'refs/heads/master'
+      run: |
+        echo '#pragma once' > src/scmversion/tag.h
+        echo '#define UPDATER_RELEASE_CHANNEL "preview"' >> src/scmversion/tag.h
+        echo '#define UPDATER_RELEASE_IS_OFFICIAL 1' >> src/scmversion/tag.h
+
+    - name: Tag as Stable Release
+      if: github.ref == 'refs/heads/dev'
+      run: |
+        echo '#pragma once' > src/scmversion/tag.h
+        echo '#define UPDATER_RELEASE_CHANNEL "latest"' >> src/scmversion/tag.h
+        echo '#define UPDATER_RELEASE_IS_OFFICIAL 1' >> src/scmversion/tag.h
+
+    - name: Compile and Zip .app
+      shell: bash
+      run: |
+        mkdir build
+        cd build
+        export MACOSX_DEPLOYMENT_TARGET=13.3
+        cmake -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" -DCMAKE_BUILD_TYPE=Release -DENABLE_OPENGL=OFF -DCMAKE_PREFIX_PATH="$HOME/deps" -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -G Ninja ..
+        cmake --build . --parallel
+        mv bin/DuckStation.app .
+        codesign -s - --deep -f -v DuckStation.app
+        zip -9 -r duckstation-mac-release.zip DuckStation.app/
+
+    - name: Upload MacOS .app
+      uses: actions/upload-artifact@v6
+      with:
+        name: "macos"
+        path: "build/duckstation-mac-release.zip"
+        compression-level: 0
+        if-no-files-found: error

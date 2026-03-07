@@ -14,33 +14,32 @@
    <string>Memory Card Editor</string>
   </property>
   <property name="windowIcon">
-   <iconset resource="resources/resources.qrc">
-    <normaloff>:/icons/duck.png</normaloff>:/icons/duck.png</iconset>
+   <iconset theme="memcard-line"/>
   </property>
   <layout class="QGridLayout" name="gridLayout">
    <item row="1" column="0">
     <widget class="QTableWidget" name="cardA">
+     <property name="contextMenuPolicy">
+      <enum>Qt::ContextMenuPolicy::CustomContextMenu</enum>
+     </property>
      <property name="selectionMode">
-      <enum>QAbstractItemView::SingleSelection</enum>
+      <enum>QAbstractItemView::SelectionMode::SingleSelection</enum>
      </property>
      <property name="selectionBehavior">
-      <enum>QAbstractItemView::SelectRows</enum>
+      <enum>QAbstractItemView::SelectionBehavior::SelectRows</enum>
      </property>
-     <property name="iconSize">
-      <size>
-       <width>16</width>
-       <height>16</height>
-      </size>
-     </property>
+     <attribute name="horizontalHeaderHighlightSections">
+      <bool>false</bool>
+     </attribute>
      <attribute name="horizontalHeaderShowSortIndicator" stdset="0">
-      <bool>true</bool>
+      <bool>false</bool>
      </attribute>
      <attribute name="verticalHeaderVisible">
       <bool>false</bool>
      </attribute>
      <column>
       <property name="text">
-       <string/>
+       <string>Icon</string>
       </property>
      </column>
      <column>
@@ -65,7 +64,7 @@
      <item>
       <widget class="QLabel" name="label_2">
        <property name="text">
-        <string>Memory Card:</string>
+        <string>Memory Card 2:</string>
        </property>
       </widget>
      </item>
@@ -77,60 +76,104 @@
       </widget>
      </item>
      <item>
-      <widget class="QToolButton" name="newCardB">
-       <property name="text">
+      <widget class="QPushButton" name="newCardB">
+       <property name="toolTip">
         <string>New...</string>
        </property>
        <property name="icon">
-        <iconset resource="resources/resources.qrc">
-         <normaloff>:/icons/document-new.png</normaloff>:/icons/document-new.png</iconset>
+        <iconset theme="file-add-line"/>
        </property>
       </widget>
      </item>
      <item>
-      <widget class="QToolButton" name="openCardB">
-       <property name="text">
+      <widget class="QPushButton" name="openCardB">
+       <property name="toolTip">
         <string>Open...</string>
        </property>
        <property name="icon">
-        <iconset resource="resources/resources.qrc">
-         <normaloff>:/icons/document-open.png</normaloff>:/icons/document-open.png</iconset>
+        <iconset theme="folder-open-line"/>
        </property>
       </widget>
      </item>
     </layout>
    </item>
    <item row="2" column="3">
-    <layout class="QHBoxLayout" name="horizontalLayout_3" stretch="1,0">
+    <layout class="QHBoxLayout" name="horizontalLayout_3" stretch="1,0,0,0">
      <item>
-      <widget class="QLabel" name="cardBUsage">
-       <property name="text">
-        <string notr="true"/>
+      <widget class="QLabel" name="cardBUsage"/>
+     </item>
+     <item>
+      <spacer name="horizontalSpacer">
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
        </property>
-      </widget>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>0</width>
+         <height>0</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="cardBModifiedLayout">
+       <item>
+        <widget class="QLabel" name="cardBModifiedIcon"/>
+       </item>
+       <item>
+        <widget class="QLabel" name="cardBModified">
+         <property name="text">
+          <string>Card Modified</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
      </item>
      <item>
       <widget class="QDialogButtonBox" name="buttonBoxB">
        <property name="standardButtons">
-        <set>QDialogButtonBox::NoButton</set>
+        <set>QDialogButtonBox::StandardButton::NoButton</set>
        </property>
       </widget>
      </item>
     </layout>
    </item>
    <item row="2" column="0">
-    <layout class="QHBoxLayout" name="horizontalLayout_4" stretch="1,0">
+    <layout class="QHBoxLayout" name="horizontalLayout_4">
      <item>
-      <widget class="QLabel" name="cardAUsage">
-       <property name="text">
-        <string notr="true"/>
+      <widget class="QLabel" name="cardAUsage"/>
+     </item>
+     <item>
+      <spacer name="horizontalSpacer_2">
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
        </property>
-      </widget>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>0</width>
+         <height>0</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="cardAModifiedLayout">
+       <item>
+        <widget class="QLabel" name="cardAModifiedIcon"/>
+       </item>
+       <item>
+        <widget class="QLabel" name="cardAModified">
+         <property name="text">
+          <string>Card Modified</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
      </item>
      <item>
       <widget class="QDialogButtonBox" name="buttonBoxA">
        <property name="standardButtons">
-        <set>QDialogButtonBox::NoButton</set>
+        <set>QDialogButtonBox::StandardButton::NoButton</set>
        </property>
       </widget>
      </item>
@@ -141,7 +184,7 @@
      <item>
       <widget class="QLabel" name="label">
        <property name="text">
-        <string>Memory Card:</string>
+        <string>Memory Card 1:</string>
        </property>
       </widget>
      </item>
@@ -149,24 +192,22 @@
       <widget class="QComboBox" name="cardAPath"/>
      </item>
      <item>
-      <widget class="QToolButton" name="newCardA">
-       <property name="text">
+      <widget class="QPushButton" name="newCardA">
+       <property name="toolTip">
         <string>New...</string>
        </property>
        <property name="icon">
-        <iconset resource="resources/resources.qrc">
-         <normaloff>:/icons/document-new.png</normaloff>:/icons/document-new.png</iconset>
+        <iconset theme="file-add-line"/>
        </property>
       </widget>
      </item>
      <item>
-      <widget class="QToolButton" name="openCardA">
-       <property name="text">
+      <widget class="QPushButton" name="openCardA">
+       <property name="toolTip">
         <string>Open...</string>
        </property>
        <property name="icon">
-        <iconset resource="resources/resources.qrc">
-         <normaloff>:/icons/document-open.png</normaloff>:/icons/document-open.png</iconset>
+        <iconset theme="folder-open-line"/>
        </property>
       </widget>
      </item>
@@ -174,27 +215,27 @@
    </item>
    <item row="1" column="3">
     <widget class="QTableWidget" name="cardB">
+     <property name="contextMenuPolicy">
+      <enum>Qt::ContextMenuPolicy::CustomContextMenu</enum>
+     </property>
      <property name="selectionMode">
-      <enum>QAbstractItemView::SingleSelection</enum>
+      <enum>QAbstractItemView::SelectionMode::SingleSelection</enum>
      </property>
      <property name="selectionBehavior">
-      <enum>QAbstractItemView::SelectRows</enum>
+      <enum>QAbstractItemView::SelectionBehavior::SelectRows</enum>
      </property>
-     <property name="iconSize">
-      <size>
-       <width>16</width>
-       <height>16</height>
-      </size>
-     </property>
+     <attribute name="horizontalHeaderHighlightSections">
+      <bool>false</bool>
+     </attribute>
      <attribute name="horizontalHeaderShowSortIndicator" stdset="0">
-      <bool>true</bool>
+      <bool>false</bool>
      </attribute>
      <attribute name="verticalHeaderVisible">
       <bool>false</bool>
      </attribute>
      <column>
       <property name="text">
-       <string/>
+       <string>Icon</string>
       </property>
      </column>
      <column>
@@ -217,17 +258,17 @@
    <item row="1" column="1">
     <widget class="QDialogButtonBox" name="centerButtonBox">
      <property name="orientation">
-      <enum>Qt::Vertical</enum>
+      <enum>Qt::Orientation::Vertical</enum>
      </property>
      <property name="standardButtons">
-      <set>QDialogButtonBox::NoButton</set>
+      <set>QDialogButtonBox::StandardButton::NoButton</set>
      </property>
     </widget>
    </item>
   </layout>
  </widget>
  <resources>
-  <include location="resources/resources.qrc"/>
+  <include location="resources/duckstation-qt.qrc"/>
  </resources>
  <connections/>
 </ui>

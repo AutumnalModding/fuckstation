@@ -1,8 +1,9 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
 
+#include "common/error.h"
 #include "common/types.h"
 
 #include <atomic>
@@ -29,7 +30,8 @@ public:
   struct Request
   {
     using Data = std::vector<u8>;
-    using Callback = std::function<void(s32 status_code, const std::string& content_type, Data data)>;
+    using Callback =
+      std::function<void(s32 status_code, const Error& error, const std::string& content_type, Data data)>;
 
     enum class Type
     {
@@ -53,7 +55,9 @@ public:
     std::string post_data;
     std::string content_type;
     Data data;
-    u64 start_time;
+    Error error;
+    u64 start_time = 0;
+    u64 last_update_time = 0;
     s32 status_code = 0;
     u32 content_length = 0;
     u32 last_progress_update = 0;
@@ -64,7 +68,7 @@ public:
   HTTPDownloader();
   virtual ~HTTPDownloader();
 
-  static std::unique_ptr<HTTPDownloader> Create(std::string user_agent = DEFAULT_USER_AGENT);
+  static std::unique_ptr<HTTPDownloader> Create(std::string user_agent, Error* error = nullptr);
   static std::string GetExtensionForContentType(const std::string& content_type);
 
   void SetTimeout(float timeout);
@@ -75,13 +79,12 @@ public:
                          ProgressCallback* progress = nullptr);
   void PollRequests();
   void WaitForAllRequests();
+  void WaitForAllRequestsWithYield(std::function<void()> before_sleep_cb, std::function<void()> after_sleep_cb);
   bool HasAnyRequests();
-
-  static const char DEFAULT_USER_AGENT[];
+  void CancelAllRequests();
 
 protected:
   virtual Request* InternalCreateRequest() = 0;
-  virtual void InternalPollRequests() = 0;
 
   virtual bool StartRequest(Request* request) = 0;
   virtual void CloseRequest(Request* request) = 0;

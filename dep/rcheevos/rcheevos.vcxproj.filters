@@ -4,9 +4,6 @@
     <Filter Include="rcheevos">
       <UniqueIdentifier>{0d8ef204-a486-4873-a41d-743ca6cbe840}</UniqueIdentifier>
     </Filter>
-    <Filter Include="rurl">
-      <UniqueIdentifier>{3aa9379e-4fd1-4772-b18c-b899631a4161}</UniqueIdentifier>
-    </Filter>
     <Filter Include="rhash">
       <UniqueIdentifier>{c95da822-5bca-4274-b57e-d2092e76e8f1}</UniqueIdentifier>
     </Filter>
@@ -18,9 +15,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\rurl\url.c">
-      <Filter>rurl</Filter>
-    </ClCompile>
     <ClCompile Include="src\rhash\md5.c">
       <Filter>rhash</Filter>
     </ClCompile>
@@ -81,6 +75,8 @@
     <ClCompile Include="src\rc_compat.c" />
     <ClCompile Include="src\rc_util.c" />
     <ClCompile Include="src\rc_client.c" />
+    <ClCompile Include="src\rc_client_external.c" />
+    <ClCompile Include="src\rc_client_raintegration.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\rc_consoles.h">
@@ -96,9 +92,6 @@
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\rc_runtime_types.h">
-      <Filter>include</Filter>
-    </ClInclude>
-    <ClInclude Include="include\rc_url.h">
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\rcheevos.h">
@@ -137,5 +130,14 @@
     <ClInclude Include="include\rc_util.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="src\rc_client_external.h" />
+    <ClInclude Include="src\rc_client_external_versions.h" />
+    <ClInclude Include="src\rc_client_raintegration_internal.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Natvis Include="src\rc_client_types.natvis" />
+    <Natvis Include="src\rcheevos\rc_runtime_types.natvis">
+      <Filter>rcheevos</Filter>
+    </Natvis>
   </ItemGroup>
 </Project>

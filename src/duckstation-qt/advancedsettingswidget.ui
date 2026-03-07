@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>973</width>
-    <height>507</height>
+    <width>560</width>
+    <height>360</height>
    </rect>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout_4">
@@ -28,32 +28,35 @@
      <property name="title">
       <string>Logging</string>
      </property>
-     <layout class="QVBoxLayout" name="verticalLayout_3">
-      <item>
-       <layout class="QFormLayout" name="formLayout_4">
-        <item row="0" column="0">
-         <widget class="QLabel" name="label">
-          <property name="text">
-           <string>Log Level:</string>
-          </property>
-         </widget>
-        </item>
-        <item row="0" column="1">
-         <widget class="QComboBox" name="logLevel"/>
-        </item>
-        <item row="1" column="0">
-         <widget class="QLabel" name="label_2">
-          <property name="text">
-           <string>Log Filters:</string>
-          </property>
-         </widget>
-        </item>
-        <item row="1" column="1">
-         <widget class="QLineEdit" name="logFilter"/>
-        </item>
-       </layout>
+     <layout class="QGridLayout" name="gridLayout_3">
+      <item row="0" column="0">
+       <widget class="QLabel" name="label">
+        <property name="text">
+         <string>Log Level:</string>
+        </property>
+       </widget>
       </item>
-      <item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="logLevel">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QPushButton" name="logChannels">
+        <property name="toolTip">
+         <string>Log Channels</string>
+        </property>
+        <property name="icon">
+         <iconset theme="filter-line"/>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0" colspan="3">
        <layout class="QGridLayout" name="gridLayout_2">
         <item row="0" column="0">
          <widget class="QCheckBox" name="logToConsole">
@@ -63,16 +66,16 @@
          </widget>
         </item>
         <item row="0" column="1">
-         <widget class="QCheckBox" name="logToWindow">
+         <widget class="QCheckBox" name="logToDebug">
           <property name="text">
-           <string>Log To Window</string>
+           <string>Log To Debug Console</string>
           </property>
          </widget>
         </item>
         <item row="1" column="0">
-         <widget class="QCheckBox" name="logToDebug">
+         <widget class="QCheckBox" name="logToWindow">
           <property name="text">
-           <string>Log To Debug Console</string>
+           <string>Log To Window</string>
           </property>
          </widget>
         </item>
@@ -80,6 +83,20 @@
          <widget class="QCheckBox" name="logToFile">
           <property name="text">
            <string>Log To File</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="0">
+         <widget class="QCheckBox" name="logTimestamps">
+          <property name="text">
+           <string>Log Timestamps</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="1">
+         <widget class="QCheckBox" name="logFileTimestamps">
+          <property name="text">
+           <string>Log File Timestamps</string>
           </property>
          </widget>
         </item>
@@ -150,6 +167,9 @@
         <property name="text">
          <string>Reset To Default</string>
         </property>
+        <property name="icon">
+         <iconset theme="restart-line"/>
+        </property>
        </widget>
       </item>
      </layout>
@@ -158,7 +178,7 @@
   </layout>
  </widget>
  <resources>
-  <include location="resources/resources.qrc"/>
+  <include location="resources/duckstation-qt.qrc"/>
  </resources>
  <connections/>
 </ui>

@@ -5,7 +5,7 @@
 
 #include "gpu_device.h"
 #include "gpu_texture.h"
-#include "vulkan_loader.h"
+#include "vulkan_headers.h"
 #include "vulkan_stream_buffer.h"
 
 #include <limits>
@@ -38,7 +38,7 @@ public:
   ~VulkanTexture() override;
 
   static std::unique_ptr<VulkanTexture> Create(u32 width, u32 height, u32 layers, u32 levels, u32 samples, Type type,
-                                               Format format, VkFormat vk_format);
+                                               GPUTextureFormat format, Flags flags, VkFormat vk_format, Error* error);
   void Destroy(bool defer);
 
   ALWAYS_INLINE VkImage GetImage() const { return m_image; }
@@ -54,8 +54,11 @@ public:
   bool Map(void** map, u32* map_stride, u32 x, u32 y, u32 width, u32 height, u32 layer = 0, u32 level = 0) override;
   void Unmap() override;
   void MakeReadyForSampling() override;
+  void GenerateMipmaps() override;
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   void SetDebugName(std::string_view name) override;
+#endif
 
   void TransitionToLayout(Layout layout);
   void CommitClear();
@@ -80,12 +83,12 @@ public:
   VkDescriptorSet GetDescriptorSetWithSampler(VkSampler sampler);
 
 private:
-  VulkanTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples, Type type, Format format, VkImage image,
-                VmaAllocation allocation, VkImageView view, VkFormat vk_format);
+  VulkanTexture(u32 width, u32 height, u32 layers, u32 levels, u32 samples, Type type, GPUTextureFormat format,
+                Flags flags, VkImage image, VmaAllocation allocation, VkImageView view, VkFormat vk_format);
 
   VkCommandBuffer GetCommandBufferForUpdate();
-  void CopyTextureDataForUpload(void* dst, const void* src, u32 width, u32 height, u32 pitch, u32 upload_pitch) const;
-  VkBuffer AllocateUploadStagingBuffer(const void* data, u32 pitch, u32 upload_pitch, u32 width, u32 height) const;
+  VkBuffer AllocateUploadStagingBuffer(const void* data, u32 pitch, u32 upload_pitch, u32 width, u32 height,
+                                       u32 buffer_size) const;
   void UpdateFromBuffer(VkCommandBuffer cmdbuf, u32 x, u32 y, u32 width, u32 height, u32 layer, u32 level, u32 pitch,
                         VkBuffer buffer, u32 buffer_offset);
 
@@ -119,7 +122,9 @@ public:
 
   ALWAYS_INLINE VkSampler GetSampler() const { return m_sampler; }
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   void SetDebugName(std::string_view name) override;
+#endif
 
 private:
   VulkanSampler(VkSampler sampler);
@@ -145,7 +150,9 @@ public:
   void* Map(u32 required_elements) override;
   void Unmap(u32 used_elements) override;
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   void SetDebugName(std::string_view name) override;
+#endif
 
 private:
   VulkanStreamBuffer m_buffer;
@@ -158,8 +165,8 @@ class VulkanDownloadTexture final : public GPUDownloadTexture
 public:
   ~VulkanDownloadTexture() override;
 
-  static std::unique_ptr<VulkanDownloadTexture> Create(u32 width, u32 height, GPUTexture::Format format, void* memory,
-                                                       size_t memory_size, u32 memory_stride);
+  static std::unique_ptr<VulkanDownloadTexture> Create(u32 width, u32 height, GPUTextureFormat format, void* memory,
+                                                       size_t memory_size, u32 memory_stride, Error* error);
 
   void CopyFromTexture(u32 dst_x, u32 dst_y, GPUTexture* src, u32 src_x, u32 src_y, u32 width, u32 height,
                        u32 src_layer, u32 src_level, bool use_transfer_pitch) override;
@@ -169,12 +176,13 @@ public:
 
   void Flush() override;
 
+#ifdef ENABLE_GPU_OBJECT_NAMES
   void SetDebugName(std::string_view name) override;
+#endif
 
 private:
-  VulkanDownloadTexture(u32 width, u32 height, GPUTexture::Format format, VmaAllocation allocation,
-                        VkDeviceMemory memory, VkBuffer buffer, VkDeviceSize memory_offset, VkDeviceSize buffer_size,
-                        const u8* map_ptr, u32 map_pitch);
+  VulkanDownloadTexture(u32 width, u32 height, GPUTextureFormat format, VmaAllocation allocation, VkDeviceMemory memory,
+                        VkBuffer buffer, VkDeviceSize memory_offset, const u8* map_ptr, u32 map_pitch);
 
   VmaAllocation m_allocation = VK_NULL_HANDLE;
   VkDeviceMemory m_memory = VK_NULL_HANDLE;
@@ -182,7 +190,6 @@ private:
 
   u64 m_copy_fence_counter = 0;
   VkDeviceSize m_memory_offset = 0;
-  VkDeviceSize m_buffer_size = 0;
 
   bool m_needs_cache_invalidate = false;
 };

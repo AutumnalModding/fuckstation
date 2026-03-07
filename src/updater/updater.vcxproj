@@ -1,18 +1,22 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="..\..\dep\msvc\vsprops\Configurations.props" />
+  <Import Project="..\..\dep\vsprops\Configurations.props" />
   <ItemGroup>
     <ClCompile Include="..\duckstation-qt\vcruntimecheck.cpp" />
     <ClCompile Include="win32_main.cpp" />
     <ClCompile Include="updater.cpp" />
     <ClCompile Include="win32_progress_callback.cpp" />
+    <ClCompile Include="win32_window_util.cpp" />
   </ItemGroup>
   <ItemGroup>
     <Manifest Include="updater.manifest" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="resource.h" />
     <ClInclude Include="updater.h" />
+    <ClInclude Include="updater_progress_callback.h" />
     <ClInclude Include="win32_progress_callback.h" />
+    <ClInclude Include="win32_window_util.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\dep\minizip\minizip.vcxproj">
@@ -28,7 +32,7 @@
   <PropertyGroup Label="Globals">
     <ProjectGuid>{32EEAF44-57F8-4C6C-A6F0-DE5667123DD5}</ProjectGuid>
   </PropertyGroup>
-  <Import Project="..\..\dep\msvc\vsprops\Win32Application.props" />
+  <Import Project="..\..\dep\vsprops\Win32Application.props" />
   <Import Project="..\common\common.props" />
   <ItemDefinitionGroup>
     <ClCompile>
@@ -38,5 +42,5 @@
       <AdditionalDependencies>%(AdditionalDependencies);Comctl32.lib;zlibstatic.lib</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
-  <Import Project="..\..\dep\msvc\vsprops\Targets.props" />
+  <Import Project="..\..\dep\vsprops\Targets.props" />
 </Project>

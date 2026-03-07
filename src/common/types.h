@@ -93,9 +93,24 @@ char (&__countof_ArraySizeHelper(T (&array)[N]))[N];
   } while (0)
 #endif
 
+// __restrict, potentially enables optimization by hinting the compiler that the object is unique.
+#ifdef _MSC_VER
+#define RESTRICT __restrict
+#else
+#define RESTRICT __restrict__
+#endif
+
+// msvc requires a different attribute, of course
+#ifdef _MSC_VER
+#define NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
+#else
+#define NO_UNIQUE_ADDRESS [[no_unique_address]]
+#endif
+
 // disable warnings that show up at warning level 4
 // TODO: Move to build system instead
 #ifdef _MSC_VER
+#pragma warning(disable : 4200) // warning C4200: nonstandard extension used: zero-sized array in struct/union
 #pragma warning(disable : 4201) // warning C4201: nonstandard extension used : nameless struct/union
 #pragma warning(disable : 4100) // warning C4100: 'Platform' : unreferenced formal parameter
 #pragma warning(disable : 4355) // warning C4355: 'this' : used in base member initializer list
@@ -187,27 +202,39 @@ struct dependent_int_false : std::false_type
 #endif
 
 // Host page sizes.
-#if defined(OVERRIDE_HOST_PAGE_SIZE)
-static constexpr u32 HOST_PAGE_SIZE = OVERRIDE_HOST_PAGE_SIZE;
-static constexpr u32 HOST_PAGE_MASK = HOST_PAGE_SIZE - 1;
-static constexpr u32 HOST_PAGE_SHIFT = std::bit_width(HOST_PAGE_MASK);
-#elif defined(__APPLE__) && defined(__aarch64__)
-static constexpr u32 HOST_PAGE_SIZE = 0x4000;
-static constexpr u32 HOST_PAGE_MASK = HOST_PAGE_SIZE - 1;
-static constexpr u32 HOST_PAGE_SHIFT = 14;
+#if defined(MIN_HOST_PAGE_SIZE) || defined(MAX_HOST_PAGE_SIZE)
+#if !defined(MIN_HOST_PAGE_SIZE) || !defined(MAX_HOST_PAGE_SIZE)
+#error Both MIN_HOST_PAGE_SIZE and MAX_HOST_PAGE_SIZE need to be defined.
+#endif
+#define DYNAMIC_HOST_PAGE_SIZE 1
+extern const u32 HOST_PAGE_SIZE;
+extern const u32 HOST_PAGE_MASK;
+extern const u32 HOST_PAGE_SHIFT;
 #else
-static constexpr u32 HOST_PAGE_SIZE = 0x1000;
-static constexpr u32 HOST_PAGE_MASK = HOST_PAGE_SIZE - 1;
-static constexpr u32 HOST_PAGE_SHIFT = 12;
+#if defined(OVERRIDE_HOST_PAGE_SIZE)
+inline constexpr u32 HOST_PAGE_SIZE = OVERRIDE_HOST_PAGE_SIZE;
+inline constexpr u32 HOST_PAGE_MASK = HOST_PAGE_SIZE - 1;
+inline constexpr u32 HOST_PAGE_SHIFT = std::bit_width(HOST_PAGE_MASK);
+#elif defined(__APPLE__) && defined(__aarch64__)
+inline constexpr u32 HOST_PAGE_SIZE = 0x4000;
+inline constexpr u32 HOST_PAGE_MASK = HOST_PAGE_SIZE - 1;
+inline constexpr u32 HOST_PAGE_SHIFT = 14;
+#else
+inline constexpr u32 HOST_PAGE_SIZE = 0x1000;
+inline constexpr u32 HOST_PAGE_MASK = HOST_PAGE_SIZE - 1;
+inline constexpr u32 HOST_PAGE_SHIFT = 12;
+#endif
+inline constexpr u32 MIN_HOST_PAGE_SIZE = HOST_PAGE_SIZE;
+inline constexpr u32 MAX_HOST_PAGE_SIZE = HOST_PAGE_SIZE;
 #endif
 
 // Host cache line sizes.
 #if defined(OVERRIDE_HOST_CACHE_LINE_SIZE)
-static constexpr u32 HOST_CACHE_LINE_SIZE = OVERRIDE_HOST_CACHE_LINE_SIZE;
+inline constexpr u32 HOST_CACHE_LINE_SIZE = OVERRIDE_HOST_CACHE_LINE_SIZE;
 #elif defined(__APPLE__) && defined(__aarch64__)
-static constexpr u32 HOST_CACHE_LINE_SIZE = 128; // Apple Silicon uses 128b cache lines.
+inline constexpr u32 HOST_CACHE_LINE_SIZE = 128; // Apple Silicon uses 128b cache lines.
 #else
-static constexpr u32 HOST_CACHE_LINE_SIZE = 64; // Everything else is 64b.
+inline constexpr u32 HOST_CACHE_LINE_SIZE = 64; // Everything else is 64b.
 #endif
 #define ALIGN_TO_CACHE_LINE alignas(HOST_CACHE_LINE_SIZE)
 
