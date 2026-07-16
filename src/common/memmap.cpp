@@ -17,9 +17,6 @@
 #include "windows_headers.h"
 #include <Psapi.h>
 #elif defined(__APPLE__)
-#ifdef __aarch64__
-#include <pthread.h> // pthread_jit_write_protect_np()
-#endif
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
 #include <mach/mach_init.h>
@@ -164,7 +161,7 @@ void MemMap::ReleaseJITMemory(void* ptr, size_t size)
     ERROR_LOG("Failed to free code pointer {}", static_cast<void*>(ptr));
 }
 
-#if defined(CPU_ARCH_ARM32) || defined(CPU_ARCH_ARM64) || defined(CPU_ARCH_RISCV64)
+#if defined(CPU_ARCH_ARM32) || defined(CPU_ARCH_ARM64) || defined(CPU_ARCH_RISCV64) || defined(CPU_ARCH_LOONGARCH64)
 
 void MemMap::FlushInstructionCache(void* address, size_t size)
 {
@@ -532,7 +529,7 @@ void MemMap::ReleaseJITMemory(void* ptr, size_t size)
 #endif
 }
 
-#if defined(CPU_ARCH_ARM32) || defined(CPU_ARCH_ARM64) || defined(CPU_ARCH_RISCV64)
+#if defined(CPU_ARCH_ARM32) || defined(CPU_ARCH_ARM64) || defined(CPU_ARCH_RISCV64) || defined(CPU_ARCH_LOONGARCH64)
 
 void MemMap::FlushInstructionCache(void* address, size_t size)
 {
@@ -617,34 +614,6 @@ bool SharedMemoryMappingArea::Unmap(void* map_base, size_t map_size)
   m_num_mappings--;
   return true;
 }
-
-#ifdef __aarch64__
-
-static thread_local int s_code_write_depth = 0;
-
-void MemMap::BeginCodeWrite()
-{
-  // DEBUG_LOG("BeginCodeWrite(): {}", s_code_write_depth);
-  if ((s_code_write_depth++) == 0)
-  {
-    // DEBUG_LOG("  pthread_jit_write_protect_np(0)");
-    pthread_jit_write_protect_np(0);
-  }
-}
-
-void MemMap::EndCodeWrite()
-{
-  // DEBUG_LOG("EndCodeWrite(): {}", s_code_write_depth);
-
-  DebugAssert(s_code_write_depth > 0);
-  if ((--s_code_write_depth) == 0)
-  {
-    // DEBUG_LOG("  pthread_jit_write_protect_np(1)");
-    pthread_jit_write_protect_np(1);
-  }
-}
-
-#endif
 
 #else
 
@@ -820,7 +789,7 @@ void MemMap::ReleaseJITMemory(void* ptr, size_t size)
     ERROR_LOG("Failed to free code pointer {}", static_cast<void*>(ptr));
 }
 
-#if defined(CPU_ARCH_ARM32) || defined(CPU_ARCH_ARM64) || defined(CPU_ARCH_RISCV64)
+#if defined(CPU_ARCH_ARM32) || defined(CPU_ARCH_ARM64) || defined(CPU_ARCH_RISCV64) || defined(CPU_ARCH_LOONGARCH64)
 
 void MemMap::FlushInstructionCache(void* address, size_t size)
 {
@@ -905,7 +874,7 @@ void* MemMap::AllocateJITMemory(size_t size)
   static constexpr size_t assume_binary_size = 64 * 1024 * 1024;
   static constexpr size_t step = 64 * 1024 * 1024;
   static constexpr size_t max_displacement = 0x80000000u;
-#elif defined(CPU_ARCH_ARM64) || defined(CPU_ARCH_RISCV64)
+#elif defined(CPU_ARCH_ARM64) || defined(CPU_ARCH_RISCV64) || defined(CPU_ARCH_LOONGARCH64)
   static constexpr size_t assume_binary_size = 16 * 1024 * 1024;
   static constexpr size_t step = 8 * 1024 * 1024;
   static constexpr size_t max_displacement =

@@ -26,6 +26,7 @@ The following people have contributed to the project in some way, and are credit
 - mikakunin - Japanese
 - Zuzia, Seba, @CookiePLMonster - Polish
 - Foxtrot Uniform - Turkish
+- bilginGamer - Azerbaijani
 
 ## UI Contributions
 
@@ -80,6 +81,7 @@ The following people have contributed to the project in some way, and are credit
 - @Overload86
 - @landcaster
 - @Sekai9
+- @Pesa
 
 ## Special Thanks
 

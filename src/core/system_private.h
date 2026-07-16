@@ -59,42 +59,21 @@ void OnMemoryCardAccessed();
 /// Immediately terminates the virtual machine, no state is saved.
 void AbnormalShutdown(const std::string_view reason);
 
-/// Performs mandatory hardware checks.
-bool PerformEarlyHardwareChecks(Error* error);
-
 /// Called on process startup, as early as possible.
-bool ProcessStartup(Error* error);
+bool AllocatePersistentMemory(Error* error);
 
 /// Called on process shutdown.
-void ProcessShutdown();
+void ReleasePersistentMemory();
 
-/// Returns the number of seconds since the process started.
-float GetProcessUptime();
-
-/// Called on CPU thread initialization.
-bool CoreThreadInitialize(Error* error);
-
-/// Called on CPU thread shutdown.
-void CoreThreadShutdown();
-
-/// Returns a handle to the CPU thread.
-const Threading::ThreadHandle& GetCoreThreadHandle();
-
-/// Changes the CPU thread handle, use with care.
-void SetCoreThreadHandle(Threading::ThreadHandle handle);
-
-/// Polls input, updates subsystems which are present while paused/inactive.
-void IdlePollUpdate();
+/// Loads global settings.
+void LoadSettings(bool display_osd_messages);
 
 } // namespace System
 
 namespace Host {
 
-/// Called with the settings lock held, when system settings are being loaded (should load input sources, etc).
-void LoadSettings(const SettingsInterface& si, std::unique_lock<std::mutex>& lock);
-
 /// Called after settings are updated.
-void CheckForSettingsChanges(const Settings& old_settings);
+void OnSettingsReloaded();
 
 /// Called when the VM is starting initialization, but has not been completed yet.
 void OnSystemStarting();
@@ -116,9 +95,6 @@ void OnSystemResumed();
 
 /// Called when the VM abnormally exits because an error has occurred, and it cannot continue.
 void OnSystemAbnormalShutdown(const std::string_view reason);
-
-/// Called when performance metrics are updated, approximately once a second.
-void OnPerformanceCountersUpdated(const GPUBackend* gpu_backend);
 
 /// Provided by the host; called when the running executable changes.
 void OnSystemGameChanged(const std::string& disc_path, const std::string& game_serial, const std::string& game_name,

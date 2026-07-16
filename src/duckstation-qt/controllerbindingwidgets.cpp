@@ -110,6 +110,7 @@ void ControllerBindingWidget::populateWidgets()
   m_ui.settings->setEnabled(has_settings);
   m_ui.macros->setEnabled(has_macros);
 
+  SVGWidget* image_widget = nullptr;
   m_bindings_widget = new QWidget(this);
   switch (m_controller_info->type)
   {
@@ -118,7 +119,8 @@ void ControllerBindingWidget::populateWidgets()
       Ui::ControllerBindingWidget_AnalogController ui;
       ui.setupUi(m_bindings_widget);
       bindBindingWidgets(m_bindings_widget);
-      m_icon = QIcon::fromTheme("controller-line"_L1);
+      m_icon = QIcon(u":/icons/monochrome/svg/controller-line.svg"_s);
+      image_widget = ui.image;
     }
     break;
 
@@ -127,7 +129,8 @@ void ControllerBindingWidget::populateWidgets()
       Ui::ControllerBindingWidget_AnalogJoystick ui;
       ui.setupUi(m_bindings_widget);
       bindBindingWidgets(m_bindings_widget);
-      m_icon = QIcon::fromTheme("joystick-line"_L1);
+      m_icon = QIcon(u":/icons/monochrome/svg/joystick-line.svg"_s);
+      image_widget = ui.image;
     }
     break;
 
@@ -136,7 +139,8 @@ void ControllerBindingWidget::populateWidgets()
       Ui::ControllerBindingWidget_DigitalController ui;
       ui.setupUi(m_bindings_widget);
       bindBindingWidgets(m_bindings_widget);
-      m_icon = QIcon::fromTheme("controller-digital-line"_L1);
+      m_icon = QIcon(u":/icons/monochrome/svg/controller-digital-line.svg"_s);
+      image_widget = ui.image;
     }
     break;
 
@@ -145,7 +149,8 @@ void ControllerBindingWidget::populateWidgets()
       Ui::ControllerBindingWidget_GunCon ui;
       ui.setupUi(m_bindings_widget);
       bindBindingWidgets(m_bindings_widget);
-      m_icon = QIcon::fromTheme("guncon-line"_L1);
+      m_icon = QIcon(u":/icons/monochrome/svg/guncon-line.svg"_s);
+      image_widget = ui.image;
     }
     break;
 
@@ -154,7 +159,8 @@ void ControllerBindingWidget::populateWidgets()
       Ui::ControllerBindingWidget_NeGcon ui;
       ui.setupUi(m_bindings_widget);
       bindBindingWidgets(m_bindings_widget);
-      m_icon = QIcon::fromTheme("negcon-line"_L1);
+      m_icon = QIcon(u":/icons/monochrome/svg/negcon-line.svg"_s);
+      image_widget = ui.image;
     }
     break;
 
@@ -163,7 +169,8 @@ void ControllerBindingWidget::populateWidgets()
       Ui::ControllerBindingWidget_NeGconRumble ui;
       ui.setupUi(m_bindings_widget);
       bindBindingWidgets(m_bindings_widget);
-      m_icon = QIcon::fromTheme("negcon-line"_L1);
+      m_icon = QIcon(u":/icons/monochrome/svg/negcon-line.svg"_s);
+      image_widget = ui.image;
     }
     break;
 
@@ -172,7 +179,8 @@ void ControllerBindingWidget::populateWidgets()
       Ui::ControllerBindingWidget_Mouse ui;
       ui.setupUi(m_bindings_widget);
       bindBindingWidgets(m_bindings_widget);
-      m_icon = QIcon::fromTheme("mouse-line"_L1);
+      m_icon = QIcon(u":/icons/monochrome/svg/mouse-line.svg"_s);
+      image_widget = ui.image;
     }
     break;
 
@@ -181,23 +189,27 @@ void ControllerBindingWidget::populateWidgets()
       Ui::ControllerBindingWidget_Justifier ui;
       ui.setupUi(m_bindings_widget);
       bindBindingWidgets(m_bindings_widget);
-      m_icon = QIcon::fromTheme("guncon-line"_L1);
+      m_icon = QIcon(u":/icons/monochrome/svg/guncon-line.svg"_s);
+      image_widget = ui.image;
     }
     break;
 
     case ControllerType::None:
     {
-      m_icon = QIcon::fromTheme("controller-strike-line"_L1);
+      m_icon = QIcon(u":/icons/monochrome/svg/controller-strike-line.svg"_s);
     }
     break;
 
     default:
     {
       createBindingWidgets(m_bindings_widget);
-      m_icon = QIcon::fromTheme("controller-line"_L1);
+      m_icon = QIcon(u":/icons/monochrome/svg/controller-line.svg"_s);
     }
     break;
   }
+
+  if (image_widget)
+    image_widget->setSource(QtHost::GetResourceQPath(m_controller_info->image_name, true));
 
   m_ui.stackedWidget->addWidget(m_bindings_widget);
   m_ui.stackedWidget->setCurrentWidget(m_bindings_widget);
@@ -228,7 +240,7 @@ void ControllerBindingWidget::updateHeaderToolButtons()
   const QSignalBlocker settings_sb(m_ui.settings);
   const QSignalBlocker macros_sb(m_ui.macros);
 
-  const bool is_bindings = (current_widget == m_bindings_widget);
+  const bool is_bindings = (current_widget == m_bindings_widget && m_controller_info->type != ControllerType::None);
   m_ui.bindings->setChecked(is_bindings);
   m_ui.automaticBinding->setEnabled(is_bindings);
   m_ui.clearBindings->setEnabled(is_bindings);
@@ -505,7 +517,10 @@ void ControllerBindingWidget::bindBindingWidgets(QWidget* parent)
         continue;
       }
 
-      widget->initialize(sif, bi.type, config_section, bi.name);
+      widget->initialize(sif, bi.type, config_section, bi.name,
+                         tr("Controller %1 %2")
+                           .arg(m_port_number + 1)
+                           .arg(QtUtils::StringViewToQString(m_controller_info->GetBindingDisplayName(bi))));
     }
   }
 }
@@ -547,7 +562,7 @@ void ControllerMacroWidget::createWidgets(ControllerBindingWidget* bwidget)
     m_container->addWidget(m_macros[i]);
 
     QListWidgetItem* item = new QListWidgetItem();
-    item->setIcon(QIcon::fromTheme("flashlight-line"_L1));
+    item->setIcon(QIcon(u":/icons/monochrome/svg/flashlight-line.svg"_s));
     m_macroList->addItem(item);
     updateListItem(i);
   }
@@ -621,7 +636,8 @@ ControllerMacroEditWidget::ControllerMacroEditWidget(ControllerMacroWidget* pare
   updateFrequencyText();
 
   m_ui.trigger->initialize(dialog->getEditingSettingsInterface(), InputBindingInfo::Type::Macro, section,
-                           fmt::format("Macro{}", index + 1u));
+                           fmt::format("Macro{}", index + 1u),
+                           tr("Controller %1 Macro %2").arg(m_bwidget->getPortNumber() + 1).arg(index + 1));
 
   connect(m_ui.increaseFrequency, &QAbstractButton::clicked, this, [this]() { modFrequency(1); });
   connect(m_ui.decreateFrequency, &QAbstractButton::clicked, this, [this]() { modFrequency(-1); });
@@ -754,7 +770,7 @@ static void createSettingWidgets(SettingsInterface* const sif, QWidget* parent_w
     {
       case SettingInfo::Type::Boolean:
       {
-        QCheckBox* cb = new QCheckBox(qApp->translate(tr_context, si.display_name), parent_widget);
+        QCheckBox* cb = new QCheckBox(QCoreApplication::translate(tr_context, si.display_name), parent_widget);
         cb->setObjectName(si.name);
         ControllerSettingWidgetBinder::BindWidgetToInputProfileBool(sif, cb, section, std::move(key_name),
                                                                     si.BooleanDefaultValue());
@@ -772,7 +788,8 @@ static void createSettingWidgets(SettingsInterface* const sif, QWidget* parent_w
         sb->setSingleStep(si.IntegerStepValue());
         ControllerSettingWidgetBinder::BindWidgetToInputProfileInt(sif, sb, section, std::move(key_name),
                                                                    si.IntegerDefaultValue());
-        layout->addWidget(new QLabel(qApp->translate(tr_context, si.display_name), parent_widget), current_row, 0);
+        layout->addWidget(new QLabel(QCoreApplication::translate(tr_context, si.display_name), parent_widget),
+                          current_row, 0);
         layout->addWidget(sb, current_row, 1, 1, 3);
         current_row++;
       }
@@ -783,10 +800,11 @@ static void createSettingWidgets(SettingsInterface* const sif, QWidget* parent_w
         QComboBox* cb = new QComboBox(parent_widget);
         cb->setObjectName(si.name);
         for (u32 j = 0; si.options[j] != nullptr; j++)
-          cb->addItem(qApp->translate(tr_context, si.options[j]));
+          cb->addItem(QCoreApplication::translate(tr_context, si.options[j]));
         ControllerSettingWidgetBinder::BindWidgetToInputProfileInt(sif, cb, section, std::move(key_name),
                                                                    si.IntegerDefaultValue(), si.IntegerMinValue());
-        layout->addWidget(new QLabel(qApp->translate(tr_context, si.display_name), parent_widget), current_row, 0);
+        layout->addWidget(new QLabel(QCoreApplication::translate(tr_context, si.display_name), parent_widget),
+                          current_row, 0);
         layout->addWidget(cb, current_row, 1, 1, 3);
         current_row++;
       }
@@ -805,7 +823,7 @@ static void createSettingWidgets(SettingsInterface* const sif, QWidget* parent_w
           if (std::abs(si.multiplier - 100.0f) < 0.01f)
           {
             sb->setDecimals(0);
-            sb->setSuffix("%"_L1);
+            sb->setSuffix(u"%"_s);
           }
 
           ControllerSettingWidgetBinder::BindWidgetToInputProfileNormalized(sif, sb, section, std::move(key_name),
@@ -820,7 +838,8 @@ static void createSettingWidgets(SettingsInterface* const sif, QWidget* parent_w
           ControllerSettingWidgetBinder::BindWidgetToInputProfileFloat(sif, sb, section, std::move(key_name),
                                                                        si.FloatDefaultValue());
         }
-        layout->addWidget(new QLabel(qApp->translate(tr_context, si.display_name), parent_widget), current_row, 0);
+        layout->addWidget(new QLabel(QCoreApplication::translate(tr_context, si.display_name), parent_widget),
+                          current_row, 0);
         layout->addWidget(sb, current_row, 1, 1, 3);
         current_row++;
       }
@@ -832,7 +851,8 @@ static void createSettingWidgets(SettingsInterface* const sif, QWidget* parent_w
         le->setObjectName(si.name);
         ControllerSettingWidgetBinder::BindWidgetToInputProfileString(sif, le, section, std::move(key_name),
                                                                       si.StringDefaultValue());
-        layout->addWidget(new QLabel(qApp->translate(tr_context, si.display_name), parent_widget), current_row, 0);
+        layout->addWidget(new QLabel(QCoreApplication::translate(tr_context, si.display_name), parent_widget),
+                          current_row, 0);
         layout->addWidget(le, current_row, 1, 1, 3);
         current_row++;
       }
@@ -843,12 +863,12 @@ static void createSettingWidgets(SettingsInterface* const sif, QWidget* parent_w
         QLineEdit* le = new QLineEdit(parent_widget);
         le->setObjectName(si.name);
         QPushButton* browse_button =
-          new QPushButton(qApp->translate("ControllerCustomSettingsWidget", "Browse..."), parent_widget);
+          new QPushButton(QCoreApplication::translate("ControllerCustomSettingsWidget", "Browse..."), parent_widget);
         ControllerSettingWidgetBinder::BindWidgetToInputProfileString(sif, le, section, std::move(key_name),
                                                                       si.StringDefaultValue());
         QObject::connect(browse_button, &QPushButton::clicked, [le, root = parent_widget]() {
-          QString path = QDir::toNativeSeparators(
-            QFileDialog::getOpenFileName(root, qApp->translate("ControllerCustomSettingsWidget", "Select File")));
+          QString path = QDir::toNativeSeparators(QFileDialog::getOpenFileName(
+            root, QCoreApplication::translate("ControllerCustomSettingsWidget", "Select File")));
           if (!path.isEmpty())
             le->setText(path);
         });
@@ -857,14 +877,17 @@ static void createSettingWidgets(SettingsInterface* const sif, QWidget* parent_w
         hbox->addWidget(le, 1);
         hbox->addWidget(browse_button);
 
-        layout->addWidget(new QLabel(qApp->translate(tr_context, si.display_name), parent_widget), current_row, 0);
+        layout->addWidget(new QLabel(QCoreApplication::translate(tr_context, si.display_name), parent_widget),
+                          current_row, 0);
         layout->addLayout(hbox, current_row, 1, 1, 3);
         current_row++;
       }
       break;
     }
 
-    QLabel* label = new QLabel(si.description ? qApp->translate(tr_context, si.description) : QString(), parent_widget);
+    QLabel* label =
+      new QLabel(si.description ? QCoreApplication::translate(tr_context, si.description) : QString(), parent_widget);
+    label->setEnabled(false);
     label->setWordWrap(true);
     layout->addWidget(label, current_row++, 0, 1, 4);
 
@@ -957,7 +980,7 @@ ControllerCustomSettingsWidget::ControllerCustomSettingsWidget(ControllerBinding
 
   QHBoxLayout* bottom_hlayout = new QHBoxLayout();
   QPushButton* restore_defaults = new QPushButton(tr("Restore Default Settings"), swidget);
-  restore_defaults->setIcon(QIcon::fromTheme("restart-line"_L1));
+  restore_defaults->setIcon(QIcon(u":/icons/monochrome/svg/restart-line.svg"_s));
   bottom_hlayout->addStretch(1);
   bottom_hlayout->addWidget(restore_defaults);
   swidget_layout->addLayout(bottom_hlayout, current_row++, 0, 1, 4);
@@ -1083,13 +1106,13 @@ void MultipleDeviceAutobindDialog::doAutomaticBinding()
   {
     if (global)
     {
-      QtHost::SaveGameSettings(si, false);
-      g_core_thread->reloadGameSettings(false);
+      QtHost::QueueSettingsSave();
+      g_core_thread->reloadInputBindings();
     }
     else
     {
-      QtHost::QueueSettingsSave();
-      g_core_thread->reloadInputBindings();
+      QtHost::SaveGameSettings(si, false);
+      g_core_thread->reloadGameSettings(false);
     }
     accept();
   }

@@ -61,7 +61,8 @@
              <string>Adjusts LED settings for controllers with configurable LEDs.</string>
             </property>
             <property name="icon">
-             <iconset theme="lightbulb-line"/>
+             <iconset resource="resources/duckstation-qt.qrc">
+              <normaloff>:/icons/monochrome/svg/lightbulb-line.svg</normaloff>:/icons/monochrome/svg/lightbulb-line.svg</iconset>
             </property>
            </widget>
           </item>
@@ -100,7 +101,7 @@
         <item row="2" column="0">
          <widget class="QCheckBox" name="enableTouchPadAsPointer">
           <property name="toolTip">
-           <string>Allows use of the touchpad for DualShock 4 / DualSense controllers.</string>
+           <string>Allows use of the touchpad for DualShock 4 / DualSense controllers as a pointer, for use with lightguns.</string>
           </property>
           <property name="text">
            <string>Enable Touchpad</string>
@@ -333,7 +334,7 @@
         <item row="1" column="1">
          <widget class="QCheckBox" name="enableSensorMapping">
           <property name="toolTip">
-           <string>Allows sensors such as accelerometers to be mapped to emulated controls. By default movement of the mouse will be ignored.</string>
+           <string>Allows sensors such as accelerometers to be mapped to emulated controls. By default sensors will be ignored.</string>
           </property>
           <property name="text">
            <string>Enable Sensor Mapping</string>
@@ -447,6 +448,8 @@
    </item>
   </layout>
  </widget>
- <resources/>
+ <resources>
+  <include location="resources/duckstation-qt.qrc"/>
+ </resources>
  <connections/>
 </ui>

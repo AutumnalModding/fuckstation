@@ -8,8 +8,8 @@
 #include "biossettingswidget.h"
 #include "capturesettingswidget.h"
 #include "consolesettingswidget.h"
+#include "debuggingsettingswidget.h"
 #include "emulationsettingswidget.h"
-#include "foldersettingswidget.h"
 #include "gamecheatsettingswidget.h"
 #include "gamelistsettingswidget.h"
 #include "gamepatchsettingswidget.h"
@@ -66,7 +66,7 @@ SettingsWindow::SettingsWindow(const GameList::Entry* entry, std::unique_ptr<INI
   setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
 
   addWidget(m_game_summary = new GameSummaryWidget(entry, this, m_ui.settingsContainer), tr("Summary"),
-            "file-list-line"_L1,
+            u":/icons/monochrome/svg/file-list-line.svg"_s,
             tr("<strong>Summary</strong><hr>This page shows information about the selected game, and allows you to "
                "validate your disc was dumped correctly."));
   addPages();
@@ -77,6 +77,9 @@ SettingsWindow::SettingsWindow(const GameList::Entry* entry, std::unique_ptr<INI
 
 SettingsWindow::~SettingsWindow()
 {
+  if (m_sif && m_sif->IsDirty()) [[unlikely]]
+    WARNING_LOG("File {} was dirty when SettingsWindow was closed", Path::GetFileName(m_sif->GetPath()));
+
   if (isPerGameSettings())
     s_open_game_properties_dialogs.removeOne(this);
 }
@@ -92,41 +95,45 @@ void SettingsWindow::closeEvent(QCloseEvent* event)
 void SettingsWindow::addPages()
 {
   addWidget(
-    new InterfaceSettingsWidget(this, m_ui.settingsContainer), tr("Interface"), "settings-3-line"_L1,
+    new InterfaceSettingsWidget(this, m_ui.settingsContainer), tr("Interface"),
+    u":/icons/monochrome/svg/settings-3-line.svg"_s,
     tr("<strong>Interface Settings</strong><hr>These options control how the emulator looks and "
        "behaves.<br><br>Mouse over an option for additional information, and Shift+Wheel to scroll this panel."));
 
   if (!isPerGameSettings())
   {
     addWidget(
-      m_game_list_settings = new GameListSettingsWidget(this, m_ui.settingsContainer), tr("Game List"),
-      "folder-open-line"_L1,
+      new GameListSettingsWidget(this, m_ui.settingsContainer), tr("Game List"),
+      u":/icons/monochrome/svg/folder-open-line.svg"_s,
       tr("<strong>Game List Settings</strong><hr>The list above shows the directories which will be searched by "
          "DuckStation to populate the game list. Search directories can be added, removed, and switched to "
          "recursive/non-recursive."));
   }
 
-  addWidget(new BIOSSettingsWidget(this, m_ui.settingsContainer), tr("BIOS"), "chip-line"_L1,
+  addWidget(new BIOSSettingsWidget(this, m_ui.settingsContainer), tr("BIOS"), u":/icons/monochrome/svg/chip-line.svg"_s,
             tr("<strong>BIOS Settings</strong><hr>These options control which BIOS and expansion port is "
                "used.<br><br>Mouse over an option for additional information, and Shift+Wheel to scroll this panel."));
   addWidget(
-    new ConsoleSettingsWidget(this, m_ui.settingsContainer), tr("Console"), "emulation-line"_L1,
+    new ConsoleSettingsWidget(this, m_ui.settingsContainer), tr("Console"),
+    u":/icons/monochrome/svg/emulation-line.svg"_s,
     tr("<strong>Console Settings</strong><hr>These options determine the configuration of the simulated "
        "console.<br><br>Mouse over an option for additional information, and Shift+Wheel to scroll this panel."));
   addWidget(
-    new EmulationSettingsWidget(this, m_ui.settingsContainer), tr("Emulation"), "chip-2-line"_L1,
+    new EmulationSettingsWidget(this, m_ui.settingsContainer), tr("Emulation"),
+    u":/icons/monochrome/svg/chip-2-line.svg"_s,
     tr("<strong>Emulation Settings</strong><hr>These options determine the speed and runahead behavior of the "
        "system.<br><br>Mouse over an option for additional information, and Shift+Wheel to scroll this panel."));
 
   if (isPerGameSettings())
   {
     addWidget(new GamePatchSettingsWidget(this, m_ui.settingsContainer), tr("Patches"),
-              "sparkling-line"_L1,
+              u":/icons/monochrome/svg/sparkling-line.svg"_s,
               tr("<strong>Patches</strong><hr>This section allows you to select optional patches to apply to the game, "
                  "which may provide performance, visual, or gameplay improvements. Activating game patches can cause "
                  "unpredictable behavior, crashing, soft-locks, or broken saved games. Use patches at your own risk, "
                  "no support will be provided to users who have enabled game patches."));
-    addWidget(new GameCheatSettingsWidget(this, m_ui.settingsContainer), tr("Cheats"), "cheats-line"_L1,
+    addWidget(new GameCheatSettingsWidget(this, m_ui.settingsContainer), tr("Cheats"),
+              u":/icons/monochrome/svg/cheats-line.svg"_s,
               tr("<strong>Cheats</strong><hr>This section allows you to select which cheats you wish to enable. "
                  "<strong>Using cheats can have unpredictable effects on games, causing crashes, graphical glitches, "
                  "and corrupted saves.</strong> Cheats also persist through save states even after being disabled, "
@@ -134,57 +141,61 @@ void SettingsWindow::addPages()
   }
 
   addWidget(
-    new MemoryCardSettingsWidget(this, m_ui.settingsContainer), tr("Memory Cards"), "memcard-line"_L1,
+    new MemoryCardSettingsWidget(this, m_ui.settingsContainer), tr("Memory Cards"),
+    u":/icons/monochrome/svg/memcard-line.svg"_s,
     tr("<strong>Memory Card Settings</strong><hr>This page lets you control what mode the memory card emulation will "
        "function in, and where the images for these cards will be stored on disk."));
-  GraphicsSettingsWidget* graphics_settings;
-  addWidget(graphics_settings = new GraphicsSettingsWidget(this, m_ui.settingsContainer), tr("Graphics"),
-            "image-fill"_L1,
+  addWidget(new GraphicsSettingsWidget(this, m_ui.settingsContainer), tr("Graphics"),
+            u":/icons/monochrome/svg/image-fill.svg"_s,
             tr("<strong>Graphics Settings</strong><hr>These options control how the graphics of the emulated console "
                "are rendered. Not all options are available for the software renderer. Mouse over each option for "
                "additional information, and Shift+Wheel to scroll this panel."));
   //: Translators may want to shorten On-Screen Display to "OSD".
   addWidget(new OSDSettingsWidget(this, m_ui.settingsContainer), tr("On-Screen Display"),
-            "numbers-fill"_L1,
+            u":/icons/monochrome/svg/numbers-fill.svg"_s,
             tr("<strong>On-Screen Display Settings</strong><hr>These options determine the behavior of the messages "
                "that are displayed while content is running."));
   addWidget(
-    new PostProcessingSettingsWidget(this, m_ui.settingsContainer), tr("Post-Processing"), "sun-fill"_L1,
+    new PostProcessingSettingsWidget(this, m_ui.settingsContainer), tr("Post-Processing"),
+    u":/icons/monochrome/svg/sun-fill.svg"_s,
     tr("<strong>Post-Processing Settings</strong><hr>Post processing allows you to alter the appearance of the image "
        "displayed on the screen with various filters. Shaders will be executed in sequence. Additional shaders can be "
        "downloaded from <a href=\"%1\">%1</a>.")
       .arg("https://github.com/stenzek/emu-shaders"));
   addWidget(
-    new AudioSettingsWidget(this, m_ui.settingsContainer), tr("Audio"), "volume-up-line"_L1,
+    new AudioSettingsWidget(this, m_ui.settingsContainer), tr("Audio"), u":/icons/monochrome/svg/volume-up-line.svg"_s,
     tr("<strong>Audio Settings</strong><hr>These options control the audio output of the console. Mouse over an option "
        "for additional information."));
   addWidget(
-    new AchievementSettingsWidget(this, m_ui.settingsContainer), tr("Achievements"), "trophy-line"_L1,
+    new AchievementSettingsWidget(this, m_ui.settingsContainer), tr("Achievements"),
+    u":/icons/monochrome/svg/trophy-line.svg"_s,
     tr("<strong>Achievement Settings</strong><hr>DuckStation uses RetroAchievements as an achievement database and "
        "for tracking progress. To use achievements, please sign up for an account at <a href=\"%1\">%1</a>. To view "
        "the achievement list in-game, press the hotkey for <strong>Open Pause Menu</strong> and select "
        "<strong>Achievements</strong> from the menu. Mouse over an option for additional information, and "
        "Shift+Wheel to scroll this panel.")
       .arg("https://retroachievements.org/"));
-  addWidget(new CaptureSettingsWidget(this, m_ui.settingsContainer), tr("Capture"), "vidicon-line"_L1,
+  addWidget(new CaptureSettingsWidget(this, m_ui.settingsContainer), tr("Capture"),
+            u":/icons/monochrome/svg/vidicon-line.svg"_s,
             tr("<strong>Capture Settings</strong><hr>These options determine how screenshots and videos are captured "
                "by the application."));
 
   if (!isPerGameSettings())
   {
-    addWidget(
-      new FolderSettingsWidget(this, m_ui.settingsContainer), tr("Folders"), "folder-settings-line"_L1,
-      tr("<strong>Folder Settings</strong><hr>These options control where DuckStation will save runtime data files."));
+    addWidget(new AdvancedSettingsWidget(this, m_ui.settingsContainer), tr("Advanced"),
+              u":/icons/monochrome/svg/alert-line.svg"_s,
+              tr("<strong>Advanced Settings</strong><hr>These options control logging and internal behavior of the "
+                 "emulator. Mouse over an option for additional information, and Shift+Wheel to scroll this panel."));
   }
 
-  AdvancedSettingsWidget* advanced_settings;
-  addWidget(advanced_settings = new AdvancedSettingsWidget(this, m_ui.settingsContainer), tr("Advanced"),
-            "alert-line"_L1,
-            tr("<strong>Advanced Settings</strong><hr>These options control logging and internal behavior of the "
-               "emulator. Mouse over an option for additional information, and Shift+Wheel to scroll this panel."));
-
-  connect(advanced_settings, &AdvancedSettingsWidget::onShowDebugOptionsChanged, graphics_settings,
-          &GraphicsSettingsWidget::onShowDebugSettingsChanged);
+  if (QtHost::ShouldShowDebugOptions())
+  {
+    addWidget(
+      new DebuggingSettingsWidget(this, m_ui.settingsContainer), tr("Debugging"),
+      u":/icons/monochrome/svg/code-line.svg"_s,
+      tr("<strong>Debugging Settings</strong><hr>These options control internal behavior of the emulator. You should "
+         "not modify anything on this page without a good reason to do so."));
+  }
 
   SettingWidgetBinder::BindWidgetToBoolSetting(m_sif.get(), m_ui.safeMode, "Main", "DisableAllEnhancements", false);
 
@@ -195,6 +206,13 @@ void SettingsWindow::addPages()
 
 void SettingsWindow::reloadPages()
 {
+  // prevent any weird focusing to widgets
+  const int current_page = m_ui.settingsContainer->currentIndex();
+  m_ui.settingsContainer->setCurrentIndex(-1);
+  m_ui.settingsCategory->blockSignals(true);
+  m_ui.settingsCategory->setCurrentRow(-1);
+  m_ui.settingsCategory->blockSignals(false);
+
   const int min_count = isPerGameSettings() ? 1 : 0;
   while (m_ui.settingsContainer->count() > min_count)
   {
@@ -215,6 +233,8 @@ void SettingsWindow::reloadPages()
   m_widget_help_text_map.clear();
   m_current_help_widget = nullptr;
   addPages();
+
+  setCategoryRow(current_page);
 }
 
 void SettingsWindow::connectUi()
@@ -247,16 +267,24 @@ void SettingsWindow::connectUi()
     connect(m_ui.copyGlobalSettings, &QPushButton::clicked, this, &SettingsWindow::onCopyGlobalSettingsClicked);
   if (m_ui.clearGameSettings)
     connect(m_ui.clearGameSettings, &QPushButton::clicked, this, &SettingsWindow::onClearSettingsClicked);
+
+  // debug shouldn't be changed on non-root settings
+  if (!isPerGameSettings())
+  {
+    // must be a queued connection, since this comes from a control on the widget
+    connect(this, &SettingsWindow::debugOptionsVisibilityChanged, this, &SettingsWindow::reloadPages,
+            Qt::QueuedConnection);
+  }
 }
 
-void SettingsWindow::addWidget(QWidget* widget, QString title, QLatin1StringView icon, QString help_text)
+void SettingsWindow::addWidget(QWidget* widget, QString title, QString icon, QString help_text)
 {
   const int index = m_ui.settingsCategory->count();
 
   QListWidgetItem* item = new QListWidgetItem(m_ui.settingsCategory);
   item->setText(title);
   if (!icon.isEmpty())
-    item->setIcon(QIcon::fromTheme(icon));
+    item->setIcon(QIcon(icon));
 
   m_ui.settingsContainer->addWidget(widget);
 
@@ -291,6 +319,10 @@ void SettingsWindow::setCategoryRow(int index)
 
 void SettingsWindow::onCategoryCurrentRowChanged(int row)
 {
+  // can happen when deleting
+  if (row < 0)
+    return;
+
   DebugAssert(row < static_cast<int>(MAX_SETTINGS_WIDGETS));
   m_ui.settingsContainer->setCurrentIndex(row);
   m_ui.helpText->setText(m_category_help_text[row]);
@@ -325,7 +357,7 @@ void SettingsWindow::onCopyGlobalSettingsClicked()
     const auto lock = Core::GetSettingsLock();
     Settings temp;
     temp.Load(*Core::GetBaseSettingsLayer(), *Core::GetBaseSettingsLayer());
-    temp.Save(*m_sif.get(), true);
+    temp.Save(*m_sif.get(), true, true);
   }
   saveAndReloadGameSettings();
 
@@ -355,6 +387,16 @@ void SettingsWindow::onClearSettingsClicked()
 
   QtUtils::AsyncMessageBox(this, QMessageBox::Information, tr("DuckStation Settings"),
                            tr("Per-game configuration cleared."));
+}
+
+GameListSettingsWidget* SettingsWindow::getGameListSettingsWidget() const
+{
+  return findChild<GameListSettingsWidget*>();
+}
+
+AchievementSettingsWidget* SettingsWindow::getAchievementSettingsWidget() const
+{
+  return findChild<AchievementSettingsWidget*>();
 }
 
 void SettingsWindow::registerWidgetHelp(QObject* object, QString title, QString recommended_value, QString text)
@@ -393,7 +435,9 @@ bool SettingsWindow::eventFilter(QObject* object, QEvent* event)
     if (m_current_help_widget)
     {
       m_current_help_widget = nullptr;
-      m_ui.helpText->setText(m_category_help_text[m_ui.settingsCategory->currentRow()]);
+      const int current_row = m_ui.settingsCategory->currentRow();
+      if (current_row >= 0)
+        m_ui.helpText->setText(m_category_help_text[current_row]);
     }
   }
   else if (event->type() == QEvent::Wheel)
@@ -431,7 +475,7 @@ void SettingsWindow::wheelEvent(QWheelEvent* event)
 bool SettingsWindow::getEffectiveBoolValue(const char* section, const char* key, bool default_value) const
 {
   bool value;
-  if (m_sif && m_sif->GetBoolValue(section, key, &value))
+  if (m_sif && m_sif->FindBoolValue(section, key, &value))
     return value;
   else
     return Core::GetBaseBoolSettingValue(section, key, default_value);
@@ -440,7 +484,7 @@ bool SettingsWindow::getEffectiveBoolValue(const char* section, const char* key,
 int SettingsWindow::getEffectiveIntValue(const char* section, const char* key, int default_value) const
 {
   int value;
-  if (m_sif && m_sif->GetIntValue(section, key, &value))
+  if (m_sif && m_sif->FindIntValue(section, key, &value))
     return value;
   else
     return Core::GetBaseIntSettingValue(section, key, default_value);
@@ -449,19 +493,20 @@ int SettingsWindow::getEffectiveIntValue(const char* section, const char* key, i
 float SettingsWindow::getEffectiveFloatValue(const char* section, const char* key, float default_value) const
 {
   float value;
-  if (m_sif && m_sif->GetFloatValue(section, key, &value))
+  if (m_sif && m_sif->FindFloatValue(section, key, &value))
     return value;
   else
     return Core::GetBaseFloatSettingValue(section, key, default_value);
 }
 
 std::string SettingsWindow::getEffectiveStringValue(const char* section, const char* key,
-                                                    const char* default_value) const
+                                                    std::string_view default_value) const
 {
-  std::string value;
-  if (!m_sif || !m_sif->GetStringValue(section, key, &value))
-    value = Core::GetBaseStringSettingValue(section, key, default_value);
-  return value;
+  std::string_view value;
+  if (!m_sif || !m_sif->FindStringValue(section, key, &value))
+    return Core::GetBaseStringSettingValue(section, key, default_value);
+
+  return std::string(value);
 }
 
 Qt::CheckState SettingsWindow::getCheckState(const char* section, const char* key, bool default_value)
@@ -469,7 +514,7 @@ Qt::CheckState SettingsWindow::getCheckState(const char* section, const char* ke
   bool value;
   if (m_sif)
   {
-    if (!m_sif->GetBoolValue(section, key, &value))
+    if (!m_sif->FindBoolValue(section, key, &value))
       return Qt::PartiallyChecked;
   }
   else
@@ -487,7 +532,7 @@ std::optional<bool> SettingsWindow::getBoolValue(const char* section, const char
   if (m_sif)
   {
     bool bvalue;
-    if (m_sif->GetBoolValue(section, key, &bvalue))
+    if (m_sif->FindBoolValue(section, key, &bvalue))
       value = bvalue;
     else
       value = default_value;
@@ -507,7 +552,7 @@ std::optional<int> SettingsWindow::getIntValue(const char* section, const char* 
   if (m_sif)
   {
     int ivalue;
-    if (m_sif->GetIntValue(section, key, &ivalue))
+    if (m_sif->FindIntValue(section, key, &ivalue))
       value = ivalue;
     else
       value = default_value;
@@ -527,7 +572,7 @@ std::optional<float> SettingsWindow::getFloatValue(const char* section, const ch
   if (m_sif)
   {
     float fvalue;
-    if (m_sif->GetFloatValue(section, key, &fvalue))
+    if (m_sif->FindFloatValue(section, key, &fvalue))
       value = fvalue;
     else
       value = default_value;
@@ -546,9 +591,9 @@ std::optional<std::string> SettingsWindow::getStringValue(const char* section, c
   std::optional<std::string> value;
   if (m_sif)
   {
-    std::string svalue;
-    if (m_sif->GetStringValue(section, key, &svalue))
-      value = std::move(svalue);
+    std::string_view svalue;
+    if (m_sif->FindStringValue(section, key, &svalue))
+      value = svalue;
     else if (default_value.has_value())
       value = default_value.value();
   }
@@ -674,6 +719,37 @@ bool SettingsWindow::hasGameTrait(GameDatabase::Trait trait)
 bool SettingsWindow::isGameHashStable() const
 {
   return (m_path.empty() || !CDImage::HasOverlayablePatch(m_path.c_str()));
+}
+
+MultitapMode SettingsWindow::getEffectiveMultitapMode() const
+{
+  TinyString str;
+  if (isPerGameSettings())
+  {
+    if (m_sif->GetBoolValue("ControllerPorts", "UseGameSettingsForController", false))
+    {
+      str = m_sif->GetTinyStringValue("ControllerPorts", "MultitapMode");
+    }
+    else if (!(str = m_sif->GetTinyStringValue("ControllerPorts", "InputProfileName")).empty())
+    {
+      // this is massive ugh, we need to load the input profile...
+      INISettingsInterface profile_sif(System::GetInputProfilePath(str));
+      if (profile_sif.Load())
+        str = profile_sif.GetTinyStringValue("ControllerPorts", "MultitapMode");
+    }
+  }
+
+  // fall back to global
+  if (str.empty())
+    str = Core::GetBaseTinyStringSettingValue("ControllerPorts", "MultitapMode");
+
+  return Settings::ParseMultitapModeName(str).value_or(Settings::DEFAULT_MULTITAP_MODE);
+}
+
+void SettingsWindow::onMultitapModeChanged(MultitapMode mode)
+{
+  if (MemoryCardSettingsWidget* memcard_settings = findChild<MemoryCardSettingsWidget*>())
+    memcard_settings->createPortSettings(mode);
 }
 
 SettingsWindow* SettingsWindow::openGamePropertiesDialog(const GameList::Entry* entry,

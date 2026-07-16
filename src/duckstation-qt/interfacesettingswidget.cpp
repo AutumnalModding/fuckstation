@@ -32,6 +32,7 @@ static constexpr const std::pair<const char*, const char*> BUILTIN_THEMES[] = {
   {"greymatter", QT_TRANSLATE_NOOP("MainWindow", "Grey Matter")},
   {"greengiant", QT_TRANSLATE_NOOP("MainWindow", "Green Giant")},
   {"pinkypals", QT_TRANSLATE_NOOP("MainWindow", "Pinky Pals")},
+  {"darkocean", QT_TRANSLATE_NOOP("MainWindow", "Dark Ocean")},
   {"darkruby", QT_TRANSLATE_NOOP("MainWindow", "Dark Ruby")},
   {"purplerain", QT_TRANSLATE_NOOP("MainWindow", "Purple Rain")},
   {"qdarkstyle", QT_TRANSLATE_NOOP("MainWindow", "QDarkStyle")},
@@ -62,8 +63,6 @@ InterfaceSettingsWidget::InterfaceSettingsWidget(SettingsWindow* dialog, QWidget
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.hideMouseCursor, "Main", "HideCursorInFullscreen", true);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.displayLogInMainWindow, "Main", "DisplayLogInMainWindow",
                                                false);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.createSaveStateBackups, "Main", "CreateSaveStateBackups",
-                                               Settings::DEFAULT_SAVE_STATE_BACKUPS);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.enableDiscordPresence, "Main", "EnableDiscordPresence", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.automaticallyResizeWindow, "Display", "AutoResizeWindow",
                                                false);
@@ -91,6 +90,8 @@ InterfaceSettingsWidget::InterfaceSettingsWidget(SettingsWindow* dialog, QWidget
 
   if (!m_dialog->isPerGameSettings())
   {
+    SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.startFullscreenUI, "Main", "StartFullscreenUI", false);
+
     setupThemeCombo(m_ui.theme);
     setupLanguageCombo(m_ui.language);
     connect(m_ui.language, &QComboBox::currentIndexChanged, this, &InterfaceSettingsWidget::onLanguageChanged);
@@ -133,6 +134,11 @@ InterfaceSettingsWidget::InterfaceSettingsWidget(SettingsWindow* dialog, QWidget
   }
   else
   {
+    // I hate you so much qtwidgets
+    QtUtils::SafeDeleteWidget(m_ui.startFullscreenUI);
+    m_ui.behaviorLayout->removeWidget(m_ui.enableDiscordPresence);
+    m_ui.behaviorLayout->addWidget(m_ui.enableDiscordPresence, m_ui.behaviorLayout->rowCount() - 1, 0);
+
     QtUtils::SafeDeleteWidget(m_ui.languageLabel);
     QtUtils::SafeDeleteWidget(m_ui.language);
     QtUtils::SafeDeleteWidget(m_ui.themeLabel);
@@ -168,9 +174,8 @@ InterfaceSettingsWidget::InterfaceSettingsWidget(SettingsWindow* dialog, QWidget
   dialog->registerWidgetHelp(m_ui.pauseOnControllerDisconnection, tr("Pause On Controller Disconnection"),
                              tr("Unchecked"),
                              tr("Pauses the emulator when a controller with bindings is disconnected."));
-  dialog->registerWidgetHelp(
-    m_ui.createSaveStateBackups, tr("Create Save State Backups"), tr("Checked"),
-    tr("Backs up any previous save state when creating a new save state, with a .bak extension."));
+  dialog->registerWidgetHelp(m_ui.startFullscreenUI, tr("Start In Big Picture Mode"), tr("Unchecked"),
+                             tr("Starts the application in Big Picture Mode instead of the desktop interface."));
   dialog->registerWidgetHelp(m_ui.enableDiscordPresence, tr("Enable Discord Presence"), tr("Unchecked"),
                              tr("Shows the game you are currently playing as part of your profile in Discord."));
 
@@ -218,7 +223,7 @@ InterfaceSettingsWidget::InterfaceSettingsWidget(SettingsWindow* dialog, QWidget
     {
       if (std::strcmp(name, default_theme_cname) == 0)
       {
-        default_theme_name = qApp->translate("MainWindow", display_name);
+        default_theme_name = QCoreApplication::translate("MainWindow", display_name);
         break;
       }
     }
@@ -226,7 +231,7 @@ InterfaceSettingsWidget::InterfaceSettingsWidget(SettingsWindow* dialog, QWidget
                                tr("Selects the theme for the application."));
 
     dialog->registerWidgetHelp(m_ui.autoUpdateTag, tr("Update Channel"),
-                               QString::fromStdString(AutoUpdaterDialog::getDefaultTag()),
+                               AutoUpdaterDialog::getTagDisplayName(AutoUpdaterDialog::getDefaultTag()),
                                tr("Selects the channel that will be checked for updates to the application. The "
                                   "<strong>preview</strong> channel contains the latest changes, and may be unstable. "
                                   "The <strong>latest</strong> channel tracks the latest release."));
@@ -266,7 +271,7 @@ void InterfaceSettingsWidget::setupLanguageCombo(QComboBox* const cb)
 void InterfaceSettingsWidget::setupThemeCombo(QComboBox* const cb)
 {
   for (const auto& [name, display_name] : BUILTIN_THEMES)
-    cb->addItem(qApp->translate("MainWindow", display_name), QString::fromLatin1(name));
+    cb->addItem(QCoreApplication::translate("MainWindow", display_name), QString::fromLatin1(name));
   for (const QString& name : QtHost::GetCustomThemeList())
   {
     if (cb->findData(name) < 0)
@@ -303,14 +308,19 @@ void InterfaceSettingsWidget::checkForUpdates()
   if (!dlg)
     return;
 
-  QProgressDialog* const pdlg = new QProgressDialog(qApp->translate("MainWindow", "Checking for updates..."),
-                                                    qApp->translate("QPlatformTheme", "Cancel"), 0, 0, this);
+  QProgressDialog* const pdlg =
+    new QProgressDialog(QCoreApplication::translate("MainWindow", "Checking for updates..."),
+                        qApp->translate("QPlatformTheme", "Cancel"), 0, 0, this);
   pdlg->setWindowTitle(m_dialog->windowTitle());
   pdlg->setAttribute(Qt::WA_DeleteOnClose);
   pdlg->setMinimumWidth(400);
   pdlg->open();
 
-  connect(pdlg, &QProgressDialog::canceled, dlg, &AutoUpdaterDialog::cancel);
+  connect(pdlg, &QProgressDialog::canceled, dlg, [pdlg, dlg]() {
+    // Qt sends cancelled() on close...
+    if (pdlg->wasCanceled())
+      dlg->cancel();
+  });
   connect(dlg, &AutoUpdaterDialog::updateCheckAboutToComplete, pdlg, &QProgressDialog::close);
 
   dlg->queueUpdateCheck(true, true);

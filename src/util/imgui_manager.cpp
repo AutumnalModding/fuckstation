@@ -65,6 +65,7 @@ struct PostedOSDMessage
   std::string title;
   std::string text;
   OSDMessageType type;
+  OSDMessageIconType icon_type;
 };
 
 struct OSDMessage
@@ -79,7 +80,7 @@ struct OSDMessage
   float target_y;
   float last_y;
   OSDMessageType type;
-  bool is_texture_icon;
+  OSDMessageIconType icon_type;
 };
 
 } // namespace
@@ -90,18 +91,22 @@ static float GetGlobalPrescale();
 static float GetFixedFontWeight();
 static void UpdateScale();
 static void SetStyle(ImGuiStyle& style, float scale);
+static u32 GetTextFontIndex();
+static u32 GetFixedFontIndex();
 static bool LoadFontData(Error* error);
 static void ReloadFontDataIfActive();
 static bool CreateFontAtlas(Error* error);
 static bool CompilePipelines(Error* error);
 static void RenderDrawLists(u32 window_width, u32 window_height, WindowInfoPrerotation prerotation);
 static void UpdateTextures();
+static void DestroyTextures(bool recycle);
 static void SetCommonIOOptions(ImGuiIO& io, ImGuiPlatformIO& pio);
 static void SetImKeyState(ImGuiIO& io, ImGuiKey imkey, bool pressed);
 static const char* GetClipboardTextImpl(ImGuiContext* ctx);
 static void SetClipboardTextImpl(ImGuiContext* ctx, const char* text);
-static void AddOSDMessage(OSDMessageType type, std::string key, std::string icon, std::string title,
-                          std::string message);
+static OSDMessageIconType GetOSDMessageIconType(std::string_view icon);
+static void AddOSDMessage(OSDMessageType type, std::string key, OSDMessageIconType icon_type, std::string icon,
+                          std::string title, std::string message);
 static void RemoveKeyedOSDMessage(std::string key);
 static void ClearOSDMessages();
 static void UpdateOSDMessageRunIdle(const std::unique_lock<std::mutex>& lock);
@@ -116,13 +121,77 @@ static std::optional<ImGuiKey> MapHostKeyEventToImGuiKey(u32 key);
 static constexpr float OSD_FADE_IN_TIME = 0.1f;
 static constexpr float OSD_FADE_OUT_TIME = 0.4f;
 
-static constexpr std::array<const char*, static_cast<size_t>(TextFont::MaxCount)> TEXT_FONT_NAMES = {{
-  "Roboto-VariableFont_wdth,wght.ttf", // Default
-  "NotoSansSC-VariableFont_wght.ttf",  // Chinese
-  "NotoSansJP-VariableFont_wght.ttf",  // Japanese
-  "NotoSansKR-VariableFont_wght.ttf",  // Korean
+static constexpr std::array<const char*, static_cast<size_t>(LanguageFont::MaxCount)> LANGUAGE_FONT_NAMES = {{
+  nullptr,                            // Default
+  "NotoSansSC-VariableFont_wght.ttf", // Chinese
+  "NotoSansJP-VariableFont_wght.ttf", // Japanese
+  "NotoSansKR-VariableFont_wght.ttf", // Korean
 }};
-static constexpr const char* FIXED_FONT_NAME = "GoogleSansCode-VariableFont_wght.ttf";
+
+#define ENUMERATE_TEXT_FONT_NAMES(X)                                                                                   \
+  X("Roboto", "Roboto", "Roboto-VariableFont_wdth,wght.ttf")                                                           \
+  X("Bitcount", "Bitcount", "BitcountPropSingle-VariableFont_CRSV,ELSH,ELXP,slnt,wght.ttf")                            \
+  X("PixelifySans", "Pixelify Sans", "PixelifySans-VariableFont_wght.ttf")                                             \
+  X("Handjet", "Handjet", "Handjet-VariableFont_ELGR,ELSH,wght.ttf")                                                   \
+  X("Orbitron", "Orbitron", "Orbitron-VariableFont_wght.ttf")                                                          \
+  X("Tektur", "Tektur", "Tektur-VariableFont_wdth,wght.ttf")                                                           \
+  X("PlusJakartaSans", "Plus Jakarta Sans", "PlusJakartaSans-VariableFont_wght.ttf")                                   \
+  X("Manrope", "Manrope", "Manrope-VariableFont_wght.ttf")                                                             \
+  X("Jersey25", "Jersey 25", "Jersey25-Regular.ttf")                                                                   \
+  X("VT323", "VT323", "VT323-Regular.ttf")                                                                             \
+  X("GoogleSansCode", "Google Sans Code", "GoogleSansCode-VariableFont_wght.ttf")                                      \
+  X("KodeMono", "Kode Mono", "KodeMono-VariableFont_wght.ttf")                                                         \
+  X("RobotoMono", "Roboto Mono", "RobotoMono-VariableFont_wght.ttf")
+
+static constexpr const std::array TEXT_FONT_NAMES = {
+#define ADD_TEXT_FONT(name, display_name, filename) name,
+  ENUMERATE_TEXT_FONT_NAMES(ADD_TEXT_FONT)
+#undef ADD_TEXT_FONT
+};
+
+static constexpr const std::array TEXT_FONT_DISPLAY_NAMES = {
+#define ADD_TEXT_FONT(name, display_name, filename) display_name,
+  ENUMERATE_TEXT_FONT_NAMES(ADD_TEXT_FONT)
+#undef ADD_TEXT_FONT
+};
+
+static constexpr const std::array TEXT_FONT_FILENAMES = {
+#define ADD_TEXT_FONT(name, display_name, filename) filename,
+  ENUMERATE_TEXT_FONT_NAMES(ADD_TEXT_FONT)
+#undef ADD_TEXT_FONT
+};
+
+#undef ENUMERATE_TEXT_FONT_NAMES
+
+static constexpr const char* DEFAULT_TEXT_FONT_NAME = TEXT_FONT_NAMES[0];
+
+#define ENUMERATE_FIXED_FONT_NAMES(X)                                                                                  \
+  X("GoogleSansCode", "Google Sans Code", "GoogleSansCode-VariableFont_wght.ttf")                                      \
+  X("RobotoMono", "Roboto Mono", "RobotoMono-VariableFont_wght.ttf")                                                   \
+  X("KodeMono", "Kode Mono", "KodeMono-VariableFont_wght.ttf")                                                         \
+  X("Bitcount", "Bitcount", "BitcountPropSingle-VariableFont_CRSV,ELSH,ELXP,slnt,wght.ttf")
+
+static constexpr const std::array FIXED_FONT_NAMES = {
+#define ADD_FIXED_FONT(name, display_name, filename) name,
+  ENUMERATE_FIXED_FONT_NAMES(ADD_FIXED_FONT)
+#undef ADD_FIXED_FONT
+};
+
+static constexpr const std::array FIXED_FONT_DISPLAY_NAMES = {
+#define ADD_FIXED_FONT(name, display_name, filename) display_name,
+  ENUMERATE_FIXED_FONT_NAMES(ADD_FIXED_FONT)
+#undef ADD_FIXED_FONT
+};
+
+static constexpr const std::array FIXED_FONT_FILENAMES = {
+#define ADD_FIXED_FONT(name, display_name, filename) filename,
+  ENUMERATE_FIXED_FONT_NAMES(ADD_FIXED_FONT)
+#undef ADD_FIXED_FONT
+};
+
+#undef ENUMERATE_FIXED_FONT_NAMES
+
+static constexpr const char* DEFAULT_FIXED_FONT_NAME = FIXED_FONT_NAMES[0];
 static constexpr const char* FA_FONT_NAME = FONT_ICON_FILE_NAME_FAS;
 static constexpr const char* PF_FONT_NAME = "promptfont.otf";
 static constexpr const char* EMOJI_FONT_NAME = "TwitterColorEmoji-SVGinOT.ttf";
@@ -159,6 +228,7 @@ struct ALIGN_TO_CACHE_LINE State
 
   // we maintain a second copy of the stick state here so we can map it to the dpad
   std::array<s8, 2> left_stick_axis_state = {};
+  InputManager::GamepadButtonType gamepad_button_type = InputManager::GamepadButtonType::Unknown;
   bool swap_gamepad_face_buttons = false;
 
   std::unique_ptr<GPUPipeline> imgui_pipeline;
@@ -169,9 +239,11 @@ struct ALIGN_TO_CACHE_LINE State
   std::deque<OSDMessage> osd_active_messages;
   float osd_messages_end_y = 0.0f;
 
-  TextFontOrder text_font_order = ImGuiManager::GetDefaultTextFontOrder();
+  LanguageFontOrder text_font_order = ImGuiManager::GetLanguageTextFontOrder();
+  u32 text_font_index = 0;
+  u32 fixed_font_index = 0;
 
-  std::array<DynamicHeapArray<u8>, static_cast<size_t>(TextFont::MaxCount)> text_fonts_data;
+  std::array<DynamicHeapArray<u8>, static_cast<size_t>(LanguageFont::MaxCount)> text_fonts_data;
   DynamicHeapArray<u8> fixed_font_data;
   DynamicHeapArray<u8> icon_fa_font_data;
   DynamicHeapArray<u8> icon_pf_font_data;
@@ -184,12 +256,12 @@ static State s_state;
 
 } // namespace ImGuiManager
 
-ImGuiManager::TextFontOrder ImGuiManager::GetDefaultTextFontOrder()
+ImGuiManager::LanguageFontOrder ImGuiManager::GetLanguageTextFontOrder()
 {
-  return {TextFont::Default, TextFont::Japanese, TextFont::Chinese, TextFont::Korean};
+  return {LanguageFont::Default, LanguageFont::Japanese, LanguageFont::Chinese, LanguageFont::Korean};
 }
 
-void ImGuiManager::SetTextFontOrder(const TextFontOrder& order)
+void ImGuiManager::SetLanguageFontOrder(const LanguageFontOrder& order)
 {
   if (s_state.text_font_order == order)
     return;
@@ -198,8 +270,105 @@ void ImGuiManager::SetTextFontOrder(const TextFontOrder& order)
   ReloadFontDataIfActive();
 }
 
+std::span<const char* const> ImGuiManager::GetTextFontNames()
+{
+  return TEXT_FONT_NAMES;
+}
+
+std::span<const char* const> ImGuiManager::GetTextFontDisplayNames()
+{
+  return TEXT_FONT_DISPLAY_NAMES;
+}
+
+const char* ImGuiManager::GetDefaultTextFontName()
+{
+  return DEFAULT_TEXT_FONT_NAME;
+}
+
+u32 ImGuiManager::GetTextFontIndex()
+{
+  const TinyString name = Core::GetBaseTinyStringSettingValue("Main", "ImGuiTextFont", DEFAULT_TEXT_FONT_NAME);
+
+  // must be a valid name
+  const auto it = std::ranges::find_if(TEXT_FONT_NAMES, [&name](const char* n) { return (name == n); });
+  if (it == TEXT_FONT_NAMES.end()) [[unlikely]]
+  {
+    ERROR_LOG("Invalid text font name: {}", name);
+    return 0;
+  }
+
+  return static_cast<u32>(std::distance(TEXT_FONT_NAMES.begin(), it));
+}
+
+void ImGuiManager::UpdateTextFont()
+{
+  if (!IsInitialized())
+    return;
+
+  const u32 new_index = GetTextFontIndex();
+  if (new_index == s_state.text_font_index)
+    return;
+
+  s_state.text_font_index = new_index;
+
+  // Force the actual font data to reload.
+  s_state.text_fonts_data[static_cast<size_t>(LanguageFont::Default)].deallocate();
+
+  ReloadFontDataIfActive();
+}
+
+std::span<const char* const> ImGuiManager::GetFixedFontNames()
+{
+  return FIXED_FONT_NAMES;
+}
+
+std::span<const char* const> ImGuiManager::GetFixedFontDisplayNames()
+{
+  return FIXED_FONT_DISPLAY_NAMES;
+}
+
+const char* ImGuiManager::GetDefaultFixedFontName()
+{
+  return DEFAULT_FIXED_FONT_NAME;
+}
+
+u32 ImGuiManager::GetFixedFontIndex()
+{
+  const TinyString name = Core::GetBaseTinyStringSettingValue("Main", "ImGuiFixedFont", DEFAULT_FIXED_FONT_NAME);
+
+  // must be a valid name
+  const auto it = std::ranges::find_if(FIXED_FONT_NAMES, [&name](const char* n) { return (name == n); });
+  if (it == FIXED_FONT_NAMES.end()) [[unlikely]]
+  {
+    ERROR_LOG("Invalid fixed font name: {}", name);
+    return 0;
+  }
+
+  return static_cast<u32>(std::distance(FIXED_FONT_NAMES.begin(), it));
+}
+
+void ImGuiManager::UpdateFixedFont()
+{
+  if (!IsInitialized())
+    return;
+
+  const u32 new_index = GetFixedFontIndex();
+  if (new_index == s_state.fixed_font_index)
+    return;
+
+  s_state.fixed_font_index = new_index;
+
+  // Force the actual font data to reload.
+  s_state.fixed_font_data.deallocate();
+
+  ReloadFontDataIfActive();
+}
+
 bool ImGuiManager::Initialize(Error* error)
 {
+  s_state.text_font_index = GetTextFontIndex();
+  s_state.fixed_font_index = GetFixedFontIndex();
+
   if (!LoadFontData(error))
   {
     Error::AddPrefix(error, "Failed to load font data: ");
@@ -210,6 +379,7 @@ bool ImGuiManager::Initialize(Error* error)
 
   s_state.global_scale = std::max((main_swap_chain ? main_swap_chain->GetScale() : 1.0f) * GetGlobalPrescale(), 1.0f);
   s_state.scale_changed = false;
+  s_state.gamepad_button_type = InputManager::GetLastGamepadButtonType();
 
   s_state.imgui_context = ImGui::CreateContext();
 
@@ -299,20 +469,7 @@ void ImGuiManager::DestroyGPUResources()
   s_state.imgui_pipeline.reset();
 
   if (s_state.imgui_context)
-  {
-    for (ImTextureData* tex : s_state.imgui_context->IO.Fonts->TexList)
-    {
-      if (tex->Status == ImTextureStatus_Destroyed)
-        continue;
-
-      delete std::exchange(tex->TexID, nullptr);
-
-      if (tex->Status == ImTextureStatus_WantDestroy)
-        tex->Status = ImTextureStatus_Destroyed;
-      else
-        tex->Status = ImTextureStatus_WantCreate;
-    }
-  }
+    DestroyTextures(false);
 }
 
 ImGuiContext* ImGuiManager::GetMainContext()
@@ -528,7 +685,6 @@ void ImGuiManager::RenderDrawLists(u32 window_width, u32 window_height, WindowIn
         clip = g_gpu_device->FlipToLowerLeft(clip, post_rotated_height);
 
       g_gpu_device->SetScissor(clip);
-      g_gpu_device->SetTextureSampler(0, pcmd->GetTexID(), g_gpu_device->GetLinearSampler());
 
       if (pcmd->UserCallback) [[unlikely]]
       {
@@ -537,6 +693,7 @@ void ImGuiManager::RenderDrawLists(u32 window_width, u32 window_height, WindowIn
       }
       else
       {
+        g_gpu_device->SetTextureSampler(0, pcmd->GetTexID(), g_gpu_device->GetLinearSampler());
         g_gpu_device->DrawIndexed(pcmd->ElemCount, base_index + pcmd->IdxOffset, base_vertex + pcmd->VtxOffset);
       }
     }
@@ -575,15 +732,15 @@ void ImGuiManager::UpdateTextures()
         }
 
         gtex->MakeReadyForSampling();
-        tex->SetTexID(reinterpret_cast<ImTextureID>(gtex.release()));
-        tex->Status = ImTextureStatus_OK;
+        tex->SetTexID(gtex.release());
+        tex->SetStatus(ImTextureStatus_OK);
       }
       break;
 
       case ImTextureStatus_WantUpdates:
       {
         // TODO: Do we want to just update the whole dirty area? Probably need a heuristic...
-        GPUTexture* const gtex = reinterpret_cast<GPUTexture*>(tex->GetTexID());
+        GPUTexture* const gtex = tex->GetTexID();
         for (const ImTextureRect& rc : tex->Updates)
         {
           DEBUG_LOG("Update {}x{} @ {},{} in {}x{} ImGui texture", rc.w, rc.h, rc.x, rc.y, tex->Width, tex->Height);
@@ -597,13 +754,13 @@ void ImGuiManager::UpdateTextures()
         gtex->MakeReadyForSampling();
 
         // Updates is cleared by ImGui NewFrame.
-        tex->Status = ImTextureStatus_OK;
+        tex->SetStatus(ImTextureStatus_OK);
       }
       break;
 
       case ImTextureStatus_WantDestroy:
       {
-        std::unique_ptr<GPUTexture> gtex(reinterpret_cast<GPUTexture*>(tex->GetTexID()));
+        std::unique_ptr<GPUTexture> gtex(tex->GetTexID());
         if (gtex)
         {
           DEV_LOG("Destroy {}x{} ImGui texture", gtex->GetWidth(), gtex->GetHeight());
@@ -611,7 +768,7 @@ void ImGuiManager::UpdateTextures()
         }
 
         tex->SetTexID(nullptr);
-        tex->Status = ImTextureStatus_Destroyed;
+        tex->SetStatus(ImTextureStatus_Destroyed);
       }
       break;
 
@@ -620,6 +777,28 @@ void ImGuiManager::UpdateTextures()
       default:
         continue;
     }
+  }
+}
+
+void ImGuiManager::DestroyTextures(bool recycle)
+{
+  for (ImTextureData* tex : s_state.imgui_context->IO.Fonts->TexList)
+  {
+    if (tex->Status == ImTextureStatus_Destroyed)
+      continue;
+
+    std::unique_ptr<GPUTexture> gtex(tex->GetTexID());
+    if (gtex)
+    {
+      DEV_LOG("Destroy {}x{} ImGui texture", gtex->GetWidth(), gtex->GetHeight());
+      if (recycle)
+        g_gpu_device->RecycleTexture(std::move(gtex));
+    }
+
+    if (tex->Status == ImTextureStatus_WantDestroy)
+      tex->SetStatus(ImTextureStatus_Destroyed);
+    else
+      tex->SetStatus(ImTextureStatus_WantCreate);
   }
 }
 
@@ -692,14 +871,16 @@ bool ImGuiManager::LoadFontData(Error* error)
   };
 
   // only load used text fonts, that way we don't waste memory on mini
-  for (const TextFont text_font : s_state.text_font_order)
+  for (const LanguageFont language_font : s_state.text_font_order)
   {
-    const u32 index = static_cast<u32>(text_font);
+    const u32 index = static_cast<u32>(language_font);
     if (!s_state.text_fonts_data[index].empty())
       continue;
 
-    std::optional<DynamicHeapArray<u8>> font_data =
-      Host::ReadResourceFile(font_resource_name(TEXT_FONT_NAMES[index]), true, error);
+    std::optional<DynamicHeapArray<u8>> font_data = Host::ReadResourceFile(
+      font_resource_name((language_font != LanguageFont::Default) ? LANGUAGE_FONT_NAMES[index] :
+                                                                    TEXT_FONT_FILENAMES[s_state.text_font_index]),
+      true, error);
     if (!font_data.has_value())
       return false;
 
@@ -709,7 +890,7 @@ bool ImGuiManager::LoadFontData(Error* error)
   if (s_state.fixed_font_data.empty())
   {
     std::optional<DynamicHeapArray<u8>> font_data =
-      Host::ReadResourceFile(font_resource_name(FIXED_FONT_NAME), true, error);
+      Host::ReadResourceFile(font_resource_name(FIXED_FONT_FILENAMES[s_state.fixed_font_index]), true, error);
     if (!font_data.has_value())
       return false;
 
@@ -754,6 +935,9 @@ bool ImGuiManager::CreateFontAtlas(Error* error)
 {
   Timer load_timer;
 
+  // Free textures before clearing fonts, so the clear can remove all texture data immediately.
+  DestroyTextures(true);
+
   ImGuiIO& io = ImGui::GetIO();
   io.Fonts->Clear();
 
@@ -764,8 +948,8 @@ bool ImGuiManager::CreateFontAtlas(Error* error)
 
   // First text font has to be added before the icon fonts.
   // Remaining fonts are added after the icon font, otherwise the wrong glyphs will be used in the UI.
-  const TextFont first_font = s_state.text_font_order.front();
-  StringUtil::Strlcpy(text_cfg.Name, TEXT_FONT_NAMES[static_cast<size_t>(first_font)], std::size(text_cfg.Name));
+  const LanguageFont first_font = s_state.text_font_order.front();
+  StringUtil::Strlcpy(text_cfg.Name, "TextFont", std::size(text_cfg.Name));
   auto& first_font_data = s_state.text_fonts_data[static_cast<size_t>(first_font)];
   Assert(!first_font_data.empty());
   s_state.text_font =
@@ -819,13 +1003,12 @@ bool ImGuiManager::CreateFontAtlas(Error* error)
   text_cfg.MergeMode = true;
   for (size_t i = 1; i < s_state.text_font_order.size(); i++)
   {
-    const TextFont text_font_idx = s_state.text_font_order[i];
+    const LanguageFont text_font_idx = s_state.text_font_order[i];
     if (text_font_idx == first_font)
       continue;
 
     auto& font_data = s_state.text_fonts_data[static_cast<size_t>(text_font_idx)];
     Assert(!font_data.empty());
-    StringUtil::Strlcpy(text_cfg.Name, "TextFont-", std::size(text_cfg.Name));
     if (!ImGui::GetIO().Fonts->AddFontFromMemoryTTF(font_data.data(), static_cast<int>(font_data.size()),
                                                     default_text_size, DEFAULT_TEXT_FONT_WEIGHT, &text_cfg))
     {
@@ -858,16 +1041,12 @@ void ImGuiManager::ReloadFontDataIfActive()
   if (!s_state.imgui_context)
     return;
 
-  ImGui::EndFrame();
-
   Error error;
-  if (!CreateFontAtlas(&error)) [[unlikely]]
+  if (!LoadFontData(&error) || !CreateFontAtlas(&error)) [[unlikely]]
   {
     VideoThread::ReportFatalErrorAndShutdown(fmt::format("Failed to recreate font atlas:\n{}", error.GetDescription()));
     return;
   }
-
-  NewFrame(Timer::GetCurrentValue());
 }
 
 float ImGuiManager::GetOSDMessageDuration(OSDMessageType type)
@@ -883,22 +1062,35 @@ float ImGuiManager::GetOSDMessageEndPosition()
   return s_state.osd_messages_end_y;
 }
 
-void ImGuiManager::AddOSDMessage(OSDMessageType type, std::string key, std::string icon, std::string title,
-                                 std::string message)
+OSDMessageIconType ImGuiManager::GetOSDMessageIconType(std::string_view icon)
+{
+  // Any filenames are going to have an extension of at least 4 bytes (e.g. ".png"), so we can use that
+  // to determine if it's a texture or not.
+  return (StringUtil::GetUTF8CharacterCount(icon) >= 4) ? OSDMessageIconType::Texture : OSDMessageIconType::Font;
+}
+
+void ImGuiManager::AddOSDMessage(OSDMessageType type, std::string key, OSDMessageIconType icon_type, std::string icon,
+                                 std::string title, std::string message)
 {
   if (!key.empty())
     INFO_LOG("OSD [{}]: {}{}{}", key, title, title.empty() ? "" : "\n", message);
   else
     INFO_LOG("OSD: {}{}{}", title, title.empty() ? "" : "\n", message);
 
-  static constexpr const std::array<const char*, static_cast<size_t>(OSDMessageType::MaxCount)> default_icons = {
+  static constexpr const std::array<const char*, static_cast<size_t>(OSDMessageType::Persistent)> default_icons = {
     ICON_EMOJI_NO_ENTRY_SIGN, // Error
     ICON_EMOJI_WARNING,       // Warning
     ICON_EMOJI_INFORMATION,   // Info
     ICON_EMOJI_INFORMATION,   // Quick
   };
   if (icon.empty())
-    icon = default_icons[static_cast<size_t>(type)];
+  {
+    // default to spinner for persistent messages, since those are typically used for background tasks
+    if (type == OSDMessageType::Persistent)
+      icon_type = OSDMessageIconType::Spinner;
+    else
+      icon = default_icons[static_cast<size_t>(type)];
+  }
 
   std::unique_lock lock(s_state.osd_messages_lock);
   s_state.osd_posted_messages.push_back(PostedOSDMessage{
@@ -907,6 +1099,7 @@ void ImGuiManager::AddOSDMessage(OSDMessageType type, std::string key, std::stri
     .title = std::move(title),
     .text = std::move(message),
     .type = type,
+    .icon_type = icon_type,
   });
 
   // trigger run idle on first message
@@ -927,7 +1120,7 @@ void ImGuiManager::UpdateOSDMessageRunIdle(const std::unique_lock<std::mutex>& l
     return;
   }
 
-  if (System::GetCoreThreadHandle().IsCallingThread())
+  if (Host::GetCoreThreadHandle().IsCallingThread())
   {
     VideoThread::RunOnThread([]() {
       const std::unique_lock lock(s_state.osd_messages_lock);
@@ -954,6 +1147,7 @@ void ImGuiManager::RemoveKeyedOSDMessage(std::string key)
     .title = {},
     .text = {},
     .type = OSDMessageType::MaxCount,
+    .icon_type = OSDMessageIconType::Font,
   });
   if (s_state.osd_posted_messages.size() == 1)
     UpdateOSDMessageRunIdle(lock);
@@ -978,10 +1172,6 @@ void ImGuiManager::AcquirePendingOSDMessages(Timer::Value current_time)
     // MaxCount is used to indicate removal of a message.
     const float duration = (new_msg.type < OSDMessageType::MaxCount) ? GetOSDMessageDuration(new_msg.type) : 0.0f;
 
-    // Any filenames are going to have an extension of at least 4 bytes (e.g. ".png"), so we can use that
-    // to determine if it's a texture or not.
-    const bool is_texture_icon = StringUtil::GetUTF8CharacterCount(new_msg.icon) >= 4;
-
     std::deque<OSDMessage>::iterator iter;
     if (!new_msg.key.empty() &&
         (iter = std::find_if(s_state.osd_active_messages.begin(), s_state.osd_active_messages.end(),
@@ -996,7 +1186,7 @@ void ImGuiManager::AcquirePendingOSDMessages(Timer::Value current_time)
         iter->text = std::move(new_msg.text);
         iter->duration = duration;
         iter->type = new_msg.type;
-        iter->is_texture_icon = is_texture_icon;
+        iter->icon_type = new_msg.icon_type;
 
         // Don't fade it in again
         const float time_passed = static_cast<float>(Timer::ConvertValueToSeconds(current_time - iter->start_time));
@@ -1024,7 +1214,7 @@ void ImGuiManager::AcquirePendingOSDMessages(Timer::Value current_time)
           .target_y = -1.0f,
           .last_y = -1.0f,
           .type = new_msg.type,
-          .is_texture_icon = is_texture_icon,
+          .icon_type = new_msg.icon_type,
         });
       }
     }
@@ -1096,20 +1286,39 @@ void ImGuiManager::DrawOSDMessages(Timer::Value current_time)
     // Use larger icon when we have multiple lines.
     const bool use_large_icon = !msg.title.empty() && !msg.text.empty();
     const float icon_font_size = use_large_icon ? large_icon_size : font_size;
-    GPUTexture* icon_texture =
-      msg.is_texture_icon ?
-        FullscreenUI::GetCachedTexture(msg.icon, static_cast<u32>(icon_font_size), static_cast<u32>(icon_font_size)) :
-        nullptr;
-    const ImVec2 icon_size =
-      msg.icon.empty() ?
-        ImVec2() :
-        (msg.is_texture_icon ?
-           ImVec2(icon_font_size *
-                    (static_cast<float>(icon_texture->GetWidth()) / static_cast<float>(icon_texture->GetHeight())),
-                  icon_font_size) :
-           font->CalcTextSizeA(icon_font_size, body_font_weight, FLT_MAX, 0.0f, IMSTR_START_END(msg.icon)));
+    GPUTexture* icon_texture = nullptr;
+    ImVec2 icon_size;
+    switch (msg.icon_type)
+    {
+      case OSDMessageIconType::Font:
+      {
+        icon_size = font->CalcTextSizeA(icon_font_size, body_font_weight, FLT_MAX, 0.0f, IMSTR_START_END(msg.icon));
+      }
+      break;
+
+      case OSDMessageIconType::Texture:
+      {
+        if ((icon_texture = FullscreenUI::GetCachedTextureAsync(msg.icon, static_cast<u32>(icon_font_size),
+                                                                static_cast<u32>(icon_font_size))))
+        {
+          icon_size = ImVec2(icon_font_size * (static_cast<float>(icon_texture->GetWidth()) /
+                                               static_cast<float>(icon_texture->GetHeight())),
+                             icon_font_size);
+        }
+      }
+      break;
+
+      case OSDMessageIconType::Spinner:
+      {
+        icon_size = ImVec2(icon_font_size + spacing, icon_font_size);
+      }
+      break;
+
+        DefaultCaseIsUnreachable();
+    }
+
     const float icon_size_with_margin =
-      msg.icon.empty() ? 0.0f : (icon_size.x + (use_large_icon ? large_icon_margin : normal_icon_margin));
+      (icon_size.x == 0.0f) ? 0.0f : (icon_size.x + (use_large_icon ? large_icon_margin : normal_icon_margin));
     const float max_text_width = max_width - icon_size_with_margin;
 
     // bold the message if there's no title
@@ -1169,8 +1378,11 @@ void ImGuiManager::DrawOSDMessages(Timer::Value current_time)
       actual_y = layout_pos.y;
     }
 
-    if (actual_y >= ImGui::GetIO().DisplaySize.y || (msg.type >= OSDMessageType::Info && !show_messages))
+    if (actual_y >= ImGui::GetIO().DisplaySize.y || (msg.type >= OSDMessageType::Info && !show_messages) ||
+        opacity < (1.0f / 255.0f))
+    {
       break;
+    }
 
     const ImVec2 pos = ImVec2(layout_pos.x, actual_y);
     const ImVec2 pos_max = ImVec2(pos.x + box_width, pos.y + box_height);
@@ -1196,16 +1408,33 @@ void ImGuiManager::DrawOSDMessages(Timer::Value current_time)
 
     const ImVec2 base_pos = ImVec2(pos.x + padding, pos.y + padding);
     const ImU32 color = ImGui::GetColorU32(ModAlpha(text_color, opacity));
-    if (icon_texture)
+    switch (msg.icon_type)
     {
-      dl->AddImage(icon_texture, base_pos, base_pos + icon_size, ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f),
-                   ImGui::GetColorU32(ModAlpha(0xFFFFFFFFu, opacity)));
-    }
-    else if (!msg.icon.empty())
-    {
-      const ImRect icon_rect = ImRect(base_pos, base_pos + icon_size);
-      RenderShadowedTextClipped(dl, font, icon_font_size, body_font_weight, icon_rect.Min, icon_rect.Max, color,
-                                msg.icon, &icon_size, ImVec2(0.0f, 0.0f), 0.0f, &icon_rect, scale);
+      case OSDMessageIconType::Font:
+      {
+        const ImRect icon_rect = ImRect(base_pos, base_pos + icon_size);
+        RenderShadowedTextClipped(dl, font, icon_font_size, body_font_weight, icon_rect.Min, icon_rect.Max, color,
+                                  msg.icon, &icon_size, ImVec2(0.0f, 0.0f), 0.0f, &icon_rect, scale);
+      }
+      break;
+
+      case OSDMessageIconType::Texture:
+      {
+        if (icon_texture)
+        {
+          dl->AddImage(icon_texture, base_pos, base_pos + icon_size, ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f),
+                       ImGui::GetColorU32(ModAlpha(0xFFFFFFFFu, opacity)));
+        }
+      }
+      break;
+      case OSDMessageIconType::Spinner:
+      {
+        const float spinner_thickness = std::ceil((use_large_icon ? 5.0f : 3.0f) * scale);
+        FullscreenUI::DrawSpinner(dl, base_pos, color, icon_font_size, spinner_thickness);
+      }
+      break;
+
+        DefaultCaseIsUnreachable();
     }
 
     if (!msg.title.empty())
@@ -1251,29 +1480,41 @@ void ImGuiManager::RenderOSDMessages()
 
 void Host::AddOSDMessage(OSDMessageType type, std::string message)
 {
-  ImGuiManager::AddOSDMessage(type, std::string(), {}, {}, std::move(message));
+  ImGuiManager::AddOSDMessage(type, std::string(), OSDMessageIconType::Font, {}, {}, std::move(message));
 }
 
 void Host::AddKeyedOSDMessage(OSDMessageType type, std::string key, std::string message)
 {
-  ImGuiManager::AddOSDMessage(type, std::move(key), {}, {}, std::move(message));
+  ImGuiManager::AddOSDMessage(type, std::move(key), OSDMessageIconType::Font, {}, {}, std::move(message));
 }
 
 void Host::AddIconOSDMessage(OSDMessageType type, std::string key, const char* icon, std::string message)
 {
-  ImGuiManager::AddOSDMessage(type, std::move(key), std::string(icon), {}, std::move(message));
+  const std::string_view icon_sv = icon;
+  const OSDMessageIconType icon_type = ImGuiManager::GetOSDMessageIconType(icon_sv);
+  ImGuiManager::AddOSDMessage(type, std::move(key), icon_type, std::string(icon_sv), {}, std::move(message));
 }
 
 void Host::AddIconOSDMessage(OSDMessageType type, std::string key, const char* icon, std::string title,
                              std::string message)
 {
-  ImGuiManager::AddOSDMessage(type, std::move(key), std::string(icon), std::move(title), std::move(message));
+  const std::string_view icon_sv = icon;
+  const OSDMessageIconType icon_type = ImGuiManager::GetOSDMessageIconType(icon_sv);
+  ImGuiManager::AddOSDMessage(type, std::move(key), icon_type, std::string(icon_sv), std::move(title),
+                              std::move(message));
 }
 
 void Host::AddIconOSDMessage(OSDMessageType type, std::string key, std::string icon, std::string title,
                              std::string message)
 {
-  ImGuiManager::AddOSDMessage(type, std::move(key), std::move(icon), std::move(title), std::move(message));
+  const OSDMessageIconType icon_type = ImGuiManager::GetOSDMessageIconType(icon);
+  ImGuiManager::AddOSDMessage(type, std::move(key), icon_type, std::move(icon), std::move(title), std::move(message));
+}
+
+void Host::AddIconOSDMessage(OSDMessageType type, std::string key, OSDMessageIconType icon_type, std::string icon,
+                             std::string title, std::string message)
+{
+  ImGuiManager::AddOSDMessage(type, std::move(key), icon_type, std::move(icon), std::move(title), std::move(message));
 }
 
 void Host::RemoveKeyedOSDMessage(std::string key)
@@ -1334,6 +1575,22 @@ bool ImGuiManager::AreGamepadFaceButtonsSwapped()
 void ImGuiManager::SetGamepadFaceButtonsSwapped(bool enabled)
 {
   s_state.swap_gamepad_face_buttons = enabled;
+}
+
+InputManager::GamepadButtonType ImGuiManager::GetGamepadButtonType()
+{
+  return s_state.gamepad_button_type;
+}
+
+void ImGuiManager::SetGamepadButtonType(InputManager::GamepadButtonType type)
+{
+  VideoThread::RunOnThread([type]() {
+    if (type == s_state.gamepad_button_type)
+      return;
+
+    s_state.gamepad_button_type = type;
+    FullscreenUI::UpdateWidgetsSettings();
+  });
 }
 
 bool ImGuiManager::WantsTextInput()
@@ -1448,6 +1705,10 @@ void ImGuiManager::SetImKeyState(ImGuiIO& io, ImGuiKey imkey, bool pressed)
 
 bool ImGuiManager::ProcessGenericInputEvent(GenericInputBinding key, float value)
 {
+  // Racey read, but that's okay, worst case we push a couple of keys during shutdown.
+  if (!s_state.imgui_context)
+    return false;
+
   static constexpr std::array key_map = {
     ImGuiKey_None,               // Unknown,
     ImGuiKey_GamepadDpadUp,      // DPadUp
@@ -1478,51 +1739,47 @@ bool ImGuiManager::ProcessGenericInputEvent(GenericInputBinding key, float value
   };
 
   const ImGuiKey imkey = (static_cast<u32>(key) < key_map.size()) ? key_map[static_cast<u32>(key)] : ImGuiKey_None;
-  if (imkey == ImGuiKey_None)
-    return false;
+  if (imkey != ImGuiKey_None)
+  {
+    VideoThread::RunOnThread([imkey, value]() {
+      if (!s_state.imgui_context)
+        return;
 
-  // Racey read, but that's okay, worst case we push a couple of keys during shutdown.
-  if (!s_state.imgui_context)
-    return false;
-
-  VideoThread::RunOnThread([imkey, value]() {
-    if (!s_state.imgui_context)
-      return;
-
-    if (imkey >= ImGuiKey_GamepadLStickLeft && imkey <= ImGuiKey_GamepadLStickDown)
-    {
-      // NOTE: This assumes the source is sending a whole axis value, not half axis.
-      const u32 axis = BoolToUInt32(imkey >= ImGuiKey_GamepadLStickUp);
-      const s8 old_state = s_state.left_stick_axis_state[axis];
-      const s8 new_state = (value <= -0.5f) ? -1 : ((value >= 0.5f) ? 1 : 0);
-      if (old_state != new_state)
+      if (imkey >= ImGuiKey_GamepadLStickLeft && imkey <= ImGuiKey_GamepadLStickDown)
       {
-        static constexpr auto map_to_key = [](u32 axis, s8 state) {
-          // 0:-1/1 => ImGuiKey_GamepadDpadLeft/Right, 1:-1/1 => ImGuiKey_GamepadDpadUp/ImGuiKey_GamepadDpadDown
-          return static_cast<ImGuiKey>(static_cast<u32>(ImGuiKey_GamepadDpadLeft) + (axis << 1) +
-                                       BoolToUInt32(state > 0));
-        };
+        // NOTE: This assumes the source is sending a whole axis value, not half axis.
+        const u32 axis = BoolToUInt32(imkey >= ImGuiKey_GamepadLStickUp);
+        const s8 old_state = s_state.left_stick_axis_state[axis];
+        const s8 new_state = (value <= -0.5f) ? -1 : ((value >= 0.5f) ? 1 : 0);
+        if (old_state != new_state)
+        {
+          static constexpr auto map_to_key = [](u32 axis, s8 state) {
+            // 0:-1/1 => ImGuiKey_GamepadDpadLeft/Right, 1:-1/1 => ImGuiKey_GamepadDpadUp/ImGuiKey_GamepadDpadDown
+            return static_cast<ImGuiKey>(static_cast<u32>(ImGuiKey_GamepadDpadLeft) + (axis << 1) +
+                                         BoolToUInt32(state > 0));
+          };
 
-        s_state.left_stick_axis_state[axis] = new_state;
-        if (old_state != 0)
-          s_state.imgui_context->IO.AddKeyAnalogEvent(map_to_key(axis, old_state), false, 0.0f);
-        if (new_state != 0)
-          s_state.imgui_context->IO.AddKeyAnalogEvent(map_to_key(axis, new_state), true, 1.0f);
+          s_state.left_stick_axis_state[axis] = new_state;
+          if (old_state != 0)
+            s_state.imgui_context->IO.AddKeyAnalogEvent(map_to_key(axis, old_state), false, 0.0f);
+          if (new_state != 0)
+            s_state.imgui_context->IO.AddKeyAnalogEvent(map_to_key(axis, new_state), true, 1.0f);
+        }
       }
-    }
-    else
-    {
-      ImGuiKey mapkey = imkey;
-      if (s_state.swap_gamepad_face_buttons)
+      else
       {
-        mapkey = (mapkey == ImGuiKey_GamepadFaceRight) ?
-                   ImGuiKey_GamepadFaceDown :
-                   ((mapkey == ImGuiKey_GamepadFaceDown) ? ImGuiKey_GamepadFaceRight : mapkey);
-      }
+        ImGuiKey mapkey = imkey;
+        if (s_state.swap_gamepad_face_buttons)
+        {
+          mapkey = (mapkey == ImGuiKey_GamepadFaceRight) ?
+                     ImGuiKey_GamepadFaceDown :
+                     ((mapkey == ImGuiKey_GamepadFaceDown) ? ImGuiKey_GamepadFaceRight : mapkey);
+        }
 
-      s_state.imgui_context->IO.AddKeyAnalogEvent(mapkey, (value > 0.0f), value);
-    }
-  });
+        s_state.imgui_context->IO.AddKeyAnalogEvent(mapkey, (value > 0.0f), value);
+      }
+    });
+  }
 
   return s_state.imgui_wants_keyboard.load(std::memory_order_acquire);
 }

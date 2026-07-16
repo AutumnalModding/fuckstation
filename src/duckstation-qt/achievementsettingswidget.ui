@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>598</width>
-    <height>548</height>
+    <height>552</height>
    </rect>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
@@ -25,7 +25,7 @@
    </property>
    <item>
     <widget class="QGroupBox" name="loginBox">
-     <layout class="QHBoxLayout" name="horizontalLayout" stretch="0,1,0,0">
+     <layout class="QHBoxLayout" name="horizontalLayout" stretch="0,1,0,0,0,0">
       <property name="spacing">
        <number>10</number>
       </property>
@@ -62,16 +62,46 @@
        </widget>
       </item>
       <item>
-       <widget class="QPushButton" name="viewProfile">
+       <widget class="QPushButton" name="registerUser">
         <property name="text">
-         <string>View Profile...</string>
+         <string>Register</string>
+        </property>
+        <property name="icon">
+         <iconset resource="resources/duckstation-qt.qrc">
+          <normaloff>:/icons/monochrome/svg/user-add-line.svg</normaloff>:/icons/monochrome/svg/user-add-line.svg</iconset>
         </property>
        </widget>
       </item>
       <item>
-       <widget class="QPushButton" name="loginButton">
+       <widget class="QPushButton" name="viewProfile">
+        <property name="text">
+         <string>View Profile...</string>
+        </property>
+        <property name="icon">
+         <iconset resource="resources/duckstation-qt.qrc">
+          <normaloff>:/icons/monochrome/svg/id-card-line.svg</normaloff>:/icons/monochrome/svg/id-card-line.svg</iconset>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="login">
         <property name="text">
          <string>Login...</string>
+        </property>
+        <property name="icon">
+         <iconset resource="resources/duckstation-qt.qrc">
+          <normaloff>:/icons/monochrome/svg/login-box-line.svg</normaloff>:/icons/monochrome/svg/login-box-line.svg</iconset>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="logout">
+        <property name="text">
+         <string>Logout</string>
+        </property>
+        <property name="icon">
+         <iconset resource="resources/duckstation-qt.qrc">
+          <normaloff>:/icons/monochrome/svg/logout-box-line.svg</normaloff>:/icons/monochrome/svg/logout-box-line.svg</iconset>
         </property>
        </widget>
       </item>
@@ -99,16 +129,16 @@
        </widget>
       </item>
       <item row="1" column="0">
-       <widget class="QCheckBox" name="encoreMode">
+       <widget class="QCheckBox" name="spectatorMode">
         <property name="text">
-         <string>Enable Encore Mode</string>
+         <string>Enable Spectator Mode</string>
         </property>
        </widget>
       </item>
       <item row="1" column="1">
-       <widget class="QCheckBox" name="spectatorMode">
+       <widget class="QCheckBox" name="encoreMode">
         <property name="text">
-         <string>Enable Spectator Mode</string>
+         <string>Enable Encore Mode</string>
         </property>
        </widget>
       </item>
@@ -120,9 +150,9 @@
        </widget>
       </item>
       <item row="2" column="1">
-       <widget class="QCheckBox" name="useRAIntegration">
+       <widget class="QCheckBox" name="prefetchBadges">
         <property name="text">
-         <string>Enable RAIntegration (Development Only)</string>
+         <string>Prefetch Badges</string>
         </property>
        </widget>
       </item>
@@ -228,6 +258,13 @@
        </layout>
       </item>
       <item row="2" column="0">
+       <widget class="QCheckBox" name="leaderboardTrackers">
+        <property name="text">
+         <string>Show Leaderboard Trackers</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
        <layout class="QHBoxLayout" name="horizontalLayout_4" stretch="0,1">
         <property name="spacing">
          <number>0</number>
@@ -250,13 +287,6 @@
          </widget>
         </item>
        </layout>
-      </item>
-      <item row="2" column="1">
-       <widget class="QCheckBox" name="prefetchBadges">
-        <property name="text">
-         <string>Prefetch Badges</string>
-        </property>
-       </widget>
       </item>
       <item row="3" column="0">
        <widget class="QLabel" name="notificationLocationLabel">
@@ -315,23 +345,33 @@
        <widget class="QComboBox" name="challengeIndicatorMode"/>
       </item>
       <item row="1" column="0">
+       <widget class="QLabel" name="progressIndicatorModeLabel">
+        <property name="text">
+         <string>Progress Indicators:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QComboBox" name="progressIndicatorMode"/>
+      </item>
+      <item row="2" column="0">
        <widget class="QLabel" name="indicatorLocationLabel">
         <property name="text">
          <string>Indicator Location:</string>
         </property>
        </widget>
       </item>
-      <item row="1" column="1">
+      <item row="2" column="1">
        <widget class="QComboBox" name="indicatorLocation"/>
       </item>
-      <item row="2" column="0">
+      <item row="3" column="0">
        <widget class="QLabel" name="indicatorScaleLabel">
         <property name="text">
          <string>Indicator Size:</string>
         </property>
        </widget>
       </item>
-      <item row="2" column="1">
+      <item row="3" column="1">
        <layout class="QHBoxLayout" name="indicatorScaleLayout">
         <item>
          <widget class="QComboBox" name="indicatorScale"/>
@@ -350,20 +390,6 @@
          </widget>
         </item>
        </layout>
-      </item>
-      <item row="3" column="0">
-       <widget class="QCheckBox" name="progressIndicators">
-        <property name="text">
-         <string>Show Progress Indicators</string>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="1">
-       <widget class="QCheckBox" name="leaderboardTrackers">
-        <property name="text">
-         <string>Show Leaderboard Trackers</string>
-        </property>
-       </widget>
       </item>
      </layout>
     </widget>

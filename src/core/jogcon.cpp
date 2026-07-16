@@ -591,7 +591,7 @@ void JogCon::LoadSettings(const SettingsInterface& si, const char* section, bool
           Host::AddIconOSDMessage(
             OSDMessageType::Warning, fmt::format("NoFFDevice{}", m_index), ICON_EMOJI_WARNING,
             fmt::format(TRANSLATE_FS("JogCon", "Failed to create force feedback device for Port {}:\n{}"),
-                        Controller::GetPortDisplayName(m_index), error.GetDescription()));
+                        Controller::GetPortDisplayName(m_index, g_settings.multitap_mode), error.GetDescription()));
         }
       }
     }
@@ -670,5 +670,5 @@ static const SettingInfo s_settings[] = {
 };
 
 const Controller::ControllerInfo JogCon::INFO = {
-  ControllerType::JogCon,    "JogCon",       TRANSLATE_NOOP("ControllerType", "JogCon"),
-  ICON_PF_JOGCON_CONTROLLER, s_binding_info, s_settings};
+  ControllerType::JogCon, "JogCon",  TRANSLATE_NOOP("ControllerType", "JogCon"), ICON_PF_JOGCON_CONTROLLER, nullptr,
+  s_binding_info,         s_settings};

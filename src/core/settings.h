@@ -51,8 +51,6 @@ struct GPUSettings
   DisplayScalingMode display_scaling_24bit = DEFAULT_DISPLAY_SCALING;
   DisplayExclusiveFullscreenControl display_exclusive_fullscreen_control = DEFAULT_DISPLAY_EXCLUSIVE_FULLSCREEN_CONTROL;
   DisplayScreenshotMode display_screenshot_mode = DEFAULT_DISPLAY_SCREENSHOT_MODE;
-  DisplayScreenshotFormat display_screenshot_format = DEFAULT_DISPLAY_SCREENSHOT_FORMAT;
-  u8 display_screenshot_quality = DEFAULT_DISPLAY_SCREENSHOT_QUALITY;
   u8 gpu_max_queued_frames = DEFAULT_GPU_MAX_QUEUED_FRAMES;
   s16 display_active_start_offset = 0;
   s16 display_active_end_offset = 0;
@@ -74,6 +72,8 @@ struct GPUSettings
   bool gpu_disable_raster_order_views : 1 = false;
   bool gpu_disable_compute_shaders : 1 = false;
   bool gpu_disable_compressed_textures : 1 = false;
+  bool gpu_disable_textures : 1 = false;
+  bool gpu_disable_vertex_lighting : 1 = false;
   bool gpu_automatic_resolution_scale : 1 = false;
   bool gpu_per_sample_shading : 1 = false;
   bool gpu_scaled_interlacing : 1 = true;
@@ -121,15 +121,6 @@ struct GPUSettings
   bool display_show_enhancements : 1 = false;
   bool display_auto_resize_window : 1 = false;
 
-  float gpu_pgxp_tolerance = -1.0f;
-  float gpu_pgxp_depth_clear_threshold = 0.0f;
-
-  std::array<s16, 4> display_fine_crop_amount = {};
-
-  float display_osd_scale = DEFAULT_OSD_SCALE;
-  float display_osd_margin = 0.0f;
-
-  std::array<float, 4> display_osd_message_duration = DEFAULT_DISPLAY_OSD_MESSAGE_DURATIONS;
   NotificationLocation display_osd_message_location = DEFAULT_OSD_MESSAGE_LOCATION;
 
   // achievements
@@ -137,8 +128,19 @@ struct GPUSettings
   NotificationLocation achievements_indicator_location = DEFAULT_ACHIEVEMENT_INDICATOR_LOCATION;
   AchievementChallengeIndicatorMode achievements_challenge_indicator_mode =
     DEFAULT_ACHIEVEMENT_CHALLENGE_INDICATOR_MODE;
+  AchievementProgressIndicatorMode achievements_progress_indicator_mode = DEFAULT_ACHIEVEMENT_PROGRESS_INDICATOR_MODE;
   s16 achievements_notification_scale = ACHIEVEMENT_NOTIFICATION_SCALE_AUTO;
   s16 achievements_indicator_scale = ACHIEVEMENT_NOTIFICATION_SCALE_AUTO;
+
+  std::array<s16, 4> display_fine_crop_amount = {};
+
+  float display_osd_scale = DEFAULT_OSD_SCALE;
+  float display_osd_margin = 0.0f;
+
+  std::array<float, 4> display_osd_message_duration = DEFAULT_DISPLAY_OSD_MESSAGE_DURATIONS;
+
+  float gpu_pgxp_tolerance = -1.0f;
+  float gpu_pgxp_depth_clear_threshold = 0.0f;
 
   // texture replacements
   struct TextureReplacementSettings
@@ -241,8 +243,6 @@ struct GPUSettings
   static constexpr DisplayExclusiveFullscreenControl DEFAULT_DISPLAY_EXCLUSIVE_FULLSCREEN_CONTROL =
     DisplayExclusiveFullscreenControl::Automatic;
   static constexpr DisplayScreenshotMode DEFAULT_DISPLAY_SCREENSHOT_MODE = DisplayScreenshotMode::ScreenResolution;
-  static constexpr DisplayScreenshotFormat DEFAULT_DISPLAY_SCREENSHOT_FORMAT = DisplayScreenshotFormat::PNG;
-  static constexpr u8 DEFAULT_DISPLAY_SCREENSHOT_QUALITY = 85;
   static constexpr float DEFAULT_DISPLAY_PRE_FRAME_SLEEP_BUFFER = 2.0f;
   static constexpr float DEFAULT_OSD_SCALE = 100.0f;
   static constexpr NotificationLocation DEFAULT_OSD_MESSAGE_LOCATION = NotificationLocation::TopLeft;
@@ -251,6 +251,8 @@ struct GPUSettings
 
   static constexpr AchievementChallengeIndicatorMode DEFAULT_ACHIEVEMENT_CHALLENGE_INDICATOR_MODE =
     AchievementChallengeIndicatorMode::Notification;
+  static constexpr AchievementProgressIndicatorMode DEFAULT_ACHIEVEMENT_PROGRESS_INDICATOR_MODE =
+    AchievementProgressIndicatorMode::IconAndTitle;
   static constexpr NotificationLocation DEFAULT_ACHIEVEMENT_NOTIFICATION_LOCATION = NotificationLocation::TopLeft;
   static constexpr NotificationLocation DEFAULT_ACHIEVEMENT_INDICATOR_LOCATION = NotificationLocation::BottomRight;
   static constexpr s16 ACHIEVEMENT_NOTIFICATION_SCALE_OSD_SCALE = -1;
@@ -301,6 +303,7 @@ struct Settings : public GPUSettings
 
   bool pcdrv_enable : 1 = false;
   bool pcdrv_enable_writes : 1 = false;
+  bool pcsx_expansion_region_enable : 1 = false;
 
   bool pio_switch_active : 1 = true;
   bool pio_flash_write_enable : 1 = false;
@@ -314,7 +317,6 @@ struct Settings : public GPUSettings
   bool cdrom_subq_skew : 1 = false;
   bool cdrom_load_image_to_ram : 1 = false;
   bool cdrom_load_image_patches : 1 = false;
-  bool cdrom_ignore_host_subcode : 1 = false;
   bool cdrom_mute_cd_audio : 1 = false;
   bool cdrom_auto_disc_change : 1 = false;
 
@@ -341,6 +343,10 @@ struct Settings : public GPUSettings
   u8 cdrom_seek_speedup = 1;
   u32 cdrom_max_seek_speedup_cycles = DEFAULT_CDROM_MAX_SEEK_SPEEDUP_CYCLES;
   u32 cdrom_max_read_speedup_cycles = DEFAULT_CDROM_MAX_READ_SPEEDUP_CYCLES;
+
+  DisplayScreenshotFormat display_screenshot_format = DEFAULT_DISPLAY_SCREENSHOT_FORMAT;
+  u8 display_screenshot_quality = DEFAULT_DISPLAY_SCREENSHOT_QUALITY;
+  CaptureFileNameFormat display_screenshot_filename_format = DEFAULT_DISPLAY_SCREENSHOT_FILENAME_FORMAT;
 
   u8 audio_output_volume = 100;
   u8 audio_fast_forward_volume = 100;
@@ -370,7 +376,6 @@ struct Settings : public GPUSettings
   bool achievements_leaderboard_notifications : 1 = true;
   bool achievements_leaderboard_trackers : 1 = true;
   bool achievements_sound_effects : 1 = true;
-  bool achievements_progress_indicators : 1 = true;
   bool achievements_prefetch_badges : 1 = DEFAULT_ACHIEVEMENT_BADGE_PREFETCH;
   u8 achievements_notification_duration = DEFAULT_ACHIEVEMENT_NOTIFICATION_TIME;
   u8 achievements_leaderboard_duration = DEFAULT_LEADERBOARD_NOTIFICATION_TIME;
@@ -409,35 +414,12 @@ struct Settings : public GPUSettings
 
   ALWAYS_INLINE bool IsRunaheadEnabled() const { return (runahead_frames > 0); }
 
-  ALWAYS_INLINE u8 GetAudioOutputVolume(bool fast_forwarding) const
-  {
-    return audio_output_muted ? 0 : (fast_forwarding ? audio_fast_forward_volume : audio_output_volume);
-  }
-
-  ALWAYS_INLINE bool IsPort1MultitapEnabled() const
-  {
-    return (multitap_mode == MultitapMode::Port1Only || multitap_mode == MultitapMode::BothPorts);
-  }
-  ALWAYS_INLINE bool IsPort2MultitapEnabled() const
-  {
-    return (multitap_mode == MultitapMode::Port2Only || multitap_mode == MultitapMode::BothPorts);
-  }
-  ALWAYS_INLINE bool IsMultitapPortEnabled(u32 port) const
-  {
-    return (port == 0) ? IsPort1MultitapEnabled() : IsPort2MultitapEnabled();
-  }
-
   /// Returns the default type for the specified port.
   ALWAYS_INLINE static ControllerType GetDefaultControllerType(u32 pad)
   {
     return (pad == 0) ? DEFAULT_CONTROLLER_1_TYPE : DEFAULT_CONTROLLER_2_TYPE;
   }
 
-  ALWAYS_INLINE static bool IsPerGameMemoryCardType(MemoryCardType type)
-  {
-    return (type == MemoryCardType::PerGame || type == MemoryCardType::PerGameTitle ||
-            type == MemoryCardType::PerGameFileTitle);
-  }
   bool HasAnyPerGameMemoryCards() const;
 
   /// Returns the default path to a memory card.
@@ -464,12 +446,14 @@ struct Settings : public GPUSettings
 
   void Load(const SettingsInterface& si, const SettingsInterface& controller_si);
   void LoadPGXPSettings(const SettingsInterface& si);
-  void Save(SettingsInterface& si, bool ignore_base) const;
+  void Save(SettingsInterface& si, bool ignore_user_prefs, bool for_copy) const;
 
   void ApplySettingRestrictions();
   void FixIncompatibleSettings(const SettingsInterface& si, bool display_osd_messages);
 
   bool AreGPUDeviceSettingsChanged(const Settings& old_settings) const;
+
+  static std::span<const char* const> GetSectionSaveOrder();
 
   /// Initializes configuration.
   static void SetDefaultLogConfig(SettingsInterface& si);
@@ -478,65 +462,65 @@ struct Settings : public GPUSettings
   static void SetDefaultControllerConfig(SettingsInterface& si);
   static void SetDefaultHotkeyConfig(SettingsInterface& si);
 
-  static std::optional<Log::Level> ParseLogLevelName(const char* str);
+  static std::optional<Log::Level> ParseLogLevelName(std::string_view str);
   static const char* GetLogLevelName(Log::Level level);
   static const char* GetLogLevelDisplayName(Log::Level level);
 
-  static std::optional<ConsoleRegion> ParseConsoleRegionName(const char* str);
+  static std::optional<ConsoleRegion> ParseConsoleRegionName(std::string_view str);
   static const char* GetConsoleRegionName(ConsoleRegion region);
   static const char* GetConsoleRegionDisplayName(ConsoleRegion region);
 
-  static std::optional<DiscRegion> ParseDiscRegionName(const char* str);
+  static std::optional<DiscRegion> ParseDiscRegionName(std::string_view str);
   static const char* GetDiscRegionName(DiscRegion region);
   static const char* GetDiscRegionDisplayName(DiscRegion region);
 
-  static std::optional<CPUExecutionMode> ParseCPUExecutionMode(const char* str);
+  static std::optional<CPUExecutionMode> ParseCPUExecutionMode(std::string_view str);
   static const char* GetCPUExecutionModeName(CPUExecutionMode mode);
   static const char* GetCPUExecutionModeDisplayName(CPUExecutionMode mode);
 
-  static std::optional<CPUFastmemMode> ParseCPUFastmemMode(const char* str);
+  static std::optional<CPUFastmemMode> ParseCPUFastmemMode(std::string_view str);
   static const char* GetCPUFastmemModeName(CPUFastmemMode mode);
   static const char* GetCPUFastmemModeDisplayName(CPUFastmemMode mode);
 
-  static std::optional<GPURenderer> ParseRendererName(const char* str);
+  static std::optional<GPURenderer> ParseRendererName(std::string_view str);
   static const char* GetRendererName(GPURenderer renderer);
   static const char* GetRendererDisplayName(GPURenderer renderer);
   static RenderAPI GetRenderAPIForRenderer(GPURenderer renderer);
   static GPURenderer GetRendererForRenderAPI(RenderAPI api);
 
-  static std::optional<GPUTextureFilter> ParseTextureFilterName(const char* str);
+  static std::optional<GPUTextureFilter> ParseTextureFilterName(std::string_view str);
   static const char* GetTextureFilterName(GPUTextureFilter filter);
   static const char* GetTextureFilterDisplayName(GPUTextureFilter filter);
 
-  static std::optional<GPUDitheringMode> ParseGPUDitheringModeName(const char* str);
+  static std::optional<GPUDitheringMode> ParseGPUDitheringModeName(std::string_view str);
   static const char* GetGPUDitheringModeName(GPUDitheringMode mode);
   static const char* GetGPUDitheringModeDisplayName(GPUDitheringMode mode);
 
-  static std::optional<GPULineDetectMode> ParseLineDetectModeName(const char* str);
+  static std::optional<GPULineDetectMode> ParseLineDetectModeName(std::string_view str);
   static const char* GetLineDetectModeName(GPULineDetectMode filter);
   static const char* GetLineDetectModeDisplayName(GPULineDetectMode filter);
 
-  static std::optional<GPUDownsampleMode> ParseDownsampleModeName(const char* str);
+  static std::optional<GPUDownsampleMode> ParseDownsampleModeName(std::string_view str);
   static const char* GetDownsampleModeName(GPUDownsampleMode mode);
   static const char* GetDownsampleModeDisplayName(GPUDownsampleMode mode);
 
-  static std::optional<GPUWireframeMode> ParseGPUWireframeMode(const char* str);
+  static std::optional<GPUWireframeMode> ParseGPUWireframeMode(std::string_view str);
   static const char* GetGPUWireframeModeName(GPUWireframeMode mode);
   static const char* GetGPUWireframeModeDisplayName(GPUWireframeMode mode);
 
-  static std::optional<GPUDumpCompressionMode> ParseGPUDumpCompressionMode(const char* str);
+  static std::optional<GPUDumpCompressionMode> ParseGPUDumpCompressionMode(std::string_view str);
   static const char* GetGPUDumpCompressionModeName(GPUDumpCompressionMode mode);
   static const char* GetGPUDumpCompressionModeDisplayName(GPUDumpCompressionMode mode);
 
-  static std::optional<DisplayDeinterlacingMode> ParseDisplayDeinterlacingMode(const char* str);
+  static std::optional<DisplayDeinterlacingMode> ParseDisplayDeinterlacingMode(std::string_view str);
   static const char* GetDisplayDeinterlacingModeName(DisplayDeinterlacingMode mode);
   static const char* GetDisplayDeinterlacingModeDisplayName(DisplayDeinterlacingMode mode);
 
-  static std::optional<DisplayCropMode> ParseDisplayCropMode(const char* str);
+  static std::optional<DisplayCropMode> ParseDisplayCropMode(std::string_view str);
   static const char* GetDisplayCropModeName(DisplayCropMode crop_mode);
   static const char* GetDisplayCropModeDisplayName(DisplayCropMode crop_mode);
 
-  static std::optional<DisplayFineCropMode> ParseDisplayFineCropMode(const char* str);
+  static std::optional<DisplayFineCropMode> ParseDisplayFineCropMode(std::string_view str);
   static const char* GetDisplayFineCropModeName(DisplayFineCropMode mode);
   static const char* GetDisplayFineCropModeDisplayName(DisplayFineCropMode mode);
 
@@ -545,63 +529,71 @@ struct Settings : public GPUSettings
   static TinyString GetDisplayAspectRatioDisplayName(DisplayAspectRatio ar);
   static std::span<const DisplayAspectRatio> GetPredefinedDisplayAspectRatios();
 
-  static std::optional<DisplayAlignment> ParseDisplayAlignment(const char* str);
+  static std::optional<DisplayAlignment> ParseDisplayAlignment(std::string_view str);
   static const char* GetDisplayAlignmentName(DisplayAlignment alignment);
   static const char* GetDisplayAlignmentDisplayName(DisplayAlignment alignment);
 
-  static std::optional<DisplayRotation> ParseDisplayRotation(const char* str);
+  static std::optional<DisplayRotation> ParseDisplayRotation(std::string_view str);
   static const char* GetDisplayRotationName(DisplayRotation alignment);
   static const char* GetDisplayRotationDisplayName(DisplayRotation alignment);
 
-  static std::optional<DisplayScalingMode> ParseDisplayScaling(const char* str);
+  static std::optional<DisplayScalingMode> ParseDisplayScaling(std::string_view str);
   static const char* GetDisplayScalingName(DisplayScalingMode mode);
   static const char* GetDisplayScalingDisplayName(DisplayScalingMode mode);
 
-  static std::optional<ForceVideoTimingMode> ParseForceVideoTimingName(const char* str);
+  static std::optional<ForceVideoTimingMode> ParseForceVideoTimingName(std::string_view str);
   static const char* GetForceVideoTimingName(ForceVideoTimingMode mode);
   static const char* GetForceVideoTimingDisplayName(ForceVideoTimingMode mode);
 
-  static std::optional<DisplayExclusiveFullscreenControl> ParseDisplayExclusiveFullscreenControl(const char* str);
+  static std::optional<DisplayExclusiveFullscreenControl> ParseDisplayExclusiveFullscreenControl(std::string_view str);
   static const char* GetDisplayExclusiveFullscreenControlName(DisplayExclusiveFullscreenControl mode);
   static const char* GetDisplayExclusiveFullscreenControlDisplayName(DisplayExclusiveFullscreenControl mode);
 
-  static std::optional<DisplayScreenshotMode> ParseDisplayScreenshotMode(const char* str);
+  static std::optional<DisplayScreenshotMode> ParseDisplayScreenshotMode(std::string_view str);
   static const char* GetDisplayScreenshotModeName(DisplayScreenshotMode mode);
   static const char* GetDisplayScreenshotModeDisplayName(DisplayScreenshotMode mode);
 
-  static std::optional<NotificationLocation> ParseNotificationLocation(const char* str);
+  static std::optional<NotificationLocation> ParseNotificationLocation(std::string_view str);
   static const char* GetNotificationLocationName(NotificationLocation location);
   static const char* GetNotificationLocationDisplayName(NotificationLocation location);
 
-  static std::optional<AchievementChallengeIndicatorMode> ParseAchievementChallengeIndicatorMode(const char* str);
+  static std::optional<AchievementChallengeIndicatorMode> ParseAchievementChallengeIndicatorMode(std::string_view str);
   static const char* GetAchievementChallengeIndicatorModeName(AchievementChallengeIndicatorMode mode);
   static const char* GetAchievementChallengeIndicatorModeDisplayName(AchievementChallengeIndicatorMode mode);
 
-  static std::optional<DisplayScreenshotFormat> ParseDisplayScreenshotFormat(const char* str);
+  static std::optional<AchievementProgressIndicatorMode> ParseAchievementProgressIndicatorMode(std::string_view str);
+  static const char* GetAchievementProgressIndicatorModeName(AchievementProgressIndicatorMode mode);
+  static const char* GetAchievementProgressIndicatorModeDisplayName(AchievementProgressIndicatorMode mode);
+
+  static std::optional<DisplayScreenshotFormat> ParseDisplayScreenshotFormat(std::string_view str);
   static const char* GetDisplayScreenshotFormatName(DisplayScreenshotFormat mode);
   static const char* GetDisplayScreenshotFormatDisplayName(DisplayScreenshotFormat mode);
   static const char* GetDisplayScreenshotFormatExtension(DisplayScreenshotFormat mode);
   static std::optional<DisplayScreenshotFormat> GetDisplayScreenshotFormatFromFileName(const std::string_view filename);
 
+  static std::optional<CaptureFileNameFormat> ParseCaptureFileNameFormat(std::string_view str);
+  static const char* GetCaptureFileNameFormatName(CaptureFileNameFormat format);
+  static const char* GetCaptureFileNameFormatDisplayName(CaptureFileNameFormat format);
+
   static const char* GetDisplayOSDMessageTypeName(OSDMessageType type);
 
-  static std::optional<MemoryCardType> ParseMemoryCardTypeName(const char* str);
+  static std::optional<MemoryCardType> ParseMemoryCardTypeName(std::string_view str);
   static const char* GetMemoryCardTypeName(MemoryCardType type);
   static const char* GetMemoryCardTypeDisplayName(MemoryCardType type);
 
-  static std::optional<MultitapMode> ParseMultitapModeName(const char* str);
+  static std::optional<MultitapMode> ParseMultitapModeName(std::string_view str);
   static const char* GetMultitapModeName(MultitapMode mode);
   static const char* GetMultitapModeDisplayName(MultitapMode mode);
 
-  static std::optional<CDROMMechaconVersion> ParseCDROMMechVersionName(const char* str);
+  static std::optional<CDROMMechaconVersion> ParseCDROMMechVersionName(std::string_view str);
   static const char* GetCDROMMechVersionName(CDROMMechaconVersion mode);
   static const char* GetCDROMMechVersionDisplayName(CDROMMechaconVersion mode);
 
-  static std::optional<SaveStateCompressionMode> ParseSaveStateCompressionModeName(const char* str);
+  static std::optional<SaveStateCompressionMode> ParseSaveStateCompressionModeName(std::string_view str);
   static const char* GetSaveStateCompressionModeName(SaveStateCompressionMode mode);
   static const char* GetSaveStateCompressionModeDisplayName(SaveStateCompressionMode mode);
 
-  static std::optional<PIODeviceType> ParsePIODeviceTypeName(const char* str);
+  static std::optional<PIODeviceType> ParsePIODeviceTypeName(std::string_view str);
   static const char* GetPIODeviceTypeModeName(PIODeviceType type);
   static const char* GetPIODeviceTypeModeDisplayName(PIODeviceType type);
 
@@ -629,6 +621,11 @@ struct Settings : public GPUSettings
   static constexpr u32 DEFAULT_CDROM_MAX_READ_SPEEDUP_CYCLES = 30000;
   static constexpr CDROMMechaconVersion DEFAULT_CDROM_MECHACON_VERSION = CDROMMechaconVersion::VC1A;
 
+  static constexpr DisplayScreenshotFormat DEFAULT_DISPLAY_SCREENSHOT_FORMAT = DisplayScreenshotFormat::PNG;
+  static constexpr u8 DEFAULT_DISPLAY_SCREENSHOT_QUALITY = 85;
+  static constexpr CaptureFileNameFormat DEFAULT_DISPLAY_SCREENSHOT_FILENAME_FORMAT =
+    CaptureFileNameFormat::TitleAndTimestamp;
+
   static constexpr ControllerType DEFAULT_CONTROLLER_1_TYPE = ControllerType::AnalogController;
   static constexpr ControllerType DEFAULT_CONTROLLER_2_TYPE = ControllerType::None;
   static constexpr MemoryCardType DEFAULT_MEMORY_CARD_1_TYPE = MemoryCardType::PerGameTitle;
@@ -647,6 +644,8 @@ struct Settings : public GPUSettings
   static constexpr u32 DEFAULT_MEDIA_CAPTURE_VIDEO_HEIGHT = 480;
   static constexpr u32 DEFAULT_MEDIA_CAPTURE_VIDEO_BITRATE = 6000;
   static constexpr u32 DEFAULT_MEDIA_CAPTURE_AUDIO_BITRATE = 128;
+  static constexpr CaptureFileNameFormat DEFAULT_MEDIA_CAPTURE_FILENAME_FORMAT =
+    CaptureFileNameFormat::TitleAndTimestamp;
 
   // Android doesn't create settings until they're first opened, so we have to override the defaults here.
 #ifndef __ANDROID__
@@ -688,8 +687,11 @@ extern std::string Videos;
 // Assumes that AppRoot and DataRoot have been initialized.
 void SetDefaults();
 void EnsureFoldersExist();
-void LoadConfig(SettingsInterface& si);
+void LoadConfig(const SettingsInterface& si);
 void Save(SettingsInterface& si);
+
+// Returns the default path for the given settings key.
+std::string GetDefaultPath(const std::string* ref_folder);
 
 /// Updates the variables in the EmuFolders namespace, reloading subsystems if needed.
 void Update();

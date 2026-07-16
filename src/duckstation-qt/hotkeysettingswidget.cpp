@@ -6,6 +6,7 @@
 #include "inputbindingwidgets.h"
 #include "mainwindow.h"
 #include "qtutils.h"
+#include "searchbox.h"
 #include "settingswindow.h"
 #include "settingwidgetbinder.h"
 
@@ -14,7 +15,6 @@
 #include <QtGui/QResizeEvent>
 #include <QtWidgets/QGridLayout>
 #include <QtWidgets/QLabel>
-#include <QtWidgets/QLineEdit>
 #include <QtWidgets/QScrollArea>
 
 #include "moc_hotkeysettingswidget.cpp"
@@ -30,9 +30,7 @@ HotkeySettingsWidget::~HotkeySettingsWidget() = default;
 
 HotkeySettingsWidget::Container::Container(QWidget* parent) : QWidget(parent)
 {
-  m_search = new QLineEdit(this);
-  m_search->setPlaceholderText(qApp->translate("HotkeySettingsWidget", "Search..."));
-  m_search->setClearButtonEnabled(true);
+  m_search = new SearchBox(this);
 }
 
 HotkeySettingsWidget::Container::~Container() = default;
@@ -104,7 +102,7 @@ void HotkeySettingsWidget::createButtons()
   const QPalette row_palette = getRowPalette();
   for (const HotkeyInfo& hotkey : Core::GetHotkeyList())
   {
-    const QString category(qApp->translate("Hotkeys", hotkey.category));
+    const QString category = QCoreApplication::translate("Hotkeys", hotkey.category);
 
     auto iter = m_categories.find(category);
     if (iter == m_categories.end())
@@ -145,10 +143,12 @@ void HotkeySettingsWidget::createButtons()
     QHBoxLayout* row_layout = new QHBoxLayout(row);
     row_layout->setContentsMargins(LR_MARGIN, TB_MARGIN, LR_MARGIN, TB_MARGIN);
 
-    row_layout->addWidget(new QLabel(qApp->translate("Hotkeys", hotkey.display_name), row));
+    const QString display_name = QCoreApplication::translate("Hotkeys", hotkey.display_name);
+    row_layout->addWidget(new QLabel(display_name, row));
 
-    InputBindingWidget* const bind = new InputBindingWidget(row, m_dialog->getEditingSettingsInterface(),
-                                                            InputBindingInfo::Type::Button, "Hotkeys", hotkey.name);
+    InputBindingWidget* const bind =
+      new InputBindingWidget(row, m_dialog->getEditingSettingsInterface(), InputBindingInfo::Type::Button, "Hotkeys",
+                             hotkey.name, display_name);
     bind->setFixedWidth(300);
     row_layout->addWidget(bind);
   }
@@ -162,11 +162,14 @@ void HotkeySettingsWidget::setFilter(const QString& filter)
     int visible_row_count = 0;
     for (int i = 0; i < count; i++)
     {
-      QWidget* row = qobject_cast<QWidget*>(cw.layout->itemAt(i)->widget());
+      QWidget* const row = qobject_cast<QWidget*>(cw.layout->itemAt(i)->widget());
       if (!row)
         continue;
 
-      QLabel* label = row->findChild<QLabel*>(Qt::FindDirectChildrenOnly);
+      QLabel* const label = row->findChild<QLabel*>(Qt::FindDirectChildrenOnly);
+      if (!label)
+        continue;
+
       const bool visible = (filter.isEmpty() || label->text().indexOf(filter, 0, Qt::CaseInsensitive) >= 0);
       row->setVisible(visible);
       visible_row_count += static_cast<int>(visible);

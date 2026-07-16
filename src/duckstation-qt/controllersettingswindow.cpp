@@ -15,10 +15,10 @@
 #include "util/input_manager.h"
 
 #include "common/assert.h"
+#include "common/error.h"
 #include "common/file_system.h"
 
 #include <QtWidgets/QInputDialog>
-#include <QtWidgets/QTextEdit>
 #include <array>
 
 #include "moc_controllersettingswindow.cpp"
@@ -109,7 +109,8 @@ ControllerSettingsWindow::ControllerSettingsWindow(INISettingsInterface* game_si
 
 ControllerSettingsWindow::~ControllerSettingsWindow() = default;
 
-void ControllerSettingsWindow::editControllerSettingsForGame(QWidget* parent, INISettingsInterface* sif)
+ControllerSettingsWindow* ControllerSettingsWindow::editControllerSettingsForGame(QWidget* parent,
+                                                                                  INISettingsInterface* sif)
 {
   ControllerSettingsWindow* dlg = new ControllerSettingsWindow(sif, false, parent);
   dlg->setWindowFlag(Qt::Window);
@@ -118,6 +119,7 @@ void ControllerSettingsWindow::editControllerSettingsForGame(QWidget* parent, IN
   dlg->setWindowTitle(parent->windowTitle());
   dlg->setWindowIcon(parent->windowIcon());
   dlg->show();
+  return dlg;
 }
 
 int ControllerSettingsWindow::getHotkeyCategoryIndex() const
@@ -227,11 +229,13 @@ void ControllerSettingsWindow::onNewProfileClicked()
     }
   }
 
-  if (!temp_si.Save())
+  Error error;
+  if (!temp_si.Save(&error, Settings::GetSectionSaveOrder()))
   {
-    QtUtils::AsyncMessageBox(
-      this, QMessageBox::Critical, tr("Error"),
-      tr("Failed to save the new preset to '%1'.").arg(QString::fromStdString(temp_si.GetPath())));
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, u"Error"_s,
+                             QStringLiteral("Failed to save the new preset to '%1':\n%2")
+                               .arg(QString::fromStdString(temp_si.GetPath()))
+                               .arg(QString::fromStdString(error.GetDescription())));
     return;
   }
 
@@ -279,8 +283,8 @@ void ControllerSettingsWindow::onDeleteProfileClicked()
   std::string profile_path(System::GetInputProfilePath(m_profile_name.toStdString()));
   if (!FileSystem::DeleteFile(profile_path.c_str()))
   {
-    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
-                             tr("Failed to delete '%1'.").arg(QString::fromStdString(profile_path)));
+    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, u"Error"_s,
+                             QStringLiteral("Failed to delete '%1'.").arg(QString::fromStdString(profile_path)));
     return;
   }
 
@@ -316,8 +320,7 @@ void ControllerSettingsWindow::onCopyGlobalSettingsClicked()
                                     false);
   }
 
-  m_editing_settings_interface->Save();
-  g_core_thread->reloadGameSettings();
+  saveAndReloadGameSettings();
   createWidgets();
 
   QtUtils::AsyncMessageBox(this, QMessageBox::Information, tr("DuckStation Controller Settings"),
@@ -409,8 +412,7 @@ void ControllerSettingsWindow::clearSettingValue(const char* section, const char
   if (m_editing_settings_interface)
   {
     m_editing_settings_interface->DeleteValue(section, key);
-    m_editing_settings_interface->Save();
-    g_core_thread->reloadGameSettings();
+    saveAndReloadGameSettings();
   }
   else
   {
@@ -441,7 +443,7 @@ void ControllerSettingsWindow::createWidgets()
     // global settings
     QListWidgetItem* item = new QListWidgetItem();
     item->setText(tr("Global Settings"));
-    item->setIcon(QIcon::fromTheme("settings-3-line"_L1));
+    item->setIcon(QIcon(u":/icons/monochrome/svg/settings-3-line.svg"_s));
     m_ui.settingsCategory->addItem(item);
     m_ui.settingsCategory->setCurrentRow(0);
     m_global_settings = new ControllerGlobalSettingsWidget(m_ui.settingsContainer, this);
@@ -480,7 +482,7 @@ void ControllerSettingsWindow::createWidgets()
   {
     QListWidgetItem* item = new QListWidgetItem();
     item->setText(tr("Hotkeys"));
-    item->setIcon(QIcon::fromTheme("keyboard-line"_L1));
+    item->setIcon(QIcon(u":/icons/monochrome/svg/keyboard-line.svg"_s));
     m_ui.settingsCategory->addItem(item);
     m_hotkey_settings = new HotkeySettingsWidget(m_ui.settingsContainer, this);
     m_ui.settingsContainer->addWidget(m_hotkey_settings);
@@ -533,8 +535,7 @@ std::array<bool, 2> ControllerSettingsWindow::getEnabledMultitaps() const
       getStringValue("ControllerPorts", "MultitapMode", Settings::GetMultitapModeName(Settings::DEFAULT_MULTITAP_MODE))
         .c_str())
       .value_or(Settings::DEFAULT_MULTITAP_MODE);
-  return {{(mtap_mode == MultitapMode::Port1Only || mtap_mode == MultitapMode::BothPorts),
-           (mtap_mode == MultitapMode::Port2Only || mtap_mode == MultitapMode::BothPorts)}};
+  return Controller::GetMultitapEnabledPorts(mtap_mode);
 }
 
 void ControllerSettingsWindow::refreshProfileList()

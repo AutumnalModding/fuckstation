@@ -112,15 +112,12 @@ public:
   ALWAYS_INLINE DebuggerWindow* getDebuggerWindow() const { return m_debugger_window; }
 
   /// Opens the editor for a specific input profile.
-  void openInputProfileEditor(const std::string_view name);
+  ControllerSettingsWindow* openInputProfileEditor(const std::string_view name);
 
   /// Returns pointer to settings window.
   SettingsWindow* getSettingsWindow();
   ControllerSettingsWindow* getControllerSettingsWindow();
   MemoryEditorWindow* getMemoryEditorWindow();
-
-  /// Updates debug menu visibility (hides if disabled).
-  void updateDebugMenuVisibility();
 
   /// Returns true if rendering to the main window should be allowed.
   bool canRenderToMainWindow() const;
@@ -134,7 +131,6 @@ public:
   void requestShutdown(bool allow_confirm, bool allow_save_to_state, bool save_state, bool check_safety,
                        bool check_pause, bool exit_fullscreen_ui, bool quit_afterwards);
   void requestExit(bool allow_confirm = true);
-  void checkForSettingChanges();
   std::optional<WindowInfo> getWindowInfo();
 
   void recreate();
@@ -234,9 +230,12 @@ private:
                                                 Error* error);
   void displayResizeRequested(qint32 width, qint32 height);
   void releaseRenderWindow();
-  void onMouseModeRequested(bool relative_mode, bool hide_cursor);
+  void onMouseModeRequested(bool relative_mode, bool hide_cursor, bool ignore_double_click);
 
   void onSettingsResetToDefault(bool system, bool controller);
+  void updateDebugMenuVisibility();
+
+  void onSettingsReloaded();
   void onSystemStarting();
   void onSystemStarted();
   void onSystemStopping();
@@ -302,7 +301,7 @@ private:
   void onToolsMemoryScannerTriggered();
   void onToolsISOBrowserTriggered();
   void onToolsCoverDownloaderTriggered();
-  void onToolsDownloadAchievementGameIconsTriggered();
+  void onToolsRefreshAchievementDatabaseTriggered();
   void onToolsMediaCaptureTriggered(bool checked);
   void onToolsOpenDataDirectoryTriggered();
   void onToolsOpenTextureDirectoryTriggered();
@@ -317,6 +316,7 @@ private:
   void onGameListSortIndicatorOrderChanged(int column, Qt::SortOrder order);
 
   void onDebugLogChannelsMenuAboutToShow();
+  void onDebugCDROMLidStateChanged();
   void openCPUDebugger();
 
   Ui::MainWindow m_ui;
@@ -359,6 +359,7 @@ private:
 
   bool m_relative_mouse_mode = false;
   bool m_hide_mouse_cursor = false;
+  bool m_ignore_double_click = false;
 
   bool m_exclusive_fullscreen_requested = false;
   bool m_was_paused_on_game_list_switch = false;

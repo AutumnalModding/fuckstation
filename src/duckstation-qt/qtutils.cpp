@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "qtutils.h"
+#include "asyncpixmaploader.h"
 #include "qthost.h"
 
 #include "core/core.h"
@@ -10,9 +11,11 @@
 
 #include "util/input_manager.h"
 
+#include "common/dynamic_library.h"
 #include "common/error.h"
 #include "common/log.h"
 
+#include <QtCore/QIODevice>
 #include <QtCore/QMetaObject>
 #include <QtGui/QDesktopServices>
 #include <QtGui/QGuiApplication>
@@ -26,6 +29,7 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QMainWindow>
 #include <QtWidgets/QMenu>
+#include <QtWidgets/QMenuBar>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSlider>
@@ -52,10 +56,56 @@ namespace QtUtils {
 
 static bool TryMigrateWindowGeometry(SettingsInterface* si, std::string_view window_name, QWidget* widget);
 static void SetMessageBoxStyle(QMessageBox* const dlg);
+static void SetIsMaskForMonochromeMenuBarActionIcons(QMenu* const menu);
 
 static constexpr const char* WINDOW_GEOMETRY_CONFIG_SECTION = "UI";
 
 } // namespace QtUtils
+
+bool QtUtils::ReadFileToByteArray(QIODevice* dev, DynamicHeapArray<u8, 0>& out_data)
+{
+  if (qint64 size; !dev->isSequential() && (size = dev->size()) > 0)
+  {
+    out_data.resize(static_cast<size_t>(
+      (sizeof(size_t) == sizeof(qint64)) ? size : std::min<qint64>(size, std::numeric_limits<size_t>::max())));
+
+    if (dev->read(reinterpret_cast<char*>(out_data.data()), size) != size)
+    {
+      out_data.deallocate();
+      return false;
+    }
+  }
+  else
+  {
+    constexpr size_t chunk_size = 1048576;
+    size_t read_so_far = 0;
+    for (;;)
+    {
+      const size_t prev_size = out_data.size();
+      const size_t new_size =
+        ((read_so_far + chunk_size) < read_so_far) ? std::numeric_limits<size_t>::max() : (read_so_far + chunk_size);
+      const size_t space = (new_size - prev_size);
+      if (space > 0)
+        out_data.resize(new_size);
+      const qint64 bytes_read =
+        (space > 0) ? dev->read(reinterpret_cast<char*>(out_data.data() + read_so_far), static_cast<qint64>(space)) : 0;
+      if (bytes_read < 0)
+      {
+        out_data.deallocate();
+        return false;
+      }
+      else if (bytes_read == 0)
+      {
+        out_data.resize(prev_size);
+        break;
+      }
+
+      read_so_far += static_cast<size_t>(bytes_read);
+    }
+  }
+
+  return true;
+}
 
 QFrame* QtUtils::CreateHorizontalLine(QWidget* parent)
 {
@@ -136,8 +186,8 @@ void QtUtils::OpenURL(QWidget* parent, const QUrl& qurl)
 {
   if (!QDesktopServices::openUrl(qurl))
   {
-    QtUtils::AsyncMessageBox(parent, QMessageBox::Critical, QObject::tr("Failed to open URL"),
-                             QObject::tr("Failed to open URL.\n\nThe URL was: %1").arg(qurl.toString()));
+    QtUtils::AsyncMessageBox(parent, QMessageBox::Critical, u"Failed to open URL"_s,
+                             QStringLiteral("Failed to open URL.\n\nThe URL was: %1").arg(qurl.toString()));
   }
 }
 
@@ -150,7 +200,7 @@ std::optional<unsigned> QtUtils::PromptForAddress(QWidget* parent, const QString
                                                   bool code)
 {
   const QString address_str(
-    QInputDialog::getText(parent, title, qApp->translate("DebuggerWindow", "Enter memory address:")));
+    QInputDialog::getText(parent, title, QCoreApplication::translate("DebuggerWindow", "Enter memory address:")));
   if (address_str.isEmpty())
     return std::nullopt;
 
@@ -167,7 +217,7 @@ std::optional<unsigned> QtUtils::PromptForAddress(QWidget* parent, const QString
   {
     MessageBoxCritical(
       parent, title,
-      qApp->translate("DebuggerWindow", "Invalid address. It should be in hex (0x12345678 or 12345678)"));
+      QCoreApplication::translate("DebuggerWindow", "Invalid address. It should be in hex (0x12345678 or 12345678)"));
     return std::nullopt;
   }
 
@@ -238,7 +288,7 @@ void QtUtils::SetWindowResizeable(QWidget* widget, bool resizeable)
       // Min/max numbers come from uic.
       widget->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
       widget->setMinimumSize(1, 1);
-      widget->setMaximumSize(16777215, 16777215);
+      widget->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
     }
     else
     {
@@ -350,6 +400,28 @@ QMenu* QtUtils::NewPopupMenu(QWidget* parent, bool delete_on_close /*= true*/)
   return menu;
 }
 
+void QtUtils::SetLabelPixmapPathOrURL(QLabel* label, std::string_view path_or_url, bool ignore_if_invalid)
+{
+  if (!AsyncPixmapLoader::isQueueNeeded(path_or_url))
+  {
+    const QPixmap pm = AsyncPixmapLoader::load(path_or_url);
+    if (!pm.isNull() || !ignore_if_invalid)
+      label->setPixmap(pm);
+
+    return;
+  }
+
+  AsyncPixmapLoader* loader = new AsyncPixmapLoader();
+  QObject::connect(loader, &AsyncPixmapLoader::pixmapLoaded, label, [label, ignore_if_invalid](QPixmap& pm) {
+    if (pm.isNull() && ignore_if_invalid)
+      return;
+
+    pm.setDevicePixelRatio(label->devicePixelRatio());
+    label->setPixmap(pm);
+  });
+  loader->enqueue(path_or_url);
+}
+
 QMessageBox::StandardButton QtUtils::MessageBoxInformation(QWidget* parent, const QString& title, const QString& text,
                                                            QMessageBox::StandardButtons buttons,
                                                            QMessageBox::StandardButton defaultButton)
@@ -417,10 +489,10 @@ QIcon QtUtils::GetIconForRegion(ConsoleRegion region)
       return QIcon(QtHost::GetResourceQPath("images/flags/PAL.svg", true));
 
     case ConsoleRegion::Auto:
-      return QIcon(":/icons/system-search.png"_L1);
+      return QIcon(u":/icons/system-search.png"_s);
 
     default:
-      return QIcon::fromTheme("file-unknow-line"_L1);
+      return QIcon(u":/icons/monochrome/svg/file-unknow-line.svg"_s);
   }
 }
 
@@ -440,7 +512,7 @@ QIcon QtUtils::GetIconForRegion(DiscRegion region)
     case DiscRegion::Other:
     case DiscRegion::NonPS1:
     default:
-      return QIcon::fromTheme("file-unknow-line"_L1);
+      return QIcon(u":/icons/monochrome/svg/file-unknow-line.svg"_s);
   }
 }
 
@@ -449,16 +521,16 @@ QIcon QtUtils::GetIconForEntryType(GameList::EntryType type)
   switch (type)
   {
     case GameList::EntryType::Disc:
-      return QIcon::fromTheme("disc-line"_L1);
+      return QIcon(u":/icons/monochrome/svg/disc-line.svg"_s);
     case GameList::EntryType::Playlist:
-      return QIcon::fromTheme("play-list-2-line"_L1);
+      return QIcon(u":/icons/monochrome/svg/play-list-2-line.svg"_s);
     case GameList::EntryType::DiscSet:
-      return QIcon::fromTheme("multi-discs"_L1);
+      return QIcon(u":/icons/monochrome/svg/multi-discs.svg"_s);
     case GameList::EntryType::PSF:
-      return QIcon::fromTheme("file-music-line"_L1);
+      return QIcon(u":/icons/monochrome/svg/file-music-line.svg"_s);
     case GameList::EntryType::PSExe:
     default:
-      return QIcon::fromTheme("settings-3-line"_L1);
+      return QIcon(u":/icons/monochrome/svg/settings-3-line.svg"_s);
   }
 }
 
@@ -516,7 +588,7 @@ void QtUtils::SaveWindowGeometry(QWidget* widget, bool auto_commit_changes /* = 
 void QtUtils::SaveWindowGeometry(std::string_view window_name, QWidget* widget, bool auto_commit_changes)
 {
   // don't touch minimized/fullscreen windows
-  if (widget->windowState() & (Qt::WindowMinimized | Qt::WindowFullScreen))
+  if (widget->windowState() & (Qt::WindowMinimized | Qt::WindowFullScreen) || !widget->isVisible())
     return;
 
   // save the unmaximized geometry if maximized
@@ -584,10 +656,10 @@ bool QtUtils::RestoreWindowGeometry(std::string_view window_name, QWidget* widge
   s32 x = 0, y = 0, w = 0, h = 0;
   const bool maximized = si->GetBoolValue(WINDOW_GEOMETRY_CONFIG_SECTION,
                                           TinyString::from_format("{}Maximized", window_name).c_str(), false);
-  if (!si->GetIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, TinyString::from_format("{}X", window_name).c_str(), &x) ||
-      !si->GetIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, TinyString::from_format("{}Y", window_name).c_str(), &y) ||
-      !si->GetIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, TinyString::from_format("{}Width", window_name).c_str(), &w) ||
-      !si->GetIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, TinyString::from_format("{}Height", window_name).c_str(), &h))
+  if (!si->FindIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, TinyString::from_format("{}X", window_name).c_str(), &x) ||
+      !si->FindIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, TinyString::from_format("{}Y", window_name).c_str(), &y) ||
+      !si->FindIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, TinyString::from_format("{}Width", window_name).c_str(), &w) ||
+      !si->FindIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, TinyString::from_format("{}Height", window_name).c_str(), &h))
   {
     return TryMigrateWindowGeometry(si, window_name, widget);
   }
@@ -650,15 +722,48 @@ void QtUtils::CenterWindowRelativeToParent(QWidget* window, const QWidget* paren
   window->setGeometry(window_geometry);
 }
 
+void QtUtils::SetIsMaskForMonochromeMenuBarActionIcons(QMenu* const menu)
+{
+  const QList<QAction*> actions = menu->actions();
+  for (QAction* const action : actions)
+  {
+    if (QMenu* const submenu = action->menu())
+      SetIsMaskForMonochromeMenuBarActionIcons(submenu);
+
+    QIcon icon = action->icon();
+    if (icon.isNull())
+      continue;
+
+    // Skip icons that aren't monochrome.
+    const QString icon_name = icon.name();
+    if (!icon_name.startsWith(u":/icons/monochrome/"_s))
+      continue;
+
+    // Annoyingly this creates a new icon, we can't modify the existing icon.
+    icon.setIsMask(true);
+    action->setIcon(icon);
+  }
+}
+
+void QtUtils::SetIsMaskForMonochromeMenuBarActionIcons(QMenuBar* const menubar)
+{
+  const QList<QAction*> actions = menubar->actions();
+  for (QAction* const action : actions)
+  {
+    if (QMenu* const menu = action->menu())
+      SetIsMaskForMonochromeMenuBarActionIcons(menu);
+  }
+}
+
 bool QtUtils::TryMigrateWindowGeometry(SettingsInterface* si, std::string_view window_name, QWidget* widget)
 {
   // can we migrate old configuration?
   const TinyString config_key = TinyString::from_format("{}Geometry", window_name);
-  std::string config_value;
-  if (!si->GetStringValue(WINDOW_GEOMETRY_CONFIG_SECTION, config_key.c_str(), &config_value))
+  std::string_view config_value;
+  if (!si->FindStringValue(WINDOW_GEOMETRY_CONFIG_SECTION, config_key.c_str(), &config_value))
     return false;
 
-  widget->restoreGeometry(QByteArray::fromBase64(QByteArray::fromStdString(config_value)));
+  widget->restoreGeometry(QByteArray::fromBase64(QByteArray::fromRawData(config_value.data(), config_value.size())));
 
   // make sure we're not loading a dodgy config which had fullscreen set...
   widget->setWindowState(widget->windowState() & ~(Qt::WindowFullScreen | Qt::WindowActive));

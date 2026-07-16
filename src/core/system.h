@@ -8,6 +8,9 @@
 
 #include "util/image.h"
 
+#include <array>
+#include <ctime>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -150,9 +153,8 @@ std::string GetExecutableNameForImage(CDImage* cdi, bool strip_subdirectories);
 bool ReadExecutableFromImage(CDImage* cdi, std::string* out_executable_name, std::vector<u8>* out_executable_data);
 
 std::string GetGameHashId(GameHash hash);
-bool GetGameDetailsFromImage(CDImage* cdi, std::string* out_id = nullptr, GameHash* out_hash = nullptr,
-                             std::string* out_executable_name = nullptr,
-                             std::vector<u8>* out_executable_data = nullptr);
+bool GetGameDetailsFromImage(CDImage* cdi, std::string* out_id, GameHash* out_hash,
+                             std::optional<std::array<u8, 16>>* out_achievements_hash);
 GameHash GetGameHashFromFile(const char* path);
 GameHash GetGameHashFromBuffer(const std::string_view path, const std::span<const u8> data);
 DiscRegion GetRegionForSerial(const std::string_view serial);
@@ -234,6 +236,7 @@ const std::string& GetGamePath();
 const std::string& GetExeOverride();
 const GameDatabase::Entry* GetGameDatabaseEntry();
 GameHash GetGameHash();
+bool IsRunningGameCustomTitle();
 bool IsRunningUnknownGame();
 bool IsUsingKnownPS1BIOS();
 BootMode GetBootMode();
@@ -251,9 +254,7 @@ bool PopulateGameListEntryFromCurrentGame(GameList::Entry* entry, Error* error);
 
 void FormatLatencyStats(SmallStringBase& str);
 
-/// Loads global settings (i.e. EmuConfig).
-void LoadSettings(bool display_osd_messages);
-void SetDefaultSettings(SettingsInterface& si);
+void SetDefaultSettings(SettingsInterface& si, bool ignore_user_prefs);
 
 /// Reloads settings, and applies any changes present.
 void ApplySettings(bool display_osd_messages);
@@ -297,8 +298,10 @@ void LoadStateFromSlot(bool global, s32 slot);
 void SaveStateToSlot(bool global, s32 slot);
 
 /// State data access, use with care as the media path is not updated.
-bool LoadStateDataFromBuffer(std::span<const u8> data, u32 version, Error* error, bool update_display);
 bool SaveStateDataToBuffer(std::span<u8> data, size_t* data_size, Error* error);
+
+/// Returns true if global states should be include in the slot list.
+bool AreGlobalSaveStatesEnabled();
 
 /// Runs the VM until the CPU execution is canceled.
 void Execute();
@@ -371,7 +374,7 @@ void SetTurboEnabled(bool enabled);
 bool IsRewinding();
 void SetRewindState(bool enabled);
 
-void DoFrameStep();
+void FrameStep();
 
 /// Returns the path to a save state file. Specifying an index of -1 is the "resume" save state.
 std::string GetGameSaveStatePath(std::string_view serial, s32 slot);
@@ -428,6 +431,8 @@ bool StartRecordingGPUDump(const char* path = nullptr, u32 num_frames = 1);
 void StopRecordingGPUDump();
 
 /// Returns the path that a new media capture would be saved to by default. Safe to call from any thread.
+std::string GetNewCapturePath(const std::string& directory, const std::string_view title, CaptureFileNameFormat format,
+                              std::string_view extension);
 std::string GetNewMediaCapturePath(const std::string_view title, const std::string_view container);
 
 /// Current media capture (if active).
@@ -460,13 +465,6 @@ void CalculateRewindMemoryUsage(u32 num_saves, u32 resolution_scale, u32 multisa
                                 bool enable_8mb_ram, u64* ram_usage, u64* vram_usage);
 void ClearMemorySaveStates(bool reallocate_resources, bool recycle_textures);
 void SetRunaheadReplayFlag(bool is_analog_input);
-
-/// Shared socket multiplexer.
-SocketMultiplexer* GetSocketMultiplexer();
-void ReleaseSocketMultiplexer();
-
-/// Called when rich presence changes.
-void UpdateRichPresence(bool update_session_time);
 
 } // namespace System
 

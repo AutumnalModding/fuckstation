@@ -33,19 +33,13 @@ enum class LoginRequestReason
 inline constexpr size_t GAME_HASH_LENGTH = 16;
 using GameHash = std::array<u8, GAME_HASH_LENGTH>;
 
-struct HashDatabaseEntry
-{
-  GameHash hash;
-  u32 game_id;
-  u32 num_achievements;
-};
-
 class ProgressDatabase
 {
 public:
   struct Entry
   {
     u32 game_id;
+    u16 num_achievements;
     u16 num_achievements_unlocked;
     u16 num_hc_achievements_unlocked;
   };
@@ -55,39 +49,39 @@ public:
 
   bool Load(Error* error);
 
-  const Entry* LookupGame(u32 game_id) const;
+  const Entry* LookupHash(const GameHash& hash) const;
 
 private:
+  struct HashEntry
+  {
+    GameHash hash;
+    u32 game_id;
+  };
+
+  std::vector<HashEntry> m_hashes;
   std::vector<Entry> m_entries;
 };
 
 /// Acquires the achievements lock. Must be held when accessing any achievement state from another thread.
 std::unique_lock<std::recursive_mutex> GetLock();
 
-/// Returns the achievements game hash for a given disc.
-std::optional<GameHash> GetGameHash(CDImage* image);
-std::optional<GameHash> GetGameHash(const std::string_view executable_name, std::span<const u8> executable_data);
-
-/// Returns the number of achievements for a given hash.
-const HashDatabaseEntry* LookupGameHash(const GameHash& hash);
-
 /// Converts a game hash to a string for display. If the hash is nullopt, returns "[NO HASH]".
 TinyString GameHashToString(const std::optional<GameHash>& hash);
-
-/// Initializes the RetroAchievments client.
-bool Initialize();
 
 /// Updates achievements settings.
 void UpdateSettings(const Settings& old_config);
 
-/// Shuts down the RetroAchievements client.
-void Shutdown();
+/// Call to refresh the game database.
+bool RefreshGameList(ProgressCallback* progress, Error* error);
 
 /// Call to refresh the all-progress database.
 bool RefreshAllProgressDatabase(ProgressCallback* progress, Error* error);
 
 /// Called when the system is start. Engages hardcore mode if enabled.
-void OnSystemStarting(CDImage* image, bool disable_hardcore_mode);
+void OnSystemStarting(bool disable_hardcore_mode);
+
+/// Called when the system has finished starting. Identifies the game, assuming the system has set it.
+void OnSystemStarted();
 
 /// Called when the system is shutting down. If this returns false, the shutdown should be aborted.
 void OnSystemDestroyed();
@@ -96,16 +90,16 @@ void OnSystemDestroyed();
 void OnSystemReset();
 
 /// Called when the system changes game.
-void GameChanged(CDImage* image);
+void SetGameHash(const std::optional<GameHash>& hash);
+
+/// Returns the game hash for the currently loaded game, or nullopt if no hash is set.
+std::optional<GameHash> GetGameHash();
 
 /// Called once a frame at vsync time on the CPU thread.
 void FrameUpdate();
 
 /// Called when the system is paused, because FrameUpdate() won't be getting called.
 void IdleUpdate();
-
-/// Returns true if idle updates are necessary (e.g. outstanding requests).
-bool NeedsIdleUpdate();
 
 /// Saves/loads state.
 bool DoState(StateWrapper& sw);
@@ -156,17 +150,11 @@ bool HasRichPresence();
 const std::string& GetRichPresenceString();
 
 /// Returns the URL for the current icon of the game
-const std::string& GetGameIconURL();
-
-/// Returns the path for the current icon of the game
-const std::string& GetGameIconPath();
+const std::string& GetCurrentGameBadgeURL();
 
 /// Returns the RetroAchievements title for the current game.
 /// Should be called with the lock held.
-const std::string& GetGameTitle();
-
-/// Returns the path for the game that is current hashed/running.
-const std::string& GetGamePath();
+const std::string& GetCurrentGameTitle();
 
 /// Returns true if the user has been successfully logged in.
 bool IsLoggedIn();
@@ -174,23 +162,25 @@ bool IsLoggedIn();
 /// Returns true if the user has been successfully logged in, or the request is in progress.
 bool IsLoggedInOrLoggingIn();
 
+/// Returns true if credentials have been saved for login.
+bool HasSavedCredentials();
+
 /// Returns the logged-in user name.
-const char* GetLoggedInUserName();
+const std::string& GetLoggedInUserName();
 
 /// Returns the path to the user's profile avatar.
 /// Should be called with the lock held.
-const std::string& GetLoggedInUserBadgePath();
+const std::string& GetLoggedInUserIconURL();
 
 /// Returns a summary of the user's points.
 /// Should be called with the lock held.
 SmallString GetLoggedInUserPointsSummary();
 
-/// Returns the path to the local cache for the specified badge name.
-std::string GetGameBadgePath(std::string_view badge_name);
+/// Returns a URL for the given user's profile.
+std::string GetProfileURL(std::string_view username);
 
-/// Downloads game icons from RetroAchievements for all games that have an achievements_game_id.
-/// This fetches the game badge images that are normally downloaded when a game is opened.
-bool DownloadGameIcons(ProgressCallback* progress, Error* error);
+/// Returns the URL for the specified game icon, using the game ID.
+std::string GetGameBadgeURL(u32 game_id);
 
 /// Returns 0 if pausing is allowed, otherwise the number of frames until pausing is allowed.
 u32 GetPauseThrottleFrames();
@@ -200,6 +190,10 @@ u32 GetPendingUnlockCount();
 
 /// The name of the RetroAchievements icon, which can be used in notifications.
 extern const char* const RA_LOGO_ICON_NAME;
+extern const char* const RA_LOGO_SVG_ICON_NAME;
+
+/// URL for registering accounts.
+extern const char* const RA_REGISTER_URL;
 
 } // namespace Achievements
 

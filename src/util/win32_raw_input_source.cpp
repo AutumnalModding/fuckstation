@@ -123,7 +123,8 @@ TinyString Win32RawInputSource::ConvertKeyToString(InputBindingKey key)
   return {};
 }
 
-TinyString Win32RawInputSource::ConvertKeyToIcon(InputBindingKey key, InputManager::BindingIconMappingFunction mapper)
+TinyString Win32RawInputSource::ConvertKeyToDisplayString(InputBindingKey key, bool allow_icon,
+                                                          InputManager::BindingIconMappingFunction mapper)
 {
   return {};
 }
@@ -340,7 +341,7 @@ bool Win32RawInputSource::ReloadDevices()
     const u32 pointer_index = static_cast<u32>(std::distance(m_mice.begin(), iter));
     InputManager::OnInputDeviceConnected(MakeGenericControllerDeviceKey(InputSourceType::Pointer, pointer_index),
                                          InputManager::GetPointerDeviceName(pointer_index),
-                                         GetMouseDeviceName(pointer_index));
+                                         GetMouseDeviceName(pointer_index), std::nullopt);
 
     any_changed = true;
   }

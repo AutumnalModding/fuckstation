@@ -5129,9 +5129,6 @@ SLUS-01253:
     - tracks:
         - size: 639461760
           md5: "a16911072393d5c3850400cfea6876f7"
-    - tracks:
-        - size: 731972976
-          md5: "f957f526e8a45255c687bec8a8459541"
 SLUS-01254:
   name: "Arc the Lad Collection - Arc the Lad III (USA) (Disc 2)"
   trackData:
@@ -17617,27 +17614,18 @@ SLPM-86241:
     - tracks:
         - size: 684250896
           md5: "61fcc34655ec4703f14da2c320a1fe26"
-    - tracks:
-        - size: 678168624
-          md5: "16f6cc24bb99d6cc57ab518e99d46d03"
 SLPM-86242:
   name: "Cinema Eikaiwa Series Dai-6-dan - Ai no Hate ni (Japan) (Disc 2)"
   trackData:
     - tracks:
         - size: 688830240
           md5: "4ab406f7b1900e3d1297628bdc14e417"
-    - tracks:
-        - size: 678168624
-          md5: "16f6cc24bb99d6cc57ab518e99d46d03"
 SLPM-86243:
   name: "Cinema Eikaiwa Series Dai-6-dan - Ai no Hate ni (Japan) (Disc 3)"
   trackData:
     - tracks:
         - size: 685285776
           md5: "ca8a4f7dd8547302c48e982b8a12bee6"
-    - tracks:
-        - size: 678168624
-          md5: "16f6cc24bb99d6cc57ab518e99d46d03"
 SLPM-86564:
   name: "Cinema Eikaiwa Series Dai-6-dan - Ai no Hate ni (Japan) (Disc 4)"
   trackData:
@@ -39369,12 +39357,6 @@ SCUS-94163:
     - tracks:
         - size: 747435024
           md5: "cce4e76d020b47847fe8e2f81ff613db"
-    - tracks:
-        - size: 732657408
-          md5: "ccf63cd314d3e79878323199eb09d7dd"
-    - tracks:
-        - size: 659561952
-          md5: "eac916b42d5c24f951c8dec2f13a63de"
 SCUS-94164:
   name: "Final Fantasy VII (USA) (Disc 2)"
   trackData:
@@ -113982,9 +113964,6 @@ SCUS-94451:
     - tracks:
         - size: 732723264
           md5: "10c32787ad95a64c1232b774943914d0"
-    - tracks:
-        - size: 737784768
-          md5: "e65e166ecfe76f63329addd9720737b6"
 SCUS-94492:
   name: "Syphon Filter 2 (USA) (Disc 2)"
   trackData:

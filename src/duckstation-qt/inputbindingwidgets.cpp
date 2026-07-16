@@ -37,14 +37,15 @@ InputBindingWidget::InputBindingWidget(QWidget* parent) : QPushButton(parent)
 }
 
 InputBindingWidget::InputBindingWidget(QWidget* parent, SettingsInterface* sif, InputBindingInfo::Type bind_type,
-                                       std::string section_name, std::string key_name)
+                                       std::string section_name, std::string key_name,
+                                       const QString display_name /* = */)
   : QPushButton(parent)
 {
   setFixedWidth(220);
 
   connect(this, &QPushButton::clicked, this, &InputBindingWidget::onClicked);
 
-  initialize(sif, bind_type, std::move(section_name), std::move(key_name));
+  initialize(sif, bind_type, std::move(section_name), std::move(key_name), display_name);
 }
 
 InputBindingWidget::~InputBindingWidget()
@@ -76,12 +77,13 @@ void InputBindingWidget::logInputEvent(InputBindingInfo::Type bind_type, InputBi
 }
 
 void InputBindingWidget::initialize(SettingsInterface* sif, InputBindingInfo::Type bind_type, std::string section_name,
-                                    std::string key_name)
+                                    std::string key_name, const QString& display_name)
 {
   m_sif = sif;
   m_bind_type = bind_type;
   m_section_name = std::move(section_name);
   m_key_name = std::move(key_name);
+  m_display_name = display_name;
   reloadBinding();
 }
 
@@ -118,22 +120,36 @@ void InputBindingWidget::updateTextAndToolTip()
   {
     m_full_text.clear();
     setText(QString());
-    setToolTip(QStringLiteral("%1\n\n%2").arg(tr("No binding set.")).arg(tr(help_text)));
-  }
-  else if (m_bindings.size() > 1)
-  {
-    m_full_text.clear();
-    setText(tr("%n bindings", nullptr, static_cast<int>(m_bindings.size())));
-
-    // keep the full thing for the tooltip
-    const QString qss = QString::fromStdString(StringUtil::JoinString(m_bindings.begin(), m_bindings.end(), "\n"));
-    setToolTip(QStringLiteral("%1\n\n%2\n%3").arg(qss).arg(tr(help_text)).arg(help_clear_text));
+    setToolTip(QStringLiteral("%1:\n\n%2\n\n%3").arg(m_display_name).arg(tr("No binding set.")).arg(tr(help_text)));
   }
   else
   {
-    m_full_text = QString::fromStdString(m_bindings[0]);
-    updateElidedText();
-    setToolTip(QStringLiteral("%1\n\n%2\n%3").arg(m_full_text).arg(tr(help_text)).arg(tr(help_clear_text)));
+    QString bindings_qstr;
+    for (const std::string& binding : m_bindings)
+    {
+      if (SmallString pretty_binding(binding); InputManager::PrettifyInputBinding(pretty_binding, false))
+        bindings_qstr += QtUtils::StringViewToQString(pretty_binding);
+      else
+        bindings_qstr += QString::fromStdString(binding);
+      bindings_qstr += '\n';
+    }
+
+    if (m_bindings.size() == 1)
+    {
+      m_full_text = bindings_qstr.trimmed();
+      updateElidedText();
+    }
+    else
+    {
+      m_full_text.clear();
+      setText(tr("%n bindings", nullptr, static_cast<int>(m_bindings.size())));
+    }
+    // keep the full thing for the tooltip
+    setToolTip(QStringLiteral("%1:\n\n%2\n%3\n%4")
+                 .arg(m_display_name)
+                 .arg(bindings_qstr)
+                 .arg(tr(help_text))
+                 .arg(tr(help_clear_text)));
   }
 }
 
@@ -476,7 +492,7 @@ void InputBindingWidget::unhookInputManager()
 void InputBindingWidget::openDialog()
 {
   InputBindingDialog* const dlg =
-    new InputBindingDialog(m_sif, m_bind_type, m_section_name, m_key_name, m_bindings, this);
+    new InputBindingDialog(m_sif, m_bind_type, m_section_name, m_key_name, m_bindings, m_display_name, this);
   dlg->setAttribute(Qt::WA_DeleteOnClose);
   connect(dlg, &QDialog::finished, this, &InputBindingWidget::reloadBinding);
   dlg->open();
@@ -504,7 +520,7 @@ void InputBindingWidget::showEffectBindingDialog()
 
   QHBoxLayout* const heading_layout = new QHBoxLayout();
   QLabel* const icon = new QLabel(&dlg);
-  icon->setPixmap(QIcon::fromTheme("pushpin-line"_L1).pixmap(32, 32));
+  icon->setPixmap(QIcon(u":/icons/monochrome/svg/pushpin-line.svg"_s).pixmap(32, 32));
   QLabel* const heading =
     new QLabel(tr("<strong>%1</strong><br>Select the device and effect to map this bind to.").arg(full_key), &dlg);
   heading->setWordWrap(true);
@@ -525,26 +541,22 @@ void InputBindingWidget::showEffectBindingDialog()
       item->setCheckState(item->isSelected() ? Qt::Checked : Qt::Unchecked);
   });
 
-  for (const auto& [type, key] : g_core_thread->getInputDeviceListModel()->getEffectList())
+  for (const InputDeviceListModel::Effect& effect : g_core_thread->getInputDeviceListModel()->getEffectList())
   {
-    if (type != m_bind_type)
-      continue;
-
-    const TinyString name = InputManager::ConvertInputBindingKeyToString(type, key);
-    if (name.empty())
+    if (effect.type != m_bind_type)
       continue;
 
     const bool is_bound =
-      std::ranges::any_of(m_bindings, [&name](const std::string& other_name) { return (other_name == name.view()); });
+      std::ranges::any_of(m_bindings, [&effect](const std::string& other_name) { return (other_name == effect.name); });
 
     QListWidgetItem* const item = new QListWidgetItem();
     item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
     item->setCheckState(is_bound ? Qt::Checked : Qt::Unchecked);
     item->setText(QStringLiteral("%1\n%2")
-                    .arg(QtUtils::StringViewToQString(name))
-                    .arg(g_core_thread->getInputDeviceListModel()->getDeviceName(key)));
-    item->setData(Qt::UserRole, QtUtils::StringViewToQString(name));
-    item->setIcon(InputDeviceListModel::getIconForKey(key));
+                    .arg(QtUtils::StringViewToQString(effect.display_name))
+                    .arg(g_core_thread->getInputDeviceListModel()->getDeviceName(effect.key)));
+    item->setData(Qt::UserRole, QtUtils::StringViewToQString(effect.name));
+    item->setIcon(InputDeviceListModel::getIconForKey(effect.key));
     list->addItem(item);
 
     item->setSelected(is_bound);
@@ -585,6 +597,5 @@ void InputBindingWidget::showEffectBindingDialog()
     g_core_thread->reloadInputBindings();
   }
 
-  setNewBinding();
   reloadBinding();
 }

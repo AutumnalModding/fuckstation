@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "gamelistwidget.h"
-#include "gamelistrefreshthread.h"
+#include "asyncpixmaploader.h"
 #include "mainwindow.h"
 #include "qthost.h"
 #include "qtprogresscallback.h"
@@ -18,6 +18,7 @@
 #include "core/system.h"
 
 #include "util/animated_image.h"
+#include "util/http_cache.h"
 #include "util/translation.h"
 
 #include "common/assert.h"
@@ -43,8 +44,11 @@
 #include <limits>
 
 #include "moc_gamelistwidget.cpp"
+#include "ui_emptygamelistwidget.h"
 
 LOG_CHANNEL(GameList);
+
+using namespace Qt::StringLiterals;
 
 static constexpr int VIEW_MODE_LIST = 0;
 static constexpr int VIEW_MODE_GRID = 1;
@@ -71,23 +75,31 @@ static constexpr QSize ACHIEVEMENT_PIXMAP_SIZE(16, 16);
 static constexpr QSize COMPATIBILITY_PIXMAP_SIZE(96, 24);
 
 static const char* SUPPORTED_FORMATS_STRING =
-  QT_TRANSLATE_NOOP(GameListWidget, ".cue (Cue Sheets)\n"
-                                    ".iso (Single Track Image)\n"
-                                    ".ecm (Error Code Modeling Image)\n"
-                                    ".mds (Media Descriptor Sidecar)\n"
-                                    ".ccd (CloneCD Image)\n"
-                                    ".chd (Compressed Hunks of Data)\n"
-                                    ".pbp (PlayStation Portable, Only Decrypted)");
+  QT_TRANSLATE_NOOP("GameListWidget", ".cue (Cue Sheets)\n"
+                                      ".iso (Single Track Image)\n"
+                                      ".ecm (Error Code Modeling Image)\n"
+                                      ".mds (Media Descriptor Sidecar)\n"
+                                      ".ccd (CloneCD Image)\n"
+                                      ".chd (Compressed Hunks of Data)\n"
+                                      ".pbp (PlayStation Portable, Only Decrypted)");
 
 static constexpr std::array<const char*, GameListModel::Column_Count> s_column_names = {{
-  QT_TRANSLATE_NOOP("GameListModel", "Icon"), QT_TRANSLATE_NOOP("GameListModel", "Serial"),
-  QT_TRANSLATE_NOOP("GameListModel", "Title"), QT_TRANSLATE_NOOP("GameListModel", "File Title"),
-  QT_TRANSLATE_NOOP("GameListModel", "Developer"), QT_TRANSLATE_NOOP("GameListModel", "Publisher"),
-  QT_TRANSLATE_NOOP("GameListModel", "Genre"), QT_TRANSLATE_NOOP("GameListModel", "Year"),
-  QT_TRANSLATE_NOOP("GameListModel", "Players"), QT_TRANSLATE_NOOP("GameListModel", "Time Played"),
-  QT_TRANSLATE_NOOP("GameListModel", "Last Played"), QT_TRANSLATE_NOOP("GameListModel", "Size"),
-  QT_TRANSLATE_NOOP("GameListModel", "Data Size"), QT_TRANSLATE_NOOP("GameListModel", "Region"),
-  QT_TRANSLATE_NOOP("GameListModel", "Achievements"), QT_TRANSLATE_NOOP("GameListModel", "Compatibility"),
+  QT_TRANSLATE_NOOP("GameListModel", "Icon"),
+  QT_TRANSLATE_NOOP("GameListModel", "Serial"),
+  QT_TRANSLATE_NOOP("GameListModel", "Title"),
+  QT_TRANSLATE_NOOP("GameListModel", "File Title"),
+  QT_TRANSLATE_NOOP("GameListModel", "Developer"),
+  QT_TRANSLATE_NOOP("GameListModel", "Publisher"),
+  QT_TRANSLATE_NOOP("GameListModel", "Genre"),
+  QT_TRANSLATE_NOOP("GameListModel", "Year"),
+  QT_TRANSLATE_NOOP("GameListModel", "Players"),
+  QT_TRANSLATE_NOOP("GameListModel", "Time Played"),
+  QT_TRANSLATE_NOOP("GameListModel", "Last Played"),
+  QT_TRANSLATE_NOOP("GameListModel", "Size"),
+  QT_TRANSLATE_NOOP("GameListModel", "Data Size"),
+  QT_TRANSLATE_NOOP("GameListModel", "Region"),
+  QT_TRANSLATE_NOOP("GameListModel", "Achievements"),
+  QT_TRANSLATE_NOOP("GameListModel", "Compatibility"),
   "Cover", // Do not translate.
 }};
 
@@ -207,7 +219,7 @@ static QString sizeToString(s64 size)
 {
   static constexpr s64 one_mb = 1024 * 1024;
   return (size >= 0) ? QStringLiteral("%1 MB").arg((size + (one_mb - 1)) / one_mb) :
-                       qApp->translate("GameListModel", "Unknown");
+                       QCoreApplication::translate("GameListModel", "Unknown");
 }
 
 std::optional<GameListModel::Column> GameListModel::getColumnIdForName(std::string_view name)
@@ -620,7 +632,7 @@ const QPixmap& GameListModel::getCoverForEntry(const GameList::Entry* ge) const
 
   // We insert the placeholder into the cache, so that we don't repeatedly queue loading jobs for this game.
   const_cast<GameListModel*>(this)->loadOrGenerateCover(ge);
-  if (pm && !pm->is_loading)
+  if (pm)
   {
     // Use a fast resize so we don't block the main thread, it'll get fixed up soon.
     // But don't try to resize loading pixmaps.
@@ -654,16 +666,62 @@ const QPixmap* GameListModel::lookupIconPixmapForEntry(const GameList::Entry* ge
     {
       // Assumes game list lock is held.
       const std::string path = GameList::GetGameIconPath(ge);
-      QPixmap pm;
-      if (!path.empty() && pm.load(QString::fromStdString(path)))
+      if (HTTPCache::IsHTTPURL(path))
       {
-        pm.setDevicePixelRatio(m_device_pixel_ratio);
-        resizeGameIcon(pm, m_icon_size);
-        return m_icon_pixmap_cache.Insert(ge->serial, std::move(pm));
-      }
+        if (AsyncPixmapLoader::isQueueNeeded(path))
+        {
+          // callback can fire immediately, so fill it first
+          m_icon_pixmap_cache.Insert(ge->serial, {});
 
-      // Stop it trying again in the future.
-      m_icon_pixmap_cache.Insert(ge->serial, {});
+          AsyncPixmapLoader* loader = new AsyncPixmapLoader();
+          connect(loader, &AsyncPixmapLoader::pixmapLoaded, this, [this, serial = ge->serial](QPixmap& pm) mutable {
+            if (pm.isNull())
+              return;
+
+            pm.setDevicePixelRatio(m_device_pixel_ratio);
+            resizeGameIcon(pm, m_icon_size);
+            m_icon_pixmap_cache.Insert(serial, pm);
+
+            // invalidate rows with this serial
+            const auto lock = GameList::GetLock();
+            for (size_t i = 0, count = GameList::GetEntryCount(); i < count; i++)
+            {
+              const GameList::Entry* entry = GameList::GetEntryByIndex(i);
+              if (entry->serial != serial)
+                continue;
+
+              const QModelIndex idx = index(static_cast<int>(i), Column_Icon);
+              emit const_cast<GameListModel*>(this)->dataChanged(idx, idx, getRolesToInvalidate(Column_Icon));
+            }
+          });
+
+          loader->enqueue(path);
+
+          // just in case it fires immediately
+          item = m_icon_pixmap_cache.Lookup(ge->serial);
+          return (item && !item->isNull()) ? item : nullptr;
+        }
+        else
+        {
+          QPixmap pm = AsyncPixmapLoader::load(path);
+          pm.setDevicePixelRatio(m_device_pixel_ratio);
+          resizeGameIcon(pm, m_icon_size);
+          return m_icon_pixmap_cache.Insert(ge->serial, std::move(pm));
+        }
+      }
+      else
+      {
+        QPixmap pm;
+        if (!path.empty() && pm.load(QString::fromStdString(path)))
+        {
+          pm.setDevicePixelRatio(m_device_pixel_ratio);
+          resizeGameIcon(pm, m_icon_size);
+          return m_icon_pixmap_cache.Insert(ge->serial, std::move(pm));
+        }
+
+        // Stop it trying again in the future.
+        m_icon_pixmap_cache.Insert(ge->serial, {});
+      }
     }
   }
 
@@ -730,9 +788,24 @@ QIcon GameListModel::getIconForGame(const QString& path)
     }
   }
 
+  // If it's not a HTTP URL, this is straightforward.
   const std::string icon_path = GameList::GetGameIconPath(entry);
-  if (!icon_path.empty())
+  if (HTTPCache::IsHTTPURL(icon_path))
+  {
+    // Can't really download here since it's not asynchronous. But we can still check the cache.
+    const HTTPCache::LookupResult result = HTTPCache::Lookup(icon_path, nullptr);
+    if (result.has_value())
+    {
+      QPixmap pm;
+      const TinyString extension(Path::GetExtension(HTTPCache::GetURLFilename(icon_path)));
+      if (pm.loadFromData(result->data(), static_cast<int>(result->size()), extension.c_str()))
+        ret = QIcon(pm);
+    }
+  }
+  else if (!icon_path.empty())
+  {
     ret = QIcon(QString::fromStdString(icon_path));
+  }
 
   return ret;
 }
@@ -1037,7 +1110,7 @@ QVariant GameListModel::headerData(int section, Qt::Orientation orientation, int
 {
   QVariant ret;
   if (orientation == Qt::Horizontal && role == Qt::DisplayRole && section >= 0 && section < Column_Count)
-    ret = qApp->translate("GameListModel", s_column_names[static_cast<u32>(section)]);
+    ret = QCoreApplication::translate("GameListModel", s_column_names[static_cast<u32>(section)]);
 
   return ret;
 }
@@ -1792,8 +1865,10 @@ GameListWidget::GameListWidget(QWidget* parent, QAction* action_view_list, QActi
   m_ui.stack->insertWidget(1, m_grid_view);
 
   m_empty_widget = new QWidget(m_ui.stack);
-  m_empty_ui.setupUi(m_empty_widget);
-  m_empty_ui.supportedFormats->setText(qApp->translate("GameListWidget", SUPPORTED_FORMATS_STRING));
+  Ui::EmptyGameListWidget empty_ui;
+  empty_ui.setupUi(m_empty_widget);
+  empty_ui.supportedFormats->setText(tr(SUPPORTED_FORMATS_STRING));
+  empty_ui.icon->setSource(u":/icons/monochrome/svg/information-line.svg"_s);
   m_ui.stack->insertWidget(2, m_empty_widget);
 
   m_ui.viewGameList->setDefaultAction(action_view_list);
@@ -1827,16 +1902,11 @@ GameListWidget::GameListWidget(QWidget* parent, QAction* action_view_list, QActi
   connect(m_grid_view, &QListView::activated, this, &GameListWidget::onGridViewItemActivated);
   connect(m_grid_view, &QListView::customContextMenuRequested, this, &GameListWidget::onGridViewContextMenuRequested);
 
-  connect(m_empty_ui.addGameDirectory, &QPushButton::clicked, this, [this]() { emit addGameDirectoryRequested(); });
-  connect(m_empty_ui.scanForNewGames, &QPushButton::clicked, this, [this]() { refresh(false); });
+  connect(empty_ui.addGameDirectory, &QPushButton::clicked, this, [this]() { emit addGameDirectoryRequested(); });
+  connect(empty_ui.scanForNewGames, &QPushButton::clicked, this, [this]() { refresh(false); });
 
   connect(g_main_window, &MainWindow::themeChanged, this, &GameListWidget::onThemeChanged);
 
-  const bool grid_view = Core::GetBaseBoolSettingValue("UI", "GameListGridView", false);
-  if (grid_view)
-    action_view_grid->setChecked(true);
-  else
-    action_view_list->setChecked(true);
   action_merge_disc_sets->setChecked(m_sort_model->isMergingDiscSets());
   action_show_localized_titles->setChecked(m_model->getShowLocalizedTitles());
   action_show_list_icons->setChecked(m_model->getShowGameIcons());
@@ -1845,11 +1915,16 @@ GameListWidget::GameListWidget(QWidget* parent, QAction* action_view_list, QActi
   action_show_grid_titles->setChecked(m_model->getShowCoverTitles());
   onIconSizeChanged(m_model->getIconSize());
 
-  setViewMode(grid_view ? VIEW_MODE_GRID : VIEW_MODE_LIST);
+  reloadViewModeFromSettings();
   updateBackground(true);
 }
 
 GameListWidget::~GameListWidget() = default;
+
+QString GameListWidget::getSupportedFormatsString()
+{
+  return tr(SUPPORTED_FORMATS_STRING);
+}
 
 bool GameListWidget::isShowingGameList() const
 {
@@ -2029,6 +2104,8 @@ void GameListWidget::onRefreshComplete()
   // if we still had no games, switch to the helper widget
   if (m_model->rowCount() == 0)
     setViewMode(VIEW_MODE_NO_GAMES);
+  else
+    reloadViewModeFromSettings();
 }
 
 void GameListWidget::onSelectionModelCurrentChanged(const QModelIndex& current, const QModelIndex& previous)
@@ -2098,8 +2175,7 @@ void GameListWidget::onSearchReturnPressed()
 
   QAbstractItemView* const target =
     isShowingGameGrid() ? static_cast<QAbstractItemView*>(m_grid_view) : static_cast<QAbstractItemView*>(m_list_view);
-  target->selectionModel()->select(m_sort_model->index(0, 0),
-                                   QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+  target->setCurrentIndex(m_sort_model->index(0, 0));
   target->setFocus(Qt::ShortcutFocusReason);
 }
 
@@ -2125,6 +2201,16 @@ void GameListWidget::showGameGrid()
   Host::CommitBaseSettingChanges();
 
   setViewMode(VIEW_MODE_GRID);
+}
+
+void GameListWidget::reloadViewModeFromSettings()
+{
+  const bool grid_view = Core::GetBaseBoolSettingValue("UI", "GameListGridView", false);
+  m_ui.viewGameList->defaultAction()->setChecked(!grid_view);
+  m_ui.viewGameGrid->defaultAction()->setChecked(grid_view);
+
+  if (m_model->rowCount() > 0 || m_ui.stack->currentIndex() != VIEW_MODE_NO_GAMES)
+    setViewMode(grid_view ? VIEW_MODE_GRID : VIEW_MODE_LIST);
 }
 
 void GameListWidget::setMergeDiscSets(bool enabled)
@@ -2343,6 +2429,7 @@ GameListListView::GameListListView(GameListModel* model, GameListSortModel* sort
   setContextMenuPolicy(Qt::CustomContextMenu);
   setAlternatingRowColors(true);
   setShowGrid(false);
+  setTabKeyNavigation(false);
 
   QHeaderView* const horizontal_header = horizontalHeader();
   horizontal_header->setHighlightSections(false);
@@ -2421,15 +2508,16 @@ void GameListListView::updateFixedColumnWidths()
 
   // Played time is a little trickier, since some locales might have longer words for "hours" and "minutes".
   setFixedColumnWidth(fm, GameListModel::Column_TimePlayed,
-                      std::max({width_for(qApp->translate("GameList", "%n seconds", "", 59)),
-                                width_for(qApp->translate("GameList", "%n minutes", "", 59)),
-                                width_for(qApp->translate("GameList", "%n hours", "", 1000))}));
+                      std::max({width_for(QCoreApplication::translate("GameList", "%n seconds", "", 59)),
+                                width_for(QCoreApplication::translate("GameList", "%n minutes", "", 59)),
+                                width_for(QCoreApplication::translate("GameList", "%n hours", "", 1000))}));
 
   // And this is a monstrosity.
   setFixedColumnWidth(
     fm, GameListModel::Column_LastPlayed,
-    std::max({width_for(qApp->translate("GameList", "Today")), width_for(qApp->translate("GameList", "Yesterday")),
-              width_for(qApp->translate("GameList", "Never")),
+    std::max({width_for(QCoreApplication::translate("GameList", "Today")),
+              width_for(QCoreApplication::translate("GameList", "Yesterday")),
+              width_for(QCoreApplication::translate("GameList", "Never")),
               width_for(QtHost::FormatNumber(Host::NumberFormatType::ShortDate,
                                              static_cast<s64>(QDateTime::currentSecsSinceEpoch())))}));
 
@@ -2703,4 +2791,35 @@ int GameListGridView::horizontalOffset() const
 int GameListGridView::verticalOffset() const
 {
   return QListView::verticalOffset() - m_vertical_offset;
+}
+
+GameListRefreshThread::GameListRefreshThread(bool invalidate_cache)
+  : QThread(), m_start_time(Timer::GetCurrentValue()), m_invalidate_cache(invalidate_cache)
+{
+}
+
+GameListRefreshThread::~GameListRefreshThread() = default;
+
+void GameListRefreshThread::cancel()
+{
+  // Not atomic, but we don't need to cancel immediately.
+  m_cancelled = true;
+}
+
+void GameListRefreshThread::run()
+{
+  GameList::Refresh(m_invalidate_cache, false, this);
+  emit refreshComplete();
+}
+
+void GameListRefreshThread::StateChanged(StateChange changed)
+{
+  if (changed & STATE_CHANGE_STATUS_TEXT)
+    m_qstatus_text = QtUtils::StringViewToQString(m_status_text);
+  else if (!(changed & (STATE_CHANGE_PROGRESS | STATE_CHANGE_STATUS_TEXT)))
+    return;
+
+  const float time_elapsed = static_cast<float>(Timer::ConvertValueToSeconds(Timer::GetCurrentValue() - m_start_time));
+  emit refreshProgress(m_qstatus_text, static_cast<int>(m_progress_value), static_cast<int>(m_progress_range),
+                       static_cast<int>(GameList::GetEntryCount()), time_elapsed);
 }

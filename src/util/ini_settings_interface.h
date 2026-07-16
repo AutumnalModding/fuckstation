@@ -1,10 +1,12 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
+
 #include "common/settings_interface.h"
 #include "common/string_pool.h"
 
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -31,19 +33,22 @@ public:
   };
   using SectionList = std::vector<Section>;
 
+  using SectionSaveOrder = std::span<const char* const>;
+
   INISettingsInterface();
   INISettingsInterface(std::string path);
   ~INISettingsInterface() override;
 
   ALWAYS_INLINE bool IsDirty() const { return m_dirty; }
   ALWAYS_INLINE const std::string& GetPath() const { return m_path; }
+  void SetDirty(bool dirty);
   void SetPath(std::string path);
 
   bool Load(Error* error = nullptr);
   bool Load(std::string new_path, Error* error = nullptr);
   bool LoadFromString(std::string_view data);
-  bool Save(Error* error = nullptr);
-  std::string SaveToString() const;
+  bool Save(Error* error = nullptr, SectionSaveOrder save_order = {});
+  std::string SaveToString(SectionSaveOrder save_order = {}) const;
 
   void Clear();
   void ClearPathAndContents();
@@ -51,20 +56,8 @@ public:
 
   bool IsEmpty() override;
 
-  bool GetIntValue(const char* section, const char* key, s32* value) const override;
-  bool GetUIntValue(const char* section, const char* key, u32* value) const override;
-  bool GetFloatValue(const char* section, const char* key, float* value) const override;
-  bool GetDoubleValue(const char* section, const char* key, double* value) const override;
-  bool GetBoolValue(const char* section, const char* key, bool* value) const override;
-  bool GetStringValue(const char* section, const char* key, std::string* value) const override;
-  bool GetStringValue(const char* section, const char* key, SmallStringBase* value) const override;
-
-  void SetIntValue(const char* section, const char* key, s32 value) override;
-  void SetUIntValue(const char* section, const char* key, u32 value) override;
-  void SetFloatValue(const char* section, const char* key, float value) override;
-  void SetDoubleValue(const char* section, const char* key, double value) override;
-  void SetBoolValue(const char* section, const char* key, bool value) override;
-  void SetStringValue(const char* section, const char* key, const char* value) override;
+  bool LookupValue(const char* section, const char* key, std::string_view* value) const override;
+  void StoreValue(const char* section, const char* key, std::string_view value) override;
   bool ContainsValue(const char* section, const char* key) const override;
   void DeleteValue(const char* section, const char* key) override;
   void ClearSection(const char* section) override;
@@ -78,14 +71,6 @@ public:
 
   std::vector<std::pair<std::string, std::string>> GetKeyValueList(const char* section) const override;
   void SetKeyValueList(const char* section, const std::vector<std::pair<std::string, std::string>>& items) override;
-
-  // default parameter overloads
-  using SettingsInterface::GetBoolValue;
-  using SettingsInterface::GetDoubleValue;
-  using SettingsInterface::GetFloatValue;
-  using SettingsInterface::GetIntValue;
-  using SettingsInterface::GetStringValue;
-  using SettingsInterface::GetUIntValue;
 
 private:
   std::string_view GetPoolStringView(const PoolString& ps) const;
@@ -104,6 +89,8 @@ private:
 
   // Returns a pointer to the raw value string for the first match, or nullptr.
   const KeyValuePair* FindFirstKeyValue(std::string_view section, std::string_view key) const;
+
+  void SaveSection(std::string& output, const Section& section) const;
 
   std::string m_path;
   BumpUniqueStringPool m_string_pool;

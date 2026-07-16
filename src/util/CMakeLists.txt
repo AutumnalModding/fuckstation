@@ -1,3 +1,9 @@
+# SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
+# SPDX-License-Identifier: CC-BY-NC-ND-4.0 + Packaging Restriction
+#
+# NOTE: In addition to the terms of CC-BY-NC-ND-4.0, you may not use this file to create
+# packages or build recipes without explicit permission from the copyright holder.
+
 add_library(util
   animated_image.cpp
   animated_image.h
@@ -24,6 +30,7 @@ add_library(util
   cue_parser.h
   dyn_shaderc.h
   dyn_spirv_cross.h
+  dyn_sqlite.h
   elf_file.cpp
   elf_file.h
   gpu_device.cpp
@@ -34,6 +41,8 @@ add_library(util
   gpu_texture.cpp
   gpu_texture.h
   gpu_types.h
+  http_cache.cpp
+  http_cache.h
   http_downloader.cpp
   http_downloader.h
   image.cpp
@@ -51,6 +60,8 @@ add_library(util
   iso_reader.h
   media_capture.cpp
   media_capture.h
+  object_archive.cpp
+  object_archive.h
   page_fault_handler.cpp
   page_fault_handler.h
   postprocessing.cpp
@@ -71,6 +82,8 @@ add_library(util
   sockets.h
   spirv_module.cpp
   spirv_module.h
+  sqlite_helpers.cpp
+  sqlite_helpers.h
   state_wrapper.cpp
   state_wrapper.h
   texture_decompress.cpp
@@ -81,12 +94,16 @@ add_library(util
   wav_reader_writer.h
   window_info.cpp
   window_info.h
+  zip_helpers.cpp
+  zip_helpers.h
 )
 
 target_precompile_headers(util PRIVATE "pch.h")
 target_include_directories(util PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(util PUBLIC common imgui)
-target_link_libraries(util PRIVATE libchdr lzma libjpeg-turbo::jpeg PNG::PNG WebP::webp plutosvg::plutosvg ZLIB::ZLIB SoundTouch::SoundTouchDLL xxhash zstd::libzstd_shared reshadefx)
+target_link_libraries(util PRIVATE libchdr lzma libjpeg-turbo::jpeg PNG::png_shared WebP::webp
+                                   plutosvg::plutosvg ZLIB::ZLIB SoundTouch::SoundTouchDLL xxhash
+                                   libzip::zip zstd::libzstd_shared reshadefx)
 
 if(ENABLE_X11)
   target_sources(util PRIVATE
@@ -94,11 +111,7 @@ if(ENABLE_X11)
     x11_tools.h
   )
   target_compile_definitions(util PRIVATE "-DENABLE_X11=1")
-  target_include_directories(util PRIVATE
-    "${X11_xcb_INCLUDE_PATH}"
-    "${X11_xcb_randr_INCLUDE_PATH}"
-    "${X11_X11_xcb_INCLUDE_PATH}"
-  )
+  target_include_directories(util PRIVATE "${X11_xcb_INCLUDE_PATH}")
 endif()
 
 if(ENABLE_WAYLAND)
@@ -121,13 +134,6 @@ if(ENABLE_OPENGL)
   )
   target_compile_definitions(util PUBLIC "ENABLE_OPENGL=1")
   target_link_libraries(util PRIVATE glad)
-
-  if(WIN32)
-    target_sources(util PRIVATE
-      opengl_context_wgl.cpp
-      opengl_context_wgl.h
-    )
-  endif()
 
   if(LINUX OR BSD OR ANDROID)
     target_sources(util PRIVATE
@@ -201,14 +207,7 @@ if(NOT ANDROID)
     sdl_audio_stream.cpp
     sdl_input_source.cpp
     sdl_input_source.h
-    sdl_video_helpers.h
   )
-  if(ENABLE_OPENGL)
-    target_sources(util PRIVATE
-      opengl_context_sdl.cpp
-      opengl_context_sdl.h
-    )
-  endif()
   target_compile_definitions(util PUBLIC
     ENABLE_SDL
   )
@@ -220,45 +219,7 @@ if(NOT ANDROID)
   target_include_directories(util PUBLIC ${FFMPEG_INCLUDE_DIRS})
 endif()
 
-if(WIN32)
-  target_sources(util PRIVATE
-    d3d_common.cpp
-    d3d_common.h
-    d3d11_device.cpp
-    d3d11_device.h
-    d3d11_pipeline.cpp
-    d3d11_pipeline.h
-    d3d11_stream_buffer.cpp
-    d3d11_stream_buffer.h
-    d3d11_texture.cpp
-    d3d11_texture.h
-    d3d12_builders.cpp
-    d3d12_builders.h
-    d3d12_descriptor_heap_manager.cpp
-    d3d12_descriptor_heap_manager.h
-    d3d12_device.cpp
-    d3d12_device.h
-    d3d12_pipeline.cpp
-    d3d12_pipeline.h
-    d3d12_stream_buffer.cpp
-    d3d12_stream_buffer.h
-    d3d12_texture.cpp
-    d3d12_texture.h
-    dinput_source.cpp
-    dinput_source.h
-    http_downloader_winhttp.cpp
-    win32_raw_input_source.cpp
-    win32_raw_input_source.h
-    xinput_source.cpp
-    xinput_source.h
-  )
-  target_link_libraries(util PRIVATE d3d12ma)
-  target_link_libraries(util PRIVATE Cfgmgr32.lib Dwmapi.lib winhttp.lib)
-
-  if(CMAKE_BUILD_TYPE MATCHES "Debug|Devel")
-    target_link_libraries(util PRIVATE WinPixEventRuntime::WinPixEventRuntime)
-  endif()
-elseif(APPLE)
+if(APPLE)
   set(MAC_SOURCES
     metal_device.h
     metal_device.mm
@@ -281,13 +242,8 @@ elseif(NOT ANDROID)
   endif()
 endif()
 
-if(NOT WIN32 AND NOT ANDROID)
-  target_sources(util PRIVATE
-    http_downloader_curl.cpp
-  )
-  target_link_libraries(util PRIVATE
-    CURL::libcurl
-  )
+if(NOT ANDROID)
+  target_link_libraries(util PRIVATE CURL::libcurl)
 endif()
 
 function(add_util_resources target)
@@ -309,39 +265,18 @@ function(add_util_resources target)
       message(WARNING "MoltenVK not found in path, it will depend on the target system having it.")
     endif()
 
-    # Copy dynamically-loaded libraries (harfbuzz/shaderc/spirv-cross) into the bundle.
-    # Use IMPORTED_SONAME_RELEASE to get the major-versioned filename (stripping the @rpath/ prefix).
-    foreach(dyn_lib harfbuzz::harfbuzz spirv-cross-c-shared Shaderc::shaderc_shared)
-      get_target_property(dyn_lib_path ${dyn_lib} IMPORTED_LOCATION_RELEASE)
-      get_target_property(dyn_lib_soname ${dyn_lib} IMPORTED_SONAME_RELEASE)
-      if(dyn_lib_soname)
-        string(REPLACE "@rpath/" "" dyn_lib_soname_filename "${dyn_lib_soname}")
-        get_filename_component(dyn_lib_dir "${dyn_lib_path}" DIRECTORY)
-        set(dyn_lib_major_path "${dyn_lib_dir}/${dyn_lib_soname_filename}")
-        if(EXISTS "${dyn_lib_major_path}")
-          set(dyn_lib_path "${dyn_lib_major_path}")
-        else()
-          message(WARNING "Could not find major-versioned symlink for ${dyn_lib}.")
-        endif()
-      endif()
-      target_sources(${target} PRIVATE "${dyn_lib_path}")
-      set_source_files_properties("${dyn_lib_path}" PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
-    endforeach()
-
-    # Copy FFmpeg libraries into the bundle
+    # Copy ffmpeg into the bundle.
     foreach(component avcodec avformat avutil swresample swscale)
       string(REGEX REPLACE "\([0-9]+\)\.[0-9]+\.[0-9]+" "\\1" major "${FFMPEG_${component}_VERSION}")
       string(REPLACE "lib${component}.dylib" "lib${component}.${major}.dylib" version_lib "${FFMPEG_${component}_LIBRARIES}")
       target_sources(${target} PRIVATE ${version_lib})
       set_source_files_properties(${target} PRIVATE ${version_lib} PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
     endforeach()
-  elseif(NOT WIN32)
-    # We need to add the rpath for shaderc to the executable.
-    get_target_property(SHADERC_LIBRARY Shaderc::shaderc_shared IMPORTED_LOCATION)
-    get_filename_component(SHADERC_LIBRARY_DIRECTORY ${SHADERC_LIBRARY} DIRECTORY)
-    set_target_properties(${target} PROPERTIES BUILD_RPATH "${SHADERC_LIBRARY_DIRECTORY}")
-    get_target_property(SPIRV_CROSS_LIBRARY spirv-cross-c-shared IMPORTED_LOCATION)
-    get_filename_component(SPIRV_CROSS_LIBRARY_DIRECTORY ${SPIRV_CROSS_LIBRARY} DIRECTORY)
-    set_target_properties(${target} PROPERTIES BUILD_RPATH "${SPIRV_CROSS_LIBRARY_DIRECTORY}")
+  endif()
+
+  # Copy dynamically-loaded libraries (harfbuzz/shaderc/spirv-cross) into the bundle.
+  bundle_libraries(${target} spirv-cross-c-shared Shaderc::shaderc_shared SQLite3::sqlite3-shared)
+  if(APPLE)
+    bundle_libraries(${target} harfbuzz::harfbuzz)
   endif()
 endfunction()

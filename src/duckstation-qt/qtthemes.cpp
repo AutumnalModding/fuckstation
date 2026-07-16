@@ -242,7 +242,7 @@ bool QtHost::LoadStyledFusionTheme(std::string_view name)
   }
 
   SetThemeAttributes(true, false, is_dark); // is_dark parsed from PALETTE block
-  qApp->setStyle(QStyleFactory::create("Fusion"_L1));
+  qApp->setStyle(QStyleFactory::create(u"Fusion"_s));
   qApp->setPalette(palette);
   if (ShouldDisableStyleSheet())
     SetStyleSheet(QString());
@@ -275,21 +275,21 @@ void QtHost::SetStyleFromSettings()
     qApp->setStyle(s_themes_locals.unthemed_style_name);
     qApp->setPalette(s_themes_locals.unthemed_palette);
 
-    QFile f(":qdarkstyle/style.qss"_L1);
+    QFile f(u":qdarkstyle/style.qss"_s);
     if (f.open(QFile::ReadOnly | QFile::Text))
       SetStyleSheet(f.readAll());
   }
   else if (theme == "fusion")
   {
     SetThemeAttributes(false, true, false);
-    qApp->setStyle(QStyleFactory::create("Fusion"_L1));
+    qApp->setStyle(QStyleFactory::create(u"Fusion"_s));
     qApp->setPalette(s_themes_locals.unthemed_palette);
   }
 #ifdef _WIN32
   else if (theme == "windowsvista")
   {
     SetThemeAttributes(false, false, false);
-    qApp->setStyle(QStyleFactory::create("windowsvista"_L1));
+    qApp->setStyle(QStyleFactory::create(u"windowsvista"_s));
     qApp->setPalette(s_themes_locals.unthemed_palette);
   }
 #endif
@@ -326,10 +326,6 @@ bool QtHost::HasGlobalStylesheet()
 
 void QtHost::UpdateThemeOnStyleChange()
 {
-  const QLatin1StringView new_theme_name = IsDarkApplicationTheme() ? "white"_L1 : "black"_L1;
-  if (QIcon::themeName() != new_theme_name)
-    QIcon::setThemeName(new_theme_name);
-
   if (NativeThemeStylesheetNeedsUpdate())
   {
     const QString stylesheet = GetNativeThemeStylesheet();
@@ -367,8 +363,8 @@ const char* Host::GetDefaultFullscreenUITheme()
 
   static constexpr const std::pair<const char*, const char*> theme_mapping[] = {
     {"cobaltsky", "CobaltSky"}, {"greymatter", "GreyMatter"}, {"greengiant", "GreenGiant"},
-    {"pinkypals", "PinkyPals"}, {"purplerain", "PurpleRain"}, {"darkruby", "DarkRuby"},
-    {"AMOLED", "AMOLED"},
+    {"pinkypals", "PinkyPals"}, {"purplerain", "PurpleRain"}, {"darkocean", "DarkOcean"},
+    {"darkruby", "DarkRuby"},   {"AMOLED", "AMOLED"},
   };
 
   const TinyString theme = Core::GetBaseTinyStringSettingValue("UI", "Theme", GetDefaultThemeName());
@@ -396,7 +392,11 @@ QString QtHost::GetNativeThemeStylesheet()
 #ifdef __APPLE__
   // Qt's native style on MacOS is... not great.
   // We re-theme the tool buttons to look like Cocoa tool buttons, and fix up popup menus.
+  // We also need to restore the native focus frame on QLineEdit, since it is disabled by setting a stylesheet.
   ret = R"(
+QLineEdit {
+    border-style: native;
+}
 QMenu {
     border-radius: 10px;
     padding: 4px 0;

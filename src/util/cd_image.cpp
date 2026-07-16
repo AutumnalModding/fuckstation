@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "cd_image.h"
+#include "translation.h"
 
 #include "common/assert.h"
 #include "common/bcdutils.h"
@@ -12,9 +13,16 @@
 #include "common/path.h"
 #include "common/string_util.h"
 
+#include "libchdr/cdrom.h"
+
+#include <fmt/format.h>
+
 #include <array>
 
 LOG_CHANNEL(CDImage);
+
+const std::array<u8, CDImage::SECTOR_SYNC_SIZE> CDImage::SECTOR_SYNC_DATA = {0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                                                             0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00};
 
 CDImage::CDImage() = default;
 
@@ -53,13 +61,7 @@ void CDImage::DeinterleaveSubcode(const u8* subcode_in, u8* subcode_out)
 
 std::unique_ptr<CDImage> CDImage::Open(const char* path, bool allow_patches, Error* error)
 {
-  // Annoying handling because of storage access framework.
-#ifdef __ANDROID__
-  const std::string path_display_name = FileSystem::GetDisplayNameFromPath(path);
-  const std::string_view extension = Path::GetExtension(path_display_name);
-#else
   const std::string_view extension = Path::GetExtension(path);
-#endif
 
   std::unique_ptr<CDImage> image;
   if (extension.empty())
@@ -118,11 +120,7 @@ std::unique_ptr<CDImage> CDImage::Open(const char* path, bool allow_patches, Err
 
   if (allow_patches)
   {
-#ifdef __ANDROID__
-    const std::string ppf_path = Path::BuildRelativePath(path, Path::ReplaceExtension(path_display_name, "ppf"));
-#else
     const std::string ppf_path = Path::BuildRelativePath(path, Path::ReplaceExtension(Path::GetFileName(path), "ppf"));
-#endif
     if (FileSystem::FileExists(ppf_path.c_str()))
     {
       image = CDImage::OverlayPPFPatch(ppf_path.c_str(), std::move(image), error);
@@ -136,15 +134,106 @@ std::unique_ptr<CDImage> CDImage::Open(const char* path, bool allow_patches, Err
 
 bool CDImage::HasOverlayablePatch(const char* path)
 {
-  // Annoying handling because of storage access framework.
-#ifdef __ANDROID__
-  const std::string ppf_path =
-    Path::BuildRelativePath(path, Path::ReplaceExtension(FileSystem::GetDisplayNameFromPath(path), "ppf"));
-#else
   const std::string ppf_path = Path::BuildRelativePath(path, Path::ReplaceExtension(Path::GetFileName(path), "ppf"));
-#endif
-
   return FileSystem::FileExists(ppf_path.c_str());
+}
+
+const char* CDImage::GetTrackModeDisplayName(TrackMode mode)
+{
+  static constexpr std::array<const char*, 8> track_mode_strings = {{
+    TRANSLATE_DISAMBIG_NOOP("CDImage", "Audio", "TrackMode"),
+    TRANSLATE_DISAMBIG_NOOP("CDImage", "Mode 1", "TrackMode"),
+    TRANSLATE_DISAMBIG_NOOP("CDImage", "Mode 1/Raw", "TrackMode"),
+    TRANSLATE_DISAMBIG_NOOP("CDImage", "Mode 2", "TrackMode"),
+    TRANSLATE_DISAMBIG_NOOP("CDImage", "Mode 2/Form 1", "TrackMode"),
+    TRANSLATE_DISAMBIG_NOOP("CDImage", "Mode 2/Form 2", "TrackMode"),
+    TRANSLATE_DISAMBIG_NOOP("CDImage", "Mode 2/Mix", "TrackMode"),
+    TRANSLATE_DISAMBIG_NOOP("CDImage", "Mode 2/Raw", "TrackMode"),
+  }};
+  return Host::TranslateToCString("CDImage", track_mode_strings[static_cast<size_t>(mode)], "TrackMode");
+}
+
+void CDImage::FillRawSectorSyncAndHeader(u8* sector, LBA lba, u8 sector_mode)
+{
+  std::memcpy(sector, SECTOR_SYNC_DATA.data(), SECTOR_SYNC_DATA.size());
+
+  const Position position = Position::FromLBA(lba);
+  sector[12] = BinaryToBCD(position.minute);
+  sector[13] = BinaryToBCD(position.second);
+  sector[14] = BinaryToBCD(position.frame);
+  sector[15] = sector_mode;
+}
+
+void CDImage::ConvertSectorToRaw(void* buffer, u32 lba, TrackMode mode)
+{
+  u8* const sector = reinterpret_cast<u8*>(buffer);
+
+  switch (mode)
+  {
+    case TrackMode::Mode1:
+    {
+      std::memmove(sector + 16, sector, DATA_SECTOR_SIZE);
+      FillRawSectorSyncAndHeader(sector, lba, 0x01);
+      edc_set(&sector[2064], edc_compute(sector, 2064));
+      std::memset(&sector[2068], 0, 8);
+      ecc_generate(sector);
+      return;
+    }
+
+    case TrackMode::Mode2:
+    {
+      std::memmove(sector + 16, sector, MODE2_DATA_SECTOR_SIZE);
+      FillRawSectorSyncAndHeader(sector, lba, 0x02);
+      return;
+    }
+
+    case TrackMode::Mode2Form1:
+    {
+      std::memmove(sector + 24, sector, DATA_SECTOR_SIZE);
+      FillRawSectorSyncAndHeader(sector, lba, 0x02);
+      std::memset(&sector[16], 0, 8); // subheader
+      sector[18] = 0x08;              // data
+      sector[22] = 0x08;
+      edc_set(&sector[2072], edc_compute(&sector[16], 2056));
+      ecc_generate(sector);
+      return;
+    }
+
+    case TrackMode::Mode2Form2:
+    {
+      std::memmove(sector + 24, sector, 2324);
+      FillRawSectorSyncAndHeader(sector, lba, 0x02);
+      std::memset(&sector[16], 0, 8); // subheader
+      sector[18] = 0x28;              // data, form 2
+      sector[22] = 0x28;
+      edc_set(&sector[2348], edc_compute(&sector[16], 2332));
+      return;
+    }
+
+    case TrackMode::Mode2FormMix:
+    {
+      std::memmove(sector + 16, sector, 2332);
+      FillRawSectorSyncAndHeader(sector, lba, 0x02);
+
+      // Bit 5 of the submode byte selects Form 2. The subheader is duplicated; prefer the first copy.
+      if ((sector[16 + 2] & 0x20) != 0)
+      {
+        edc_set(&sector[2348], edc_compute(&sector[16], 2332));
+      }
+      else
+      {
+        edc_set(&sector[2072], edc_compute(&sector[16], 2056));
+        ecc_generate(sector);
+      }
+      return;
+    }
+
+    case TrackMode::Audio:
+    case TrackMode::Mode1Raw:
+    case TrackMode::Mode2Raw:
+    default:
+      return;
+  }
 }
 
 CDImage::LBA CDImage::GetTrackStartPosition(u8 track) const
@@ -275,13 +364,15 @@ bool CDImage::ReadRawSector(void* buffer, SubChannelQ* subq)
   {
     if (m_current_index->file_sector_size > 0)
     {
-      // TODO: This is where we'd reconstruct the header for other mode tracks.
       if (!ReadSectorFromIndex(buffer, *m_current_index, m_position_in_index))
       {
         ERROR_LOG("Read of LBA {} failed", m_position_on_disc);
         Seek(m_position_on_disc);
         return false;
       }
+
+      // Fix up the sector header and sync data if necessary.
+      ConvertSectorToRaw(buffer, m_current_index->start_lba_on_disc + m_position_in_index, m_current_index->mode);
     }
     else
     {
@@ -360,6 +451,14 @@ bool CDImage::IsPrecached() const
 s64 CDImage::GetSizeOnDisk() const
 {
   return -1;
+}
+
+std::string CDImage::GetSummary() const
+{
+  return fmt::format(TRANSLATE_PLURAL_FS("CDImage", "%n tracks covering {0} MB ({1} MB on disk)", "Number of tracks",
+                                         static_cast<int>(m_tracks.size())),
+                     ((m_lba_count * CDImage::RAW_SECTOR_SIZE) + 1048575) / 1048576,
+                     (GetSizeOnDisk() + 1048575) / 1048576);
 }
 
 void CDImage::ClearTOC()
@@ -544,6 +643,11 @@ CDImage::LBA CDImage::Position::ToLBA() const
 std::tuple<u8, u8, u8> CDImage::Position::ToBCD() const
 {
   return std::make_tuple<u8, u8, u8>(BinaryToBCD(minute), BinaryToBCD(second), BinaryToBCD(frame));
+}
+
+std::string CDImage::Position::ToString() const
+{
+  return fmt::format("{:02}:{:02}:{:02}", minute, second, frame);
 }
 
 CDImage::Position CDImage::Position::operator+(const Position& rhs)

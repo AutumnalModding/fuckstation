@@ -21,7 +21,7 @@
 
 LOG_CHANNEL(MemoryCard);
 
-static constexpr std::array<std::string_view, NUM_CONTROLLER_AND_CARD_PORTS> s_event_names = {{
+static constexpr std::array<const char*, NUM_CONTROLLER_AND_CARD_PORTS> s_event_names = {{
   "Memory Card 1 Host Flush",
   "Memory Card 2 Host Flush",
   "Memory Card 3 Host Flush",
@@ -35,8 +35,7 @@ static constexpr std::array<std::string_view, NUM_CONTROLLER_AND_CARD_PORTS> s_e
 MemoryCard::MemoryCard(u32 index)
   : m_save_event(
       s_event_names[index], GetSaveDelayInTicks(), GetSaveDelayInTicks(),
-      [](void* param, TickCount ticks, TickCount ticks_late) { static_cast<MemoryCard*>(param)->SaveIfChanged(true); },
-      this),
+      [](void* param, TickCount ticks) { static_cast<MemoryCard*>(param)->SaveIfChanged(true); }, this),
     m_index(index)
 {
   m_FLAG.no_write_yet = true;
@@ -181,7 +180,7 @@ bool MemoryCard::Transfer(const u8 data_in, u8* data_out)
     break;
 
       FIXED_REPLY_STATE(State::ReadChecksum, m_checksum, true, State::ReadEnd);
-      FIXED_REPLY_STATE(State::ReadEnd, 0x47, true, State::Idle);
+      FIXED_REPLY_STATE(State::ReadEnd, 0x47, false, State::Idle);
 
       // write state
 
@@ -222,7 +221,7 @@ bool MemoryCard::Transfer(const u8 data_in, u8* data_out)
     }
     break;
 
-      FIXED_REPLY_STATE(State::WriteChecksum, m_checksum, true, State::WriteACK1);
+      FIXED_REPLY_STATE(State::WriteChecksum, m_last_byte, true, State::WriteACK1);
       FIXED_REPLY_STATE(State::WriteACK1, 0x5C, true, State::WriteACK2);
       FIXED_REPLY_STATE(State::WriteACK2, 0x5D, true, State::WriteEnd);
       FIXED_REPLY_STATE(State::WriteEnd, 0x47, false, State::Idle);
@@ -235,7 +234,7 @@ bool MemoryCard::Transfer(const u8 data_in, u8* data_out)
       FIXED_REPLY_STATE(State::GetID1, 0x04, true, State::GetID2);
       FIXED_REPLY_STATE(State::GetID2, 0x00, true, State::GetID3);
       FIXED_REPLY_STATE(State::GetID3, 0x00, true, State::GetID4);
-      FIXED_REPLY_STATE(State::GetID4, 0x80, true, State::Command);
+      FIXED_REPLY_STATE(State::GetID4, 0x80, false, State::Idle);
 
       // new command
     case State::Idle:
@@ -358,21 +357,18 @@ bool MemoryCard::SaveIfChanged(bool display_osd_message)
   if (m_path.empty())
     return false;
 
-  std::string display_name;
-  if (display_osd_message)
-    display_name = FileSystem::GetDisplayNameFromPath(m_path);
-
-  INFO_LOG("Saving memory card to {}...", Path::GetFileTitle(m_path));
+  const std::string_view filename = Path::GetFileName(m_path);
+  INFO_LOG("Saving memory card to {}...", filename);
 
   Error error;
   if (!MemoryCardImage::SaveToFile(m_data, m_path.c_str(), &error))
   {
     if (display_osd_message)
     {
-      Host::AddIconOSDMessage(OSDMessageType::Error, GetOSDMessageKey(m_index), ICON_EMOJI_WARNING,
-                              fmt::format(TRANSLATE_FS("MemoryCard", "Failed to save memory card {}."), m_index + 1),
-                              fmt::format(TRANSLATE_FS("MemoryCard", "File: {0}:\nError: {1}"),
-                                          Path::GetFileName(display_name), error.GetDescription()));
+      Host::AddIconOSDMessage(
+        OSDMessageType::Error, GetOSDMessageKey(m_index), ICON_EMOJI_WARNING,
+        fmt::format(TRANSLATE_FS("MemoryCard", "Failed to save memory card {}."), m_index + 1),
+        fmt::format(TRANSLATE_FS("MemoryCard", "File: {0}:\nError: {1}"), filename, error.GetDescription()));
     }
 
     return false;
@@ -384,10 +380,9 @@ bool MemoryCard::SaveIfChanged(bool display_osd_message)
     if (icon_path.empty())
       icon_path = ICON_PF_MEMORY_CARD;
 
-    Host::AddIconOSDMessage(
-      OSDMessageType::Quick, GetOSDMessageKey(m_index), std::move(icon_path),
-      fmt::format(TRANSLATE_FS("MemoryCard", "Memory Card Slot {}"), m_index + 1),
-      fmt::format(TRANSLATE_FS("MemoryCard", "Saved card to '{}'."), Path::GetFileName(display_name)));
+    Host::AddIconOSDMessage(OSDMessageType::Quick, GetOSDMessageKey(m_index), std::move(icon_path),
+                            fmt::format(TRANSLATE_FS("MemoryCard", "Memory Card Slot {}"), m_index + 1),
+                            fmt::format(TRANSLATE_FS("MemoryCard", "Saved card to '{}'."), filename));
   }
 
   return true;

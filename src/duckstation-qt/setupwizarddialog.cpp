@@ -6,6 +6,8 @@
 #include "biossettingswidget.h"
 #include "controllerbindingwidgets.h"
 #include "controllersettingwidgetbinder.h"
+#include "gamelistsettingswidget.h"
+#include "gamelistwidget.h"
 #include "graphicssettingswidget.h"
 #include "interfacesettingswidget.h"
 #include "mainwindow.h"
@@ -26,7 +28,12 @@
 
 #include "fmt/format.h"
 
+#include <QtCore/QItemSelectionModel>
+#include <QtWidgets/QButtonGroup>
+
 #include "moc_setupwizarddialog.cpp"
+
+using namespace Qt::StringLiterals;
 
 SetupWizardDialog::SetupWizardDialog()
 {
@@ -60,7 +67,7 @@ bool SetupWizardDialog::canShowNextPage()
 
     case Page_GameList:
     {
-      if (m_ui.searchDirectoryList->topLevelItemCount() == 0)
+      if (m_directory_model->rowCount() == 0)
       {
         if (QtUtils::MessageBoxQuestion(
               this, tr("No Game Directories Selected"),
@@ -160,6 +167,8 @@ void SetupWizardDialog::setupUi()
   m_page_labels[Page_Controller] = m_ui.labelController;
   m_page_labels[Page_Graphics] = m_ui.labelGraphics;
   m_page_labels[Page_Achievements] = m_ui.labelAchievements;
+  m_page_labels[Page_Interface] = m_ui.labelInterface;
+  m_page_labels[Page_GameListView] = m_ui.labelGameListView;
   m_page_labels[Page_Complete] = m_ui.labelComplete;
 
   connect(m_ui.back, &QPushButton::clicked, this, &SetupWizardDialog::previousPage);
@@ -168,10 +177,12 @@ void SetupWizardDialog::setupUi()
 
   setupLanguagePage(true);
   setupBIOSPage();
-  setupGameListPage();
+  setupGameListPage(true);
   setupControllerPage(true);
   setupGraphicsPage(true);
   setupAchievementsPage(true);
+  setupInterfacePage();
+  setupGameListViewPage();
 }
 
 void SetupWizardDialog::setupLanguagePage(bool initial)
@@ -199,6 +210,7 @@ void SetupWizardDialog::languageChanged()
   QtHost::UpdateApplicationLanguage(this);
   m_ui.retranslateUi(this);
   setupLanguagePage(false);
+  setupGameListPage(false);
   setupControllerPage(false);
   setupGraphicsPage(false);
   setupAchievementsPage(false);
@@ -229,42 +241,43 @@ void SetupWizardDialog::refreshBiosList()
   BIOSSettingsWidget::setDropDownValue(m_ui.imagePAL, Core::GetBaseStringSettingValue("BIOS", "PathPAL"), false);
 }
 
-void SetupWizardDialog::setupGameListPage()
+void SetupWizardDialog::setupGameListPage(bool initial)
 {
-  m_ui.searchDirectoryList->setContextMenuPolicy(Qt::ContextMenuPolicy::CustomContextMenu);
+  m_ui.gameDirectoriesDescription->setText(
+    m_ui.gameDirectoriesDescription->text().arg(GameListWidget::getSupportedFormatsString().split('\n').join(", ")));
+  if (!initial)
+    return;
+
+  m_directory_model = new GameListSearchDirectoriesModel(this);
+  m_ui.searchDirectoryList->setModel(m_directory_model);
   QtUtils::SetColumnWidthsForTreeView(m_ui.searchDirectoryList, {-1, 100});
 
-  connect(m_ui.searchDirectoryList, &QTreeWidget::customContextMenuRequested, this,
+  connect(m_ui.searchDirectoryList, &QTreeView::customContextMenuRequested, this,
           &SetupWizardDialog::onDirectoryListContextMenuRequested);
   connect(m_ui.addSearchDirectoryButton, &QPushButton::clicked, this,
           &SetupWizardDialog::onAddSearchDirectoryButtonClicked);
   connect(m_ui.removeSearchDirectoryButton, &QPushButton::clicked, this,
           &SetupWizardDialog::onRemoveSearchDirectoryButtonClicked);
-  connect(m_ui.searchDirectoryList, &QTreeWidget::itemSelectionChanged, this,
+  connect(m_ui.searchDirectoryList->selectionModel(), &QItemSelectionModel::selectionChanged, this,
           &SetupWizardDialog::onSearchDirectoryListSelectionChanged);
-  connect(m_ui.searchDirectoryList, &QTreeWidget::itemChanged, this,
-          &SetupWizardDialog::onSearchDirectoryListItemChanged);
 
   refreshDirectoryList();
 }
 
 void SetupWizardDialog::onDirectoryListContextMenuRequested(const QPoint& point)
 {
-  QModelIndexList selection = m_ui.searchDirectoryList->selectionModel()->selectedIndexes();
-  if (selection.size() < 1)
+  const QModelIndex index = m_ui.searchDirectoryList->currentIndex();
+  if (!index.isValid())
     return;
 
-  const int row = selection[0].row();
+  const QString path = QString::fromStdString(m_directory_model->pathForIndex(index));
 
   QMenu* const menu = QtUtils::NewPopupMenu(this);
-  menu->addAction(QIcon::fromTheme("folder-reduce-line"), tr("Remove"), this,
+  menu->addAction(QIcon(u":/icons/monochrome/svg/folder-reduce-line.svg"_s), tr("Remove"), this,
                   &SetupWizardDialog::onRemoveSearchDirectoryButtonClicked);
   menu->addSeparator();
-  menu->addAction(QIcon::fromTheme("folder-open-line"), tr("Open Directory..."), [this, row]() {
-    const QTreeWidgetItem* const item = m_ui.searchDirectoryList->topLevelItem(row);
-    if (item)
-      QtUtils::OpenURL(this, QUrl::fromLocalFile(item->text(0)));
-  });
+  menu->addAction(QIcon(u":/icons/monochrome/svg/folder-open-line.svg"_s), tr("Open Directory..."),
+                  [this, path]() { QtUtils::OpenURL(this, QUrl::fromLocalFile(path)); });
   menu->popup(m_ui.searchDirectoryList->mapToGlobal(point));
 }
 
@@ -284,82 +297,26 @@ void SetupWizardDialog::onAddSearchDirectoryButtonClicked()
   if (selection != QMessageBox::Yes && selection != QMessageBox::No)
     return;
 
-  const bool recursive = (selection == QMessageBox::Yes);
-  const std::string spath = dir.toStdString();
-  Core::RemoveValueFromBaseStringListSetting("GameList", recursive ? "Paths" : "RecursivePaths", spath.c_str());
-  Core::AddValueToBaseStringListSetting("GameList", recursive ? "RecursivePaths" : "Paths", spath.c_str());
-  Host::CommitBaseSettingChanges();
-  refreshDirectoryList();
+  m_directory_model->addPath(dir.toStdString(), selection == QMessageBox::Yes);
 }
 
 void SetupWizardDialog::onRemoveSearchDirectoryButtonClicked()
 {
   const QModelIndex index = m_ui.searchDirectoryList->currentIndex();
-  const QTreeWidgetItem* const item = m_ui.searchDirectoryList->takeTopLevelItem(index.row());
-  if (!item)
+  if (!index.isValid())
     return;
 
-  const std::string spath = item->text(0).toStdString();
-  delete item;
-
-  if (!Core::RemoveValueFromBaseStringListSetting("GameList", "Paths", spath.c_str()) &&
-      !Core::RemoveValueFromBaseStringListSetting("GameList", "RecursivePaths", spath.c_str()))
-  {
-    return;
-  }
-
-  Host::CommitBaseSettingChanges();
-  refreshDirectoryList();
+  m_directory_model->removePath(index);
 }
 
 void SetupWizardDialog::onSearchDirectoryListSelectionChanged()
 {
-  m_ui.removeSearchDirectoryButton->setEnabled(!m_ui.searchDirectoryList->selectedItems().isEmpty());
-}
-
-void SetupWizardDialog::onSearchDirectoryListItemChanged(QTreeWidgetItem* item, int column)
-{
-  if (column != 1)
-    return;
-
-  const std::string path = item->text(0).toStdString();
-  if (item->checkState(1) == Qt::Checked)
-  {
-    Core::RemoveValueFromBaseStringListSetting("GameList", "Paths", path.c_str());
-    Core::AddValueToBaseStringListSetting("GameList", "RecursivePaths", path.c_str());
-  }
-  else
-  {
-    Core::RemoveValueFromBaseStringListSetting("GameList", "RecursivePaths", path.c_str());
-    Core::AddValueToBaseStringListSetting("GameList", "Paths", path.c_str());
-  }
-
-  Host::CommitBaseSettingChanges();
-}
-
-void SetupWizardDialog::addPathToTable(const std::string& path, bool recursive)
-{
-  QTreeWidgetItem* const item = new QTreeWidgetItem();
-  item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-  item->setText(0, QString::fromStdString(path));
-  item->setCheckState(1, recursive ? Qt::Checked : Qt::Unchecked);
-  m_ui.searchDirectoryList->addTopLevelItem(item);
+  m_ui.removeSearchDirectoryButton->setEnabled(m_ui.searchDirectoryList->selectionModel()->hasSelection());
 }
 
 void SetupWizardDialog::refreshDirectoryList()
 {
-  QSignalBlocker sb(m_ui.searchDirectoryList);
-  m_ui.searchDirectoryList->clear();
-
-  std::vector<std::string> path_list = Core::GetBaseStringListSetting("GameList", "Paths");
-  for (const std::string& entry : path_list)
-    addPathToTable(entry, false);
-
-  path_list = Core::GetBaseStringListSetting("GameList", "RecursivePaths");
-  for (const std::string& entry : path_list)
-    addPathToTable(entry, true);
-
-  m_ui.searchDirectoryList->sortByColumn(0, Qt::AscendingOrder);
+  m_directory_model->reload();
   m_ui.removeSearchDirectoryButton->setEnabled(false);
 }
 
@@ -413,6 +370,9 @@ void SetupWizardDialog::setupControllerPage(bool initial)
     for (const PadWidgets& w : pad_widgets)
       w.type_combo->blockSignals(false);
   }
+
+  m_ui.pauseMenuHotkey->initialize(nullptr, InputBindingInfo::Type::Button, "Hotkeys", "OpenPauseMenu",
+                                   tr("Open Pause Menu"));
 }
 
 void SetupWizardDialog::updateStylesheets()
@@ -490,10 +450,21 @@ void SetupWizardDialog::doMultipleDeviceAutomaticBinding(u32 port, QLabel* updat
 
 void SetupWizardDialog::setupGraphicsPage(bool initial)
 {
+  if (initial)
+  {
+    m_ui.resolutionScaleWarningIcon->setPixmap(
+      QIcon(QtHost::GetResourceQPath("images/warning.svg", true)).pixmap(16, 16));
+  }
+  m_ui.resolutionScaleWarningIcon->setToolTip(
+    tr("PGXP is not enabled. Increasing the resolution without enabling PGXP will result in visible polygon "
+       "glitches."));
+
   SettingWidgetBinder::DisconnectWidget(m_ui.resolutionScale);
   m_ui.resolutionScale->clear();
   GraphicsSettingsWidget::populateUpscalingModes(m_ui.resolutionScale);
   SettingWidgetBinder::BindWidgetToIntSetting(nullptr, m_ui.resolutionScale, "GPU", "ResolutionScale", 1);
+  connect(m_ui.resolutionScale, &QComboBox::currentIndexChanged, this,
+          &SetupWizardDialog::updateResolutionScaleWarning);
 
   SettingWidgetBinder::DisconnectWidget(m_ui.textureFiltering);
   m_ui.textureFiltering->clear();
@@ -551,7 +522,16 @@ void SetupWizardDialog::setupGraphicsPage(bool initial)
   {
     SettingWidgetBinder::BindWidgetToBoolSetting(nullptr, m_ui.pgxpEnable, "GPU", "PGXPEnable", false);
     SettingWidgetBinder::BindWidgetToBoolSetting(nullptr, m_ui.widescreenHack, "GPU", "WidescreenHack", false);
+    connect(m_ui.pgxpEnable, &QCheckBox::checkStateChanged, this, &SetupWizardDialog::updateResolutionScaleWarning);
   }
+
+  updateResolutionScaleWarning();
+}
+
+void SetupWizardDialog::updateResolutionScaleWarning()
+{
+  m_ui.resolutionScaleWarningIcon->setVisible(m_ui.resolutionScale->currentIndex() != 1 &&
+                                              !m_ui.pgxpEnable->isChecked());
 }
 
 void SetupWizardDialog::setupAchievementsPage(bool initial)
@@ -567,8 +547,13 @@ void SetupWizardDialog::setupAchievementsPage(bool initial)
     SettingWidgetBinder::BindWidgetToBoolSetting(nullptr, m_ui.enable, "Cheevos", "Enabled", false);
     SettingWidgetBinder::BindWidgetToBoolSetting(nullptr, m_ui.hardcoreMode, "Cheevos", "ChallengeMode", false);
     connect(m_ui.enable, &QCheckBox::checkStateChanged, this, &SetupWizardDialog::updateAchievementsEnableState);
-    connect(m_ui.loginButton, &QPushButton::clicked, this, &SetupWizardDialog::onAchievementsLoginLogoutClicked);
-    connect(m_ui.viewProfile, &QPushButton::clicked, this, &SetupWizardDialog::onAchievementsViewProfileClicked);
+    connect(m_ui.achievementsLoginButton, &QPushButton::clicked, this, &SetupWizardDialog::onAchievementsLoginPressed);
+    connect(m_ui.achievementsLogoutButton, &QPushButton::clicked, this,
+            &SetupWizardDialog::onAchievementsLogoutPressed);
+    connect(m_ui.achievementsRegisterUserButton, &QPushButton::clicked, this,
+            &SetupWizardDialog::onAchievementsRegisterUserPressed);
+    connect(m_ui.achievementsViewProfileButton, &QPushButton::clicked, this,
+            &SetupWizardDialog::onAchievementsViewProfilePressed);
   }
 
   updateAchievementsEnableState();
@@ -583,8 +568,25 @@ void SetupWizardDialog::updateAchievementsEnableState()
 
 void SetupWizardDialog::updateAchievementsLoginState()
 {
-  const std::string username(Core::GetBaseStringSettingValue("Cheevos", "Username"));
-  const bool logged_in = !username.empty();
+  m_ui.achievementsUserBadge->setPixmap(QPixmap(QtHost::GetResourceQPath("images/ra-generic-user.png", true)));
+
+  QString qusername;
+  QString qbadge_path;
+
+  {
+    const auto lock = Achievements::GetLock();
+    if (Achievements::IsLoggedIn())
+    {
+      qusername = QString::fromStdString(Achievements::GetLoggedInUserName());
+      QtUtils::SetLabelPixmapPathOrURL(m_ui.achievementsUserBadge, Achievements::GetLoggedInUserIconURL(), true);
+    }
+    else
+    {
+      qusername = QString::fromStdString(Core::GetBaseStringSettingValue("Cheevos", "Username"));
+    }
+  }
+
+  const bool logged_in = !qusername.isEmpty();
 
   if (logged_in)
   {
@@ -592,55 +594,123 @@ void SetupWizardDialog::updateAchievementsLoginState()
       StringUtil::FromChars<u64>(Core::GetBaseStringSettingValue("Cheevos", "LoginTimestamp", "0")).value_or(0);
     const QString login_timestamp =
       QtHost::FormatNumber(Host::NumberFormatType::ShortDateTime, static_cast<s64>(login_unix_timestamp));
-    m_ui.loginStatus->setText(
-      tr("Username: %1\nLogin token generated on %2.").arg(QString::fromStdString(username)).arg(login_timestamp));
-    m_ui.loginButton->setText(tr("Logout"));
+    m_ui.achievementsLoginStatus->setText(
+      tr("Logged in as %1\nToken generated at %2").arg(qusername).arg(login_timestamp));
   }
   else
   {
-    m_ui.loginStatus->setText(tr("Not Logged In."));
-    m_ui.loginButton->setText(tr("Login..."));
+    m_ui.achievementsLoginStatus->setText(tr("Not Logged In."));
   }
 
-  m_ui.viewProfile->setEnabled(logged_in);
+  m_ui.achievementsViewProfileButton->setVisible(logged_in);
+  m_ui.achievementsViewProfileButton->setEnabled(logged_in);
+  m_ui.achievementsLogoutButton->setVisible(logged_in);
+  m_ui.achievementsLogoutButton->setEnabled(logged_in);
+  m_ui.achievementsRegisterUserButton->setVisible(!logged_in);
+  m_ui.achievementsRegisterUserButton->setEnabled(!logged_in);
+  m_ui.achievementsLoginButton->setVisible(!logged_in);
+  m_ui.achievementsLoginButton->setEnabled(!logged_in);
 }
 
-void SetupWizardDialog::onAchievementsLoginLogoutClicked()
+void SetupWizardDialog::onAchievementsLoginPressed()
 {
-  if (!Core::GetBaseStringSettingValue("Cheevos", "Username").empty())
-  {
-    Host::RunOnCoreThread([]() { Achievements::Logout(); }, true);
-    updateAchievementsLoginState();
-    return;
-  }
-
   AchievementLoginDialog* login = new AchievementLoginDialog(this, Achievements::LoginRequestReason::UserInitiated);
   connect(login, &AchievementLoginDialog::accepted, this, &SetupWizardDialog::onAchievementsLoginCompleted);
   login->open();
 }
 
+void SetupWizardDialog::onAchievementsLogoutPressed()
+{
+  if (Core::GetBaseStringSettingValue("Cheevos", "Username").empty())
+    return;
+
+  // Really should do this on the core thread, but it's luckily not doing anything at this point.
+  Achievements::Logout();
+  updateAchievementsLoginState();
+}
+
 void SetupWizardDialog::onAchievementsLoginCompleted()
 {
-  updateAchievementsEnableState();
   updateAchievementsLoginState();
 
   // Login can enable achievements/hardcore.
   if (!m_ui.enable->isChecked() && Core::GetBaseBoolSettingValue("Cheevos", "Enabled", false))
   {
     m_ui.enable->setChecked(true);
-    updateAchievementsLoginState();
+    updateAchievementsEnableState();
   }
   if (!m_ui.hardcoreMode->isChecked() && Core::GetBaseBoolSettingValue("Cheevos", "ChallengeMode", false))
     m_ui.hardcoreMode->setChecked(true);
 }
 
-void SetupWizardDialog::onAchievementsViewProfileClicked()
+void SetupWizardDialog::onAchievementsRegisterUserPressed()
+{
+  QtUtils::OpenURL(this, QUrl(QString::fromLatin1(Achievements::RA_REGISTER_URL)));
+}
+
+void SetupWizardDialog::onAchievementsViewProfilePressed()
 {
   const std::string username(Core::GetBaseStringSettingValue("Cheevos", "Username"));
   if (username.empty())
     return;
 
-  const QByteArray encoded_username(QUrl::toPercentEncoding(QString::fromStdString(username)));
-  QtUtils::OpenURL(
-    this, QUrl(QStringLiteral("https://retroachievements.org/user/%1").arg(QString::fromUtf8(encoded_username))));
+  QtUtils::OpenURL(this, QUrl(QString::fromStdString(Achievements::GetProfileURL(username))));
+}
+
+void SetupWizardDialog::setupGameListViewPage()
+{
+  const bool use_grid = Core::GetBaseBoolSettingValue("UI", "GameListGridView", false);
+  m_ui.listView->setChecked(!use_grid);
+  m_ui.gridView->setChecked(use_grid);
+
+  connect(m_ui.listView, &QRadioButton::toggled, this, &SetupWizardDialog::onGridViewChanged);
+  connect(m_ui.gridView, &QRadioButton::toggled, this, &SetupWizardDialog::onGridViewChanged);
+}
+
+void SetupWizardDialog::onGridViewChanged(bool checked)
+{
+  if (!checked)
+    return;
+
+  bool setting_value;
+  if (const QObject* const sender_widget = sender(); sender_widget == m_ui.listView)
+    setting_value = false;
+  else if (sender_widget == m_ui.gridView)
+    setting_value = true;
+  else
+    return;
+
+  // NOTE: No settings apply here, we explicitly change the layout.
+  Core::SetBaseBoolSettingValue("UI", "GameListGridView", setting_value);
+  Core::SetBaseUIntSettingValue("Main", "DefaultFullscreenUIGameView", setting_value ? 0 : 1);
+  Host::CommitBaseSettingChanges();
+  g_main_window->getGameListWidget()->reloadViewModeFromSettings();
+}
+
+void SetupWizardDialog::setupInterfacePage()
+{
+  const bool use_big_picture = Core::GetBaseBoolSettingValue("Main", "StartFullscreenUI", false);
+  m_ui.desktopMode->setChecked(!use_big_picture);
+  m_ui.bigPictureMode->setChecked(use_big_picture);
+
+  connect(m_ui.desktopMode, &QRadioButton::toggled, this, &SetupWizardDialog::onStartFullscreenUIChanged);
+  connect(m_ui.bigPictureMode, &QRadioButton::toggled, this, &SetupWizardDialog::onStartFullscreenUIChanged);
+}
+
+void SetupWizardDialog::onStartFullscreenUIChanged(bool checked)
+{
+  if (!checked)
+    return;
+
+  bool setting_value;
+  if (const QObject* const sender_widget = sender(); sender_widget == m_ui.desktopMode)
+    setting_value = false;
+  else if (sender_widget == m_ui.bigPictureMode)
+    setting_value = true;
+  else
+    return;
+
+  // NOTE: No settings apply here, this is queried after the wizard completes.
+  Core::SetBaseBoolSettingValue("Main", "StartFullscreenUI", setting_value);
+  Host::CommitBaseSettingChanges();
 }

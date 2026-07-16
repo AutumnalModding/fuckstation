@@ -57,7 +57,8 @@
         <string>Add</string>
        </property>
        <property name="icon">
-        <iconset theme="folder-add-line"/>
+        <iconset resource="resources/duckstation-qt.qrc">
+         <normaloff>:/icons/monochrome/svg/folder-add-line.svg</normaloff>:/icons/monochrome/svg/folder-add-line.svg</iconset>
        </property>
       </widget>
      </item>
@@ -73,19 +74,29 @@
         <string>Remove</string>
        </property>
        <property name="icon">
-        <iconset theme="folder-reduce-line"/>
+        <iconset resource="resources/duckstation-qt.qrc">
+         <normaloff>:/icons/monochrome/svg/folder-reduce-line.svg</normaloff>:/icons/monochrome/svg/folder-reduce-line.svg</iconset>
        </property>
       </widget>
      </item>
     </layout>
    </item>
    <item>
-    <widget class="QTreeWidget" name="searchDirectoryList">
+    <widget class="QTreeView" name="searchDirectoryList">
      <property name="contextMenuPolicy">
       <enum>Qt::ContextMenuPolicy::CustomContextMenu</enum>
      </property>
      <property name="alternatingRowColors">
       <bool>true</bool>
+     </property>
+     <property name="selectionBehavior">
+      <enum>QAbstractItemView::SelectionBehavior::SelectRows</enum>
+     </property>
+     <property name="iconSize">
+      <size>
+       <width>20</width>
+       <height>20</height>
+      </size>
      </property>
      <property name="rootIsDecorated">
       <bool>false</bool>
@@ -93,16 +104,6 @@
      <property name="uniformRowHeights">
       <bool>true</bool>
      </property>
-     <column>
-      <property name="text">
-       <string>Search Directory</string>
-      </property>
-     </column>
-     <column>
-      <property name="text">
-       <string>Scan Recursively</string>
-      </property>
-     </column>
     </widget>
    </item>
    <item>
@@ -139,7 +140,8 @@
         <string>File...</string>
        </property>
        <property name="icon">
-        <iconset theme="file-add-line"/>
+        <iconset resource="resources/duckstation-qt.qrc">
+         <normaloff>:/icons/monochrome/svg/file-add-line.svg</normaloff>:/icons/monochrome/svg/file-add-line.svg</iconset>
        </property>
       </widget>
      </item>
@@ -155,7 +157,8 @@
         <string>Folder...</string>
        </property>
        <property name="icon">
-        <iconset theme="folder-add-line"/>
+        <iconset resource="resources/duckstation-qt.qrc">
+         <normaloff>:/icons/monochrome/svg/folder-add-line.svg</normaloff>:/icons/monochrome/svg/folder-add-line.svg</iconset>
        </property>
       </widget>
      </item>
@@ -171,14 +174,22 @@
         <string>Remove</string>
        </property>
        <property name="icon">
-        <iconset theme="folder-reduce-line"/>
+        <iconset resource="resources/duckstation-qt.qrc">
+         <normaloff>:/icons/monochrome/svg/folder-reduce-line.svg</normaloff>:/icons/monochrome/svg/folder-reduce-line.svg</iconset>
        </property>
       </widget>
      </item>
     </layout>
    </item>
    <item>
-    <widget class="QListWidget" name="excludedPaths"/>
+    <widget class="QListWidget" name="excludedPaths">
+     <property name="iconSize">
+      <size>
+       <width>20</width>
+       <height>20</height>
+      </size>
+     </property>
+    </widget>
    </item>
    <item>
     <layout class="QHBoxLayout" name="horizontalLayout">
@@ -207,7 +218,8 @@
         <string>Scan For New Games</string>
        </property>
        <property name="icon">
-        <iconset theme="mag-line"/>
+        <iconset resource="resources/duckstation-qt.qrc">
+         <normaloff>:/icons/monochrome/svg/file-search-line.svg</normaloff>:/icons/monochrome/svg/file-search-line.svg</iconset>
        </property>
       </widget>
      </item>
@@ -223,7 +235,8 @@
         <string>Rescan All Games</string>
        </property>
        <property name="icon">
-        <iconset theme="refresh-line"/>
+        <iconset resource="resources/duckstation-qt.qrc">
+         <normaloff>:/icons/monochrome/svg/refresh-line.svg</normaloff>:/icons/monochrome/svg/refresh-line.svg</iconset>
        </property>
       </widget>
      </item>
@@ -232,7 +245,7 @@
   </layout>
  </widget>
  <resources>
-  <include location="resources/resources.qrc"/>
+  <include location="resources/duckstation-qt.qrc"/>
  </resources>
  <connections/>
 </ui>

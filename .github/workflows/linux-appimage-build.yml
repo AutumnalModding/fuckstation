@@ -17,11 +17,9 @@ jobs:
         include:
           - name: "x64"
             asset: "DuckStation-x64.AppImage"
-            artifact: "linux-x64-appimage"
             cmakeoptions: ""
           - name: "x64 SSE2"
             asset: "DuckStation-x64-SSE2.AppImage"
-            artifact: "linux-x64-sse2-appimage"
             cmakeoptions: "-DDISABLE_SSE4=ON"
     steps:
     - uses: actions/checkout@v6
@@ -35,7 +33,8 @@ jobs:
       run: |
         DEPS_VERSION=$(cat dep/PREBUILT-VERSION)
         cd dep/prebuilt
-        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/dependencies/releases/download/$DEPS_VERSION/deps-linux-x64.tar.xz"
+        curl --fail --retry 5 --retry-all-errors -LO "https://github.com/duckstation/dependencies/releases/download/$DEPS_VERSION/deps-linux-x64.tar.xz"
+        sha256sum --check --ignore-missing ../PREBUILT-SHA256SUMS
         tar -xf "deps-linux-x64.tar.xz"
         rm "deps-linux-x64.tar.xz"
 
@@ -65,15 +64,14 @@ jobs:
       run: |
         mkdir build
         cd build
-        cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmakeoptions }} -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19 -DCMAKE_EXE_LINKER_FLAGS_INIT="-fuse-ld=lld" -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld" -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld" ..
+        cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmakeoptions }} -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_C_COMPILER=clang-22 -DCMAKE_CXX_COMPILER=clang++-22 -DCMAKE_EXE_LINKER_FLAGS_INIT="-fuse-ld=lld" -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld" -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld" ..
         cmake --build . --parallel
         cd ..
         scripts/appimage/make-appimage.sh $(realpath .) $(realpath ./build) "${{ matrix.asset }}"
 
     - name: Upload AppImage
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7
       with:
-        name: "${{ matrix.artifact }}"
         path: "${{ matrix.asset }}"
-        compression-level: 0
+        archive: false
         if-no-files-found: error

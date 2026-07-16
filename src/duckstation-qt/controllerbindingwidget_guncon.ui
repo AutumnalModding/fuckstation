@@ -97,9 +97,6 @@
                <height>16777215</height>
               </size>
              </property>
-             <property name="text">
-              <string notr="true">PushButton</string>
-             </property>
             </widget>
            </item>
           </layout>
@@ -136,9 +133,6 @@
                <width>100</width>
                <height>16777215</height>
               </size>
-             </property>
-             <property name="text">
-              <string notr="true">PushButton</string>
              </property>
             </widget>
            </item>
@@ -177,9 +171,6 @@
                <height>16777215</height>
               </size>
              </property>
-             <property name="text">
-              <string notr="true">PushButton</string>
-             </property>
             </widget>
            </item>
           </layout>
@@ -216,9 +207,6 @@
                <width>100</width>
                <height>16777215</height>
               </size>
-             </property>
-             <property name="text">
-              <string notr="true">PushButton</string>
              </property>
             </widget>
            </item>
@@ -259,27 +247,24 @@
       </spacer>
      </item>
      <item row="1" column="1" colspan="2">
-      <widget class="QLabel" name="label_3">
+      <widget class="SVGWidget" name="image">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
          <horstretch>0</horstretch>
          <verstretch>0</verstretch>
         </sizepolicy>
        </property>
-       <property name="maximumSize">
+       <property name="minimumSize">
         <size>
          <width>400</width>
          <height>266</height>
         </size>
        </property>
-       <property name="text">
-        <string/>
-       </property>
-       <property name="pixmap">
-        <pixmap resource="resources/duckstation-qt.qrc">:/controllers/guncon.svg</pixmap>
-       </property>
-       <property name="scaledContents">
-        <bool>true</bool>
+       <property name="maximumSize">
+        <size>
+         <width>400</width>
+         <height>266</height>
+        </size>
        </property>
       </widget>
      </item>
@@ -371,9 +356,6 @@
             <height>16777215</height>
            </size>
           </property>
-          <property name="text">
-           <string>PushButton</string>
-          </property>
          </widget>
         </item>
        </layout>
@@ -417,9 +399,6 @@
                <height>16777215</height>
               </size>
              </property>
-             <property name="text">
-              <string>PushButton</string>
-             </property>
             </widget>
            </item>
           </layout>
@@ -456,9 +435,6 @@
                <width>150</width>
                <height>16777215</height>
               </size>
-             </property>
-             <property name="text">
-              <string>PushButton</string>
              </property>
             </widget>
            </item>
@@ -506,9 +482,6 @@
                <height>16777215</height>
               </size>
              </property>
-             <property name="text">
-              <string>PushButton</string>
-             </property>
             </widget>
            </item>
           </layout>
@@ -545,9 +518,6 @@
                <width>150</width>
                <height>16777215</height>
               </size>
-             </property>
-             <property name="text">
-              <string>PushButton</string>
              </property>
             </widget>
            </item>
@@ -592,6 +562,11 @@
    <class>InputBindingWidget</class>
    <extends>QPushButton</extends>
    <header>inputbindingwidgets.h</header>
+  </customwidget>
+  <customwidget>
+   <class>SVGWidget</class>
+   <extends>QWidget</extends>
+   <header>svgwidget.h</header>
   </customwidget>
  </customwidgets>
  <resources>

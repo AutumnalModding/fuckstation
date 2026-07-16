@@ -16,7 +16,6 @@
     <ClInclude Include="postprocessing.h" />
     <ClInclude Include="postprocessing_shader.h" />
     <ClInclude Include="input_source.h" />
-    <ClInclude Include="platform_misc.h" />
     <ClInclude Include="sdl_input_source.h" />
     <ClInclude Include="win32_raw_input_source.h" />
     <ClInclude Include="xinput_source.h" />
@@ -71,7 +70,6 @@
     <ClInclude Include="x11_tools.h" />
     <ClInclude Include="opengl_context_egl_xlib.h" />
     <ClInclude Include="texture_decompress.h" />
-    <ClInclude Include="opengl_context_sdl.h" />
     <ClInclude Include="animated_image.h" />
     <ClInclude Include="dyn_shaderc.h" />
     <ClInclude Include="dyn_spirv_cross.h" />
@@ -83,6 +81,11 @@
     <ClInclude Include="vulkan_headers.h" />
     <ClInclude Include="gpu_types.h" />
     <ClInclude Include="sdl_video_helpers.h" />
+    <ClInclude Include="object_archive.h" />
+    <ClInclude Include="http_cache.h" />
+    <ClInclude Include="dyn_sqlite.h" />
+    <ClInclude Include="sqlite_helpers.h" />
+    <ClInclude Include="zip_helpers.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="state_wrapper.cpp" />
@@ -143,8 +146,6 @@
     <ClCompile Include="d3d11_texture.cpp" />
     <ClCompile Include="postprocessing_shader_fx.cpp" />
     <ClCompile Include="pch.cpp" />
-    <ClCompile Include="http_downloader_curl.cpp" />
-    <ClCompile Include="http_downloader_winhttp.cpp" />
     <ClCompile Include="http_downloader.cpp" />
     <ClCompile Include="metal_device.mm" />
     <ClCompile Include="metal_stream_buffer.mm" />
@@ -162,13 +163,17 @@
     <ClCompile Include="x11_tools.cpp" />
     <ClCompile Include="opengl_context_egl_xlib.cpp" />
     <ClCompile Include="texture_decompress.cpp" />
-    <ClCompile Include="opengl_context_sdl.cpp" />
     <ClCompile Include="animated_image.cpp" />
     <ClCompile Include="spirv_module.cpp" />
     <ClCompile Include="postprocessing_shader_slang.cpp" />
     <ClCompile Include="translation.cpp" />
     <ClCompile Include="core_audio_stream.cpp" />
     <ClCompile Include="cd_image_ccd.cpp" />
+    <ClCompile Include="object_archive.cpp" />
+    <ClCompile Include="http_cache.cpp" />
+    <ClCompile Include="xaudio2_audio_stream.cpp" />
+    <ClCompile Include="sqlite_helpers.cpp" />
+    <ClCompile Include="zip_helpers.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="metal_shaders.metal" />

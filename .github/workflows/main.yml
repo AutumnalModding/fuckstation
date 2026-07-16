@@ -42,10 +42,11 @@ jobs:
     if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev'
     steps:
       - name: Download Artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: ./artifacts/
           merge-multiple: true
+          skip-decompress: true
 
       - name: Display Downloaded Artifacts
         run: find ./artifacts/ -type f | sort
@@ -61,19 +62,17 @@ jobs:
           files: |
             ./artifacts/duckstation-windows-x64-installer.exe
             ./artifacts/duckstation-windows-x64-release.zip
-            ./artifacts/duckstation-windows-x64-release-symbols.zip
+            ./artifacts/duckstation-windows-x64-release-symbols.7z
             ./artifacts/duckstation-windows-x64-sse2-installer.exe
             ./artifacts/duckstation-windows-x64-sse2-release.zip
-            ./artifacts/duckstation-windows-x64-sse2-release-symbols.zip
+            ./artifacts/duckstation-windows-x64-sse2-release-symbols.7z
             ./artifacts/duckstation-windows-arm64-installer.exe
             ./artifacts/duckstation-windows-arm64-release.zip
-            ./artifacts/duckstation-windows-arm64-release-symbols.zip
+            ./artifacts/duckstation-windows-arm64-release-symbols.7z
             ./artifacts/DuckStation-x64.AppImage
             ./artifacts/DuckStation-x64-SSE2.AppImage
             ./artifacts/DuckStation-arm64.AppImage
-            ./artifacts/DuckStation-Mini-arm64.AppImage
             ./artifacts/DuckStation-armhf.AppImage
-            ./artifacts/DuckStation-Mini-armhf.AppImage
             ./artifacts/duckstation-mac-release.zip
 
       - name: Create Rolling Release
@@ -87,17 +86,15 @@ jobs:
           files: |
             ./artifacts/duckstation-windows-x64-installer.exe
             ./artifacts/duckstation-windows-x64-release.zip
-            ./artifacts/duckstation-windows-x64-release-symbols.zip
+            ./artifacts/duckstation-windows-x64-release-symbols.7z
             ./artifacts/duckstation-windows-x64-sse2-installer.exe
             ./artifacts/duckstation-windows-x64-sse2-release.zip
-            ./artifacts/duckstation-windows-x64-sse2-release-symbols.zip
+            ./artifacts/duckstation-windows-x64-sse2-release-symbols.7z
             ./artifacts/duckstation-windows-arm64-installer.exe
             ./artifacts/duckstation-windows-arm64-release.zip
-            ./artifacts/duckstation-windows-arm64-release-symbols.zip
+            ./artifacts/duckstation-windows-arm64-release-symbols.7z
             ./artifacts/DuckStation-x64.AppImage
             ./artifacts/DuckStation-x64-SSE2.AppImage
             ./artifacts/DuckStation-arm64.AppImage
-            ./artifacts/DuckStation-Mini-arm64.AppImage
             ./artifacts/DuckStation-armhf.AppImage
-            ./artifacts/DuckStation-Mini-armhf.AppImage
             ./artifacts/duckstation-mac-release.zip

@@ -1,8 +1,12 @@
+# SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
+# SPDX-License-Identifier: CC-BY-NC-ND-4.0 + Packaging Restriction
+#
+# NOTE: In addition to the terms of CC-BY-NC-ND-4.0, you may not use this file to create
+# packages or build recipes without explicit permission from the copyright holder.
+
 # Renderer options.
 option(ENABLE_OPENGL "Build with OpenGL renderer" ON)
 option(ENABLE_VULKAN "Build with Vulkan renderer" ON)
-option(BUILD_QT_FRONTEND "Build the Qt frontend" ON)
-option(BUILD_MINI_FRONTEND "Build the Mini frontend" OFF)
 option(BUILD_REGTEST "Build regression test runner" OFF)
 option(BUILD_TESTS "Build unit tests" OFF)
 option(DISABLE_SSE4 "Build with SSE4 instructions disabled, reduces performance" OFF)

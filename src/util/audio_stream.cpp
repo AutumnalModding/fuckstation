@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "audio_stream.h"
@@ -18,32 +18,43 @@ AudioStream::DeviceInfo::DeviceInfo(std::string name_, std::string display_name_
 AudioStream::DeviceInfo::~DeviceInfo() = default;
 
 static constexpr const std::array s_backend_names = {
+  // clang-format off
   "Null",
 #ifndef __ANDROID__
   "Cubeb",
   "SDL",
-#else
-  "AAudio",
-  "OpenSLES",
 #endif
+#ifdef _WIN32
+  "XAudio2",
+#endif
+#ifdef __ANDROID__
+  "AAudio",  "OpenSLES",
+#endif
+  // clang-format on
 };
 static constexpr const std::array s_backend_display_names = {
+  // clang-format off
   TRANSLATE_DISAMBIG_NOOP("Settings", "Null (No Output)", "AudioBackend"),
 #ifndef __ANDROID__
   TRANSLATE_DISAMBIG_NOOP("Settings", "Cubeb", "AudioBackend"),
   TRANSLATE_DISAMBIG_NOOP("Settings", "SDL", "AudioBackend"),
-#else
+#endif
+#ifdef _WIN32
+  TRANSLATE_DISAMBIG_NOOP("Settings", "XAudio2", "AudioBackend"),
+#endif
+#ifdef __ANDROID__
   "AAudio",
   "OpenSL ES",
 #endif
+  // clang-format on
 };
 
-std::optional<AudioBackend> AudioStream::ParseBackendName(const char* str)
+std::optional<AudioBackend> AudioStream::ParseBackendName(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_backend_names)
   {
-    if (std::strcmp(name, str) == 0)
+    if (str == name)
       return static_cast<AudioBackend>(index);
 
     index++;
@@ -59,7 +70,7 @@ const char* AudioStream::GetBackendName(AudioBackend backend)
 
 const char* AudioStream::GetBackendDisplayName(AudioBackend backend)
 {
-  return Host::TranslateToCString("AudioStream", s_backend_display_names[static_cast<int>(backend)]);
+  return Host::TranslateToCString("Settings", s_backend_display_names[static_cast<int>(backend)], "AudioBackend");
 }
 
 u32 AudioStream::FramesToMS(u32 sample_rate, u32 frames)
@@ -96,6 +107,11 @@ std::vector<AudioStream::DeviceInfo> AudioStream::GetOutputDevices(AudioBackend 
       ret = GetCubebOutputDevices(driver, sample_rate);
       break;
 #endif
+#ifdef _WIN32
+    case AudioBackend::XAudio2:
+      ret = GetXAudio2OutputDevices(sample_rate);
+      break;
+#endif
 
     default:
       break;
@@ -119,7 +135,13 @@ std::unique_ptr<AudioStream> AudioStream::CreateStream(AudioBackend backend, u32
     case AudioBackend::SDL:
       return CreateSDLAudioStream(sample_rate, channels, output_latency_frames, output_latency_minimal, source,
                                   auto_start, error);
-#else
+#endif
+#ifdef _WIN32
+    case AudioBackend::XAudio2:
+      return CreateXAudio2AudioStream(sample_rate, channels, output_latency_frames, output_latency_minimal, device_name,
+                                      source, auto_start, error);
+#endif
+#ifdef __ANDROID__
     case AudioBackend::AAudio:
       return CreateAAudioAudioStream(sample_rate, channels, output_latency_frames, output_latency_minimal, source,
                                      auto_start, error);

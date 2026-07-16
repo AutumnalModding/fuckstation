@@ -109,7 +109,6 @@ std::span<const Entry> GetEntries();
 const Entry* GetEntryByIndex(size_t index);
 const Entry* GetEntryForPath(std::string_view path);
 const Entry* GetEntryBySerial(std::string_view serial);
-const Entry* GetEntryBySerialAndHash(std::string_view serial, u64 hash);
 std::vector<const Entry*> GetDiscSetMembers(const GameDatabase::DiscSetEntry* dsentry,
                                             bool sort_by_most_recent = false);
 const Entry* GetFirstDiscSetMember(const GameDatabase::DiscSetEntry* dsentry);
@@ -125,6 +124,9 @@ bool CanEditGameSettingsForPath(const std::string_view path, const std::string_v
 /// If invalidate_cache is set, all files will be re-scanned.
 /// If only_cache is set, no new files will be scanned, only those present in the cache.
 void Refresh(bool invalidate_cache, bool only_cache = false, ProgressCallback* progress = nullptr);
+
+/// Ensures that the list is loaded.
+void EnsureLoaded(std::unique_lock<std::recursive_mutex>& lock);
 
 /// Moves the current game list, which can be temporarily displayed in the UI until refresh completes.
 /// The caller **must** call Refresh() afterward, otherwise it will be permanently lost.
@@ -179,14 +181,12 @@ std::string GetGameIconPath(const GameList::Entry* entry);
 void ReloadMemcardTimestampCache();
 
 /// Updates game list with new achievement unlocks.
-void UpdateAchievementData(const std::span<u8, 16> hash, u32 game_id, u32 num_achievements, u32 num_unlocked,
+void UpdateAchievementData(std::span<const u8, 16> hash, u32 game_id, u32 num_achievements, u32 num_unlocked,
                            u32 num_unlocked_hardcore);
 void UpdateAllAchievementData();
 
 /// Accesses achievement game badges. Assumes the lock is held.
 bool PreferAchievementGameBadgesForIcons();
-std::string GetAchievementGameBadgePath(u32 game_id);
-void UpdateAchievementBadgeName(u32 game_id, std::string_view badge_name);
 
 } // namespace GameList
 

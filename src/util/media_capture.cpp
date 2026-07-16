@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "media_capture.h"
@@ -56,6 +56,8 @@ extern "C" {
 #include "libavformat/version.h"
 #include "libavutil/dict.h"
 #include "libavutil/ffversion.h"
+#include "libavutil/hwcontext.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
 #include "libavutil/version.h"
@@ -72,6 +74,33 @@ extern "C" {
 #endif
 
 LOG_CHANNEL(MediaCapture);
+
+#if defined(_WIN32) || !defined(__ANDROID__)
+
+namespace {
+struct Locals
+{
+#ifdef _WIN32
+  DynamicLibrary mfplat_library;
+  DynamicLibrary mfreadwrite_library;
+  DynamicLibrary mf_library;
+  std::once_flag mf_library_once_flag;
+#endif
+
+#ifndef __ANDROID__
+  static inline DynamicLibrary avcodec_library;
+  static inline DynamicLibrary avformat_library;
+  static inline DynamicLibrary avutil_library;
+  static inline DynamicLibrary swscale_library;
+  static inline DynamicLibrary swresample_library;
+  std::once_flag ffmpeg_once_flag;
+#endif
+};
+} // namespace
+
+static Locals s_locals;
+
+#endif
 
 namespace {
 
@@ -179,9 +208,6 @@ protected:
   std::atomic<u32> m_audio_buffer_size{0};
   u32 m_audio_buffer_write_pos = 0;
   ALIGN_TO_CACHE_LINE u32 m_audio_buffer_read_pos = 0;
-
-  // Shared across all backends.
-  [[maybe_unused]] static inline std::mutex s_load_mutex;
 };
 
 MediaCaptureBase::~MediaCaptureBase() = default;
@@ -202,10 +228,21 @@ bool MediaCaptureBase::BeginCapture(float fps, float aspect, u32 width, u32 heig
     Error::SetStringView(error, "No path specified.");
     return false;
   }
-  else if (capture_video && (fps == 0.0f || m_video_width == 0 || m_video_height == 0))
+
+  if (capture_video)
   {
-    Error::SetStringView(error, "Invalid video dimensions/rate.");
-    return false;
+    if (static_cast<u64>(width) * static_cast<u64>(height) >
+        (static_cast<u64>(std::numeric_limits<u32>::max()) / sizeof(u32)))
+    {
+      Error::SetStringFmt(error, "Video dimensions {}x{} require too much frame buffer memory.", width, height);
+      return false;
+    }
+
+    if (fps < 1.0 || fps > static_cast<double>(std::numeric_limits<u32>::max()))
+    {
+      Error::SetStringFmt(error, "Video frame rate {} is outside the supported range.", fps);
+      return false;
+    }
   }
 
   m_path = std::move(path);
@@ -497,8 +534,8 @@ bool MediaCaptureBase::EndCapture(Error* error)
   std::unique_lock lock(m_lock);
   if (!InternalEndCapture(lock, error))
   {
-    DeleteOutputFile();
     ClearState();
+    DeleteOutputFile();
     return false;
   }
 
@@ -710,13 +747,14 @@ private:
   VISIT_MF_IMPORTS(DECLARE_IMPORT);
 #undef DECLARE_IMPORT
 
+#define X(X) {#X, reinterpret_cast<void**>(&wrap_##X)},
+  static inline const DynamicLibrary::SymbolTable s_mfplat_symbols[] = {VISIT_MFPLAT_IMPORTS(X)};
+  static inline const DynamicLibrary::SymbolTable s_mfreadwrite_symbols[] = {VISIT_MFREADWRITE_IMPORTS(X)};
+  static inline const DynamicLibrary::SymbolTable s_mf_symbols[] = {VISIT_MF_IMPORTS(X)};
+#undef X
+
   static bool LoadMediaFoundation(Error* error);
   static void UnloadMediaFoundation();
-
-  static inline DynamicLibrary s_mfplat_library;
-  static inline DynamicLibrary s_mfreadwrite_library;
-  static inline DynamicLibrary s_mf_library;
-  static inline bool s_library_loaded = false;
 };
 
 struct MediaFoundationVideoCodec
@@ -734,76 +772,63 @@ struct MediaFoundationAudioCodec
   u32 min_bitrate;
   u32 max_bitrate;
 };
+// clang-format off
 static constexpr const MediaFoundationVideoCodec s_media_foundation_video_codecs[] = {
-  {"h264", "H.264 with Software Encoding", MFVideoFormat_H264, false},
-  {"h264_hw", "H.264 with Hardware Encoding", MFVideoFormat_H264, true},
-  {"hevc", "HEVC with Software Encoding", MFVideoFormat_HEVC, false},
-  {"hevc_hw", "HEVC with Hardware Encoding", MFVideoFormat_HEVC, true},
-  {"vp9", "VP9 with Software Encoding", MFVideoFormat_VP90, false},
-  {"vp9_hw", "VP9 with Hardware Encoding", MFVideoFormat_VP90, true},
-  {"av1", "AV1 with Software Encoding", MFVideoFormat_AV1, false},
-  {"av1_hw", "AV1 with Hardware Encoding", MFVideoFormat_AV1, false},
+  {"h264", TRANSLATE_DISAMBIG_NOOP("MediaCapture", "H.264 with Software Encoding", "VideoCodec"), MFVideoFormat_H264, false},
+  {"h264_hw", TRANSLATE_DISAMBIG_NOOP("MediaCapture", "H.264 with Hardware Encoding", "VideoCodec"), MFVideoFormat_H264, true},
+  {"hevc", TRANSLATE_DISAMBIG_NOOP("MediaCapture", "HEVC with Software Encoding", "VideoCodec"), MFVideoFormat_HEVC, false},
+  {"hevc_hw", TRANSLATE_DISAMBIG_NOOP("MediaCapture", "HEVC with Hardware Encoding", "VideoCodec"), MFVideoFormat_HEVC, true},
 };
 static constexpr const MediaFoundationAudioCodec s_media_foundation_audio_codecs[] = {
-  {"aac", "Advanced Audio Coding", MFAudioFormat_AAC, 64, 224},
-  {"mp3", "MPEG-2 Audio Layer III", MFAudioFormat_MP3, 64, 320},
-  {"pcm", "Uncompressed PCM", MFAudioFormat_PCM, 0, std::numeric_limits<u32>::max()},
+  {"aac", TRANSLATE_DISAMBIG_NOOP("MediaCapture", "Advanced Audio Coding", "AudioCodec"), MFAudioFormat_AAC, 64, 224},
+  {"mp3", TRANSLATE_DISAMBIG_NOOP("MediaCapture", "MPEG-2 Audio Layer III", "AudioCodec"), MFAudioFormat_MP3, 64, 320},
+  {"pcm", TRANSLATE_DISAMBIG_NOOP("MediaCapture", "Uncompressed PCM", "AudioCodec"), MFAudioFormat_PCM, 0, std::numeric_limits<u32>::max()},
 };
+// clang-format on
 
 bool MediaCaptureMF::LoadMediaFoundation(Error* error)
 {
-  std::unique_lock lock(s_load_mutex);
-  if (s_library_loaded)
+  if (s_locals.mf_library.IsOpen())
     return true;
 
-  bool result = s_mfplat_library.Open("mfplat.dll", error);
-  result = result && s_mfreadwrite_library.Open("mfreadwrite.dll", error);
-  result = result && s_mf_library.Open("mf.dll", error);
+  std::call_once(s_locals.mf_library_once_flag, [&error]() {
+    bool result = s_locals.mfplat_library.Open("mfplat.dll", error);
+    result = result && s_locals.mfreadwrite_library.Open("mfreadwrite.dll", error);
+    result = result && s_locals.mf_library.Open("mf.dll", error);
 
-#define RESOLVE_IMPORT(X) result = result && s_mfplat_library.GetSymbol(#X, &wrap_##X);
-  VISIT_MFPLAT_IMPORTS(RESOLVE_IMPORT);
-#undef RESOLVE_IMPORT
+    result = result && s_locals.mfplat_library.ResolveSymbols(s_mfplat_symbols, error);
+    result = result && s_locals.mfreadwrite_library.ResolveSymbols(s_mfreadwrite_symbols, error);
+    result = result && s_locals.mf_library.ResolveSymbols(s_mf_symbols, error);
 
-#define RESOLVE_IMPORT(X) result = result && s_mfreadwrite_library.GetSymbol(#X, &wrap_##X);
-  VISIT_MFREADWRITE_IMPORTS(RESOLVE_IMPORT);
-#undef RESOLVE_IMPORT
+    if (HRESULT hr; result && FAILED(hr = wrap_MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET))) [[unlikely]]
+    {
+      ERROR_LOG("MFStartup() failed with error code {:08X}", hr);
+      Error::SetHResult(error, "MFStartup() failed: ", hr);
+      result = false;
+    }
 
-#define RESOLVE_IMPORT(X) result = result && s_mf_library.GetSymbol(#X, &wrap_##X);
-  VISIT_MF_IMPORTS(RESOLVE_IMPORT);
-#undef RESOLVE_IMPORT
+    if (!result)
+      UnloadMediaFoundation();
+  });
 
-  HRESULT hr;
-  if (result && FAILED(hr = wrap_MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET))) [[unlikely]]
+  if (!s_locals.mf_library.IsOpen())
   {
-    Error::SetHResult(error, "MFStartup() failed: ", hr);
-    result = false;
+    Error::AddPrefix(error, TRANSLATE_SV("MediaCapture", "Failed to load Media Foundation libraries: "));
+    return false;
   }
 
-  if (result) [[likely]]
-  {
-    s_library_loaded = true;
-    std::atexit(&MediaCaptureMF::UnloadMediaFoundation);
-    return true;
-  }
-
-  UnloadMediaFoundation();
-
-  Error::AddPrefix(error, TRANSLATE_SV("MediaCapture", "Failed to load Media Foundation libraries: "));
-  return false;
+  return true;
 }
 
 void MediaCaptureMF::UnloadMediaFoundation()
 {
-#define CLEAR_IMPORT(X) wrap_##X = nullptr;
-  VISIT_MF_IMPORTS(CLEAR_IMPORT);
-  VISIT_MFREADWRITE_IMPORTS(CLEAR_IMPORT);
-  VISIT_MFPLAT_IMPORTS(CLEAR_IMPORT);
-#undef CLEAR_IMPORT
+  DynamicLibrary::ClearSymbols(s_mf_symbols);
+  DynamicLibrary::ClearSymbols(s_mfreadwrite_symbols);
+  DynamicLibrary::ClearSymbols(s_mfplat_symbols);
 
-  s_mf_library.Close();
-  s_mfreadwrite_library.Close();
-  s_mfplat_library.Close();
-  s_library_loaded = false;
+  s_locals.mf_library.Close();
+  s_locals.mfreadwrite_library.Close();
+  s_locals.mfplat_library.Close();
 }
 
 #undef VISIT_MF_IMPORTS
@@ -823,10 +848,10 @@ std::unique_ptr<MediaCapture> MediaCaptureMF::Create(Error* error)
 MediaCapture::ContainerList MediaCaptureMF::GetContainerList()
 {
   return {
-    {"avi", "Audio Video Interleave"},
-    {"mp4", "MPEG-4 Part 14"},
-    {"mp3", "MPEG-2 Audio Layer III"},
-    {"wav", "Waveform Audio File Format"},
+    {"avi", TRANSLATE_DISAMBIG_STR("MediaCapture", "Audio Video Interleave", "ContainerFormat")},
+    {"mp4", TRANSLATE_DISAMBIG_STR("MediaCapture", "MPEG-4 Part 14", "ContainerFormat")},
+    {"mp3", TRANSLATE_DISAMBIG_STR("MediaCapture", "MPEG-2 Audio Layer III", "ContainerFormat")},
+    {"wav", TRANSLATE_DISAMBIG_STR("MediaCapture", "Waveform Audio File Format", "ContainerFormat")},
   };
 }
 
@@ -835,7 +860,7 @@ MediaCapture::ContainerList MediaCaptureMF::GetAudioCodecList(const char* contai
   ContainerList ret;
   ret.reserve(std::size(s_media_foundation_audio_codecs));
   for (const MediaFoundationAudioCodec& codec : s_media_foundation_audio_codecs)
-    ret.emplace_back(codec.name, codec.display_name);
+    ret.emplace_back(codec.name, Host::TranslateToString("MediaCapture", codec.display_name, "AudioCodec"));
   return ret;
 }
 
@@ -844,7 +869,7 @@ MediaCapture::ContainerList MediaCaptureMF::GetVideoCodecList(const char* contai
   ContainerList ret;
   ret.reserve(std::size(s_media_foundation_video_codecs));
   for (const MediaFoundationVideoCodec& codec : s_media_foundation_video_codecs)
-    ret.emplace_back(codec.name, codec.display_name);
+    ret.emplace_back(codec.name, Host::TranslateToString("MediaCapture", codec.display_name, "VideoCodec"));
   return ret;
 }
 
@@ -903,7 +928,8 @@ bool MediaCaptureMF::InternalBeginCapture(float fps, float aspect, u32 sample_ra
       return false;
 
     // only used when not capturing video
-    m_audio_frame_size = static_cast<u32>(static_cast<float>(sample_rate) / fps);
+    m_audio_frame_size =
+      std::max(capture_video ? static_cast<u32>(static_cast<float>(sample_rate) / fps) : sample_rate, 1u);
     m_audio_sample_duration = ConvertFrequencyToMFDurationUnits(sample_rate);
   }
 
@@ -1007,8 +1033,8 @@ MediaCaptureMF::ComPtr<IMFTransform> MediaCaptureMF::CreateVideoYUVTransform(Com
 
   IMFActivate** transforms = nullptr;
   UINT32 num_transforms = 0;
-  HRESULT hr = wrap_MFTEnumEx(MFT_CATEGORY_VIDEO_PROCESSOR, MFT_ENUM_FLAG_SORTANDFILTER, &input_type_info,
-                              &output_type_info, &transforms, &num_transforms);
+  HRESULT hr = wrap_MFTEnumEx(MFT_CATEGORY_VIDEO_PROCESSOR, MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER,
+                              &input_type_info, &output_type_info, &transforms, &num_transforms);
   if (FAILED(hr)) [[unlikely]]
   {
     Error::SetHResult(error, "YUV MFTEnumEx() failed: ", hr);
@@ -1020,21 +1046,13 @@ MediaCaptureMF::ComPtr<IMFTransform> MediaCaptureMF::CreateVideoYUVTransform(Com
     return nullptr;
   }
 
-  ComPtr<IMFTransform> transform;
-  hr = transforms[0]->ActivateObject(IID_PPV_ARGS(transform.GetAddressOf()));
-  if (transforms)
-    wrap_MFHeapFree(transforms);
-  if (FAILED(hr)) [[unlikely]]
-  {
-    Error::SetHResult(error, "YUV ActivateObject() failed: ", hr);
-    return nullptr;
-  }
-
   ComPtr<IMFMediaType> input_type;
+  ComPtr<IMFMediaType> candidate_output_type;
   if (FAILED(hr = wrap_MFCreateMediaType(input_type.GetAddressOf())) ||
-      FAILED(hr = wrap_MFCreateMediaType(output_type->GetAddressOf()))) [[unlikely]]
+      FAILED(hr = wrap_MFCreateMediaType(candidate_output_type.GetAddressOf()))) [[unlikely]]
   {
     Error::SetHResult(error, "YUV MFCreateMediaType() failed: ", hr);
+    wrap_MFHeapFree(transforms);
     return nullptr;
   }
 
@@ -1044,30 +1062,57 @@ MediaCaptureMF::ComPtr<IMFTransform> MediaCaptureMF::CreateVideoYUVTransform(Com
       FAILED(hr = MFSetAttributeSize(input_type.Get(), MF_MT_FRAME_SIZE, m_video_width, m_video_height)) ||
       FAILED(hr =
                MFSetAttributeRatio(input_type.Get(), MF_MT_FRAME_RATE, frame_rate_numerator, frame_rate_denominator)) ||
-      FAILED(hr = (*output_type)->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video)) ||
-      FAILED(hr = (*output_type)->SetGUID(MF_MT_SUBTYPE, VIDEO_YUV_MEDIA_FORMAT)) ||
-      FAILED(hr = (*output_type)->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive)) ||
-      FAILED(hr = MFSetAttributeSize(output_type->Get(), MF_MT_FRAME_SIZE, m_video_width, m_video_height)) ||
-      FAILED(hr = MFSetAttributeRatio(output_type->Get(), MF_MT_FRAME_RATE, frame_rate_numerator,
+      FAILED(hr = candidate_output_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video)) ||
+      FAILED(hr = candidate_output_type->SetGUID(MF_MT_SUBTYPE, VIDEO_YUV_MEDIA_FORMAT)) ||
+      FAILED(hr = candidate_output_type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive)) ||
+      FAILED(hr = MFSetAttributeSize(candidate_output_type.Get(), MF_MT_FRAME_SIZE, m_video_width, m_video_height)) ||
+      FAILED(hr = MFSetAttributeRatio(candidate_output_type.Get(), MF_MT_FRAME_RATE, frame_rate_numerator,
                                       frame_rate_denominator))) [[unlikely]]
   {
     Error::SetHResult(error, "YUV setting attributes failed: ", hr);
+    wrap_MFHeapFree(transforms);
     return nullptr;
   }
 
-  if (FAILED(hr = transform->SetOutputType(0, output_type->Get(), 0))) [[unlikely]]
+  HRESULT last_hr = E_FAIL;
+  for (UINT32 i = 0; i < num_transforms; i++)
   {
-    Error::SetHResult(error, "YUV SetOutputType() failed: ", hr);
-    return nullptr;
+    ComPtr<IMFTransform> transform;
+    hr = transforms[i]->ActivateObject(IID_PPV_ARGS(transform.GetAddressOf()));
+    if (FAILED(hr))
+    {
+      last_hr = hr;
+      continue;
+    }
+
+    hr = transform->SetOutputType(0, candidate_output_type.Get(), 0);
+    if (FAILED(hr))
+    {
+      last_hr = hr;
+      const HRESULT input_hr = transform->SetInputType(0, input_type.Get(), 0);
+      if (SUCCEEDED(input_hr))
+        hr = transform->SetOutputType(0, candidate_output_type.Get(), 0);
+      else
+        hr = input_hr;
+    }
+    else
+    {
+      hr = transform->SetInputType(0, input_type.Get(), 0);
+    }
+
+    if (SUCCEEDED(hr))
+    {
+      *output_type = std::move(candidate_output_type);
+      wrap_MFHeapFree(transforms);
+      return transform;
+    }
+
+    last_hr = hr;
   }
 
-  if (FAILED(hr = transform->SetInputType(0, input_type.Get(), 0))) [[unlikely]]
-  {
-    Error::SetHResult(error, "YUV SetInputType() failed: ", hr);
-    return nullptr;
-  }
-
-  return transform;
+  wrap_MFHeapFree(transforms);
+  Error::SetHResult(error, "No video processor supports the requested video dimensions/rate: ", last_hr);
+  return nullptr;
 }
 
 MediaCaptureMF::ComPtr<IMFTransform>
@@ -1101,9 +1146,10 @@ MediaCaptureMF::CreateVideoEncodeTransform(std::string_view codec, u32 frame_rat
 
   IMFActivate** transforms = nullptr;
   UINT32 num_transforms = 0;
-  HRESULT hr =
-    wrap_MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER, (hardware ? MFT_ENUM_FLAG_HARDWARE : 0) | MFT_ENUM_FLAG_SORTANDFILTER,
-                   &input_type_info, &output_type_info, &transforms, &num_transforms);
+  const UINT32 enum_flags = MFT_ENUM_FLAG_SORTANDFILTER |
+                            (hardware ? MFT_ENUM_FLAG_HARDWARE : (MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_ASYNCMFT));
+  HRESULT hr = wrap_MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER, enum_flags, &input_type_info, &output_type_info, &transforms,
+                              &num_transforms);
   if (FAILED(hr)) [[unlikely]]
   {
     Error::SetHResult(error, "Encoder MFTEnumEx() failed: ", hr);
@@ -1111,53 +1157,15 @@ MediaCaptureMF::CreateVideoEncodeTransform(std::string_view codec, u32 frame_rat
   }
   else if (num_transforms == 0) [[unlikely]]
   {
-    Error::SetStringView(error, "No video encoders found.");
+    Error::SetStringFmt(error, "No {} video encoders found.", hardware ? "hardware" : "software");
     return nullptr;
   }
 
-  ComPtr<IMFTransform> transform;
-  hr = transforms[0]->ActivateObject(IID_PPV_ARGS(transform.GetAddressOf()));
-  if (transforms)
-  {
-    LPWSTR transform_name;
-    UINT32 transform_name_length;
-    if (SUCCEEDED(
-          transforms[0]->GetAllocatedString(MFT_FRIENDLY_NAME_Attribute, &transform_name, &transform_name_length)))
-    {
-      INFO_LOG("Video encoder name: {}",
-               StringUtil::WideStringToUTF8String(std::wstring_view(transform_name, transform_name_length)));
-      CoTaskMemFree(transform_name);
-    }
-
-    wrap_MFHeapFree(transforms);
-  }
-
-  if (FAILED(hr)) [[unlikely]]
-  {
-    Error::SetHResult(error, "Encoder ActivateObject() failed: ", hr);
-    return nullptr;
-  }
-
-  *use_async_transform = false;
-  if (hardware)
-  {
-    ComPtr<IMFAttributes> attributes;
-    if (FAILED(transform->GetAttributes(attributes.GetAddressOf()))) [[unlikely]]
-    {
-      Error::SetHResult(error, "YUV GetAttributes() failed: ", hr);
-      return nullptr;
-    }
-    UINT32 async_supported;
-    *use_async_transform =
-      (SUCCEEDED(hr = attributes->GetUINT32(MF_TRANSFORM_ASYNC, &async_supported)) && async_supported == TRUE &&
-       SUCCEEDED(hr = attributes->SetUINT32(MF_TRANSFORM_ASYNC_UNLOCK, 1)));
-    if (use_async_transform)
-      INFO_LOG("Using async video transform.");
-  }
-
-  if (FAILED(hr = wrap_MFCreateMediaType(output_type->GetAddressOf()))) [[unlikely]]
+  ComPtr<IMFMediaType> candidate_output_type;
+  if (FAILED(hr = wrap_MFCreateMediaType(candidate_output_type.GetAddressOf()))) [[unlikely]]
   {
     Error::SetHResult(error, "Encoder MFCreateMediaType() failed: ", hr);
+    wrap_MFHeapFree(transforms);
     return nullptr;
   }
 
@@ -1172,53 +1180,136 @@ MediaCaptureMF::CreateVideoEncodeTransform(std::string_view codec, u32 frame_rat
   else if (output_type_info.guidSubtype == MFVideoFormat_VP90)
     profile = eAVEncVP9VProfile_420_8;
 
-  if (FAILED(hr = (*output_type)->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video)) ||
-      FAILED(hr = (*output_type)->SetGUID(MF_MT_SUBTYPE, output_type_info.guidSubtype)) ||
-      FAILED(hr = (*output_type)->SetUINT32(MF_MT_AVG_BITRATE, bitrate * 1000)) ||
-      FAILED(hr = (*output_type)->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive)) ||
-      FAILED(hr = (*output_type)->SetUINT32(MF_MT_MPEG2_PROFILE, profile)) ||
-      FAILED(hr = MFSetAttributeSize(output_type->Get(), MF_MT_FRAME_SIZE, m_video_width, m_video_height)) ||
-      FAILED(
-        hr = MFSetAttributeRatio(output_type->Get(), MF_MT_FRAME_RATE, frame_rate_numerator, frame_rate_denominator)) ||
-      FAILED(hr = MFSetAttributeRatio(output_type->Get(), MF_MT_PIXEL_ASPECT_RATIO, par_numerator, par_denominator)))
-    [[unlikely]]
+  const u64 bitrate_bits =
+    std::min(static_cast<u64>(bitrate) * 1000u, static_cast<u64>(std::numeric_limits<UINT32>::max()));
+  if (FAILED(hr = candidate_output_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video)) ||
+      FAILED(hr = candidate_output_type->SetGUID(MF_MT_SUBTYPE, output_type_info.guidSubtype)) ||
+      FAILED(hr = candidate_output_type->SetUINT32(MF_MT_AVG_BITRATE, static_cast<UINT32>(bitrate_bits))) ||
+      FAILED(hr = candidate_output_type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive)) ||
+      FAILED(hr = MFSetAttributeSize(candidate_output_type.Get(), MF_MT_FRAME_SIZE, m_video_width, m_video_height)) ||
+      FAILED(hr = MFSetAttributeRatio(candidate_output_type.Get(), MF_MT_FRAME_RATE, frame_rate_numerator,
+                                      frame_rate_denominator)) ||
+      FAILED(hr = MFSetAttributeRatio(candidate_output_type.Get(), MF_MT_PIXEL_ASPECT_RATIO, par_numerator,
+                                      par_denominator))) [[unlikely]]
   {
     Error::SetHResult(error, "Encoder setting attributes failed: ", hr);
+    wrap_MFHeapFree(transforms);
     return nullptr;
   }
 
-  if (FAILED(hr = transform->SetOutputType(0, output_type->Get(), 0))) [[unlikely]]
+  if (profile != 0 && FAILED(hr = candidate_output_type->SetUINT32(MF_MT_MPEG2_PROFILE, profile)))
   {
-    Error::SetHResult(error, "Encoder SetOutputType() failed: ", hr);
+    Error::SetHResult(error, "Encoder setting profile failed: ", hr);
+    wrap_MFHeapFree(transforms);
     return nullptr;
   }
 
-  if (FAILED(hr = transform->SetInputType(0, input_type, 0))) [[unlikely]]
+  HRESULT last_hr = E_FAIL;
+  for (UINT32 i = 0; i < num_transforms; i++)
   {
-    Error::SetHResult(error, "Encoder SetInputType() failed: ", hr);
-    return nullptr;
-  }
-
-  MFT_OUTPUT_STREAM_INFO osi;
-  if (FAILED(hr = transform->GetOutputStreamInfo(0, &osi))) [[unlikely]]
-  {
-    Error::SetHResult(error, "Encoder GetOutputStreamInfo() failed: ", hr);
-    return nullptr;
-  }
-
-  if (!(osi.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES))
-  {
-    if (osi.cbSize == 0)
+    ComPtr<IMFTransform> transform;
+    hr = transforms[i]->ActivateObject(IID_PPV_ARGS(transform.GetAddressOf()));
+    if (FAILED(hr))
     {
-      Error::SetStringFmt(error, "Invalid sample size for non-output-providing stream");
-      return nullptr;
+      last_hr = hr;
+      continue;
     }
 
-    m_video_sample_size = osi.cbSize;
+    LPWSTR transform_name = nullptr;
+    UINT32 transform_name_length = 0;
+    if (SUCCEEDED(
+          transforms[i]->GetAllocatedString(MFT_FRIENDLY_NAME_Attribute, &transform_name, &transform_name_length)))
+    {
+      INFO_LOG("Trying video encoder: {}",
+               StringUtil::WideStringToUTF8String(std::wstring_view(transform_name, transform_name_length)));
+      CoTaskMemFree(transform_name);
+    }
+
+    bool candidate_is_async = false;
+    ComPtr<IMFAttributes> attributes;
+    if (SUCCEEDED(hr = transform->GetAttributes(attributes.GetAddressOf())))
+    {
+      UINT32 async_supported = FALSE;
+      if (SUCCEEDED(hr = attributes->GetUINT32(MF_TRANSFORM_ASYNC, &async_supported)) && async_supported == TRUE)
+      {
+        if (FAILED(hr = attributes->SetUINT32(MF_TRANSFORM_ASYNC_UNLOCK, TRUE)))
+        {
+          last_hr = hr;
+          continue;
+        }
+
+        candidate_is_async = true;
+        INFO_LOG("Using async video transform.");
+      }
+    }
+    else if (hardware)
+    {
+      last_hr = hr;
+      continue;
+    }
+
+    if (hardware && !candidate_is_async)
+    {
+      WARNING_LOG("Hardware video encoder is not asynchronous, skipping it.");
+      last_hr = MF_E_UNSUPPORTED_BYTESTREAM_TYPE;
+      continue;
+    }
+
+    // Most encoders accept the output type first, but some hardware and third-party MFTs require
+    // the input type to be set before they can validate the output dimensions. Try both orders.
+    hr = transform->SetOutputType(0, candidate_output_type.Get(), 0);
+    if (FAILED(hr))
+    {
+      last_hr = hr;
+      const HRESULT input_hr = transform->SetInputType(0, input_type, 0);
+      if (SUCCEEDED(input_hr))
+        hr = transform->SetOutputType(0, candidate_output_type.Get(), 0);
+      else
+        hr = input_hr;
+      if (FAILED(hr))
+      {
+        last_hr = hr;
+        continue;
+      }
+    }
+    else if (FAILED(hr = transform->SetInputType(0, input_type, 0)))
+    {
+      last_hr = hr;
+      continue;
+    }
+
+    MFT_OUTPUT_STREAM_INFO osi;
+    if (FAILED(hr = transform->GetOutputStreamInfo(0, &osi)))
+    {
+      last_hr = hr;
+      continue;
+    }
+
+    u32 video_sample_size = 0;
+    if (!(osi.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES))
+    {
+      if (osi.cbSize == 0)
+      {
+        last_hr = MF_E_INVALIDMEDIATYPE;
+        continue;
+      }
+
+      video_sample_size = osi.cbSize;
+    }
+
+    *output_type = candidate_output_type;
+    *use_async_transform = candidate_is_async;
+    m_video_sample_size = video_sample_size;
+    wrap_MFHeapFree(transforms);
+    return transform;
   }
 
-  INFO_LOG("Video sample size: {}", m_video_sample_size);
-  return transform;
+  wrap_MFHeapFree(transforms);
+  Error::SetHResult(error,
+                    hardware ? "No compatible hardware video encoder supports the requested dimensions/rate: " :
+                               "No compatible software video encoder supports the requested dimensions/rate: ",
+                    last_hr);
+  return nullptr;
 }
 
 ALWAYS_INLINE_RELEASE void MediaCaptureMF::ConvertVideoFrame(u8* dst, size_t dst_stride, const u8* src,
@@ -1628,6 +1719,10 @@ bool MediaCaptureMF::GetAudioTypes(std::string_view codec, ComPtr<IMFMediaType>*
       return false;
     }
   }
+  else
+  {
+    bitrate = std::clamp(bitrate, 32u, 320u);
+  }
 
   HRESULT hr;
   if (FAILED(hr = wrap_MFCreateMediaType(input_type->GetAddressOf()))) [[unlikely]]
@@ -1693,13 +1788,19 @@ bool MediaCaptureMF::GetAudioTypes(std::string_view codec, ComPtr<IMFMediaType>*
     }
   }
 
-  // pick the closest bitrate
+  // Pick the closest bitrate. Some systems only expose rates below the requested value, so do
+  // not reject the stream just because an exact-or-higher rate is unavailable.
   const u32 bitrate_kbps = bitrate * 1000;
   std::pair<ComPtr<IMFMediaType>, u32>* selected_output_type = nullptr;
   for (auto it = output_types.begin(); it != output_types.end(); ++it)
   {
-    if (it->second >= bitrate_kbps &&
-        (!selected_output_type || (selected_output_type->second - bitrate_kbps) > (it->second - bitrate_kbps)))
+    const u64 current_difference =
+      (it->second >= bitrate_kbps) ? (it->second - bitrate_kbps) : (bitrate_kbps - it->second);
+    const u64 selected_difference = selected_output_type ? ((selected_output_type->second >= bitrate_kbps) ?
+                                                              (selected_output_type->second - bitrate_kbps) :
+                                                              (bitrate_kbps - selected_output_type->second)) :
+                                                           std::numeric_limits<u64>::max();
+    if (!selected_output_type || current_difference < selected_difference)
     {
       selected_output_type = &(*it);
     }
@@ -1802,16 +1903,8 @@ bool MediaCaptureMF::ProcessAudioPackets(s64 video_pts, Error* error)
 
 #ifndef __ANDROID__
 
-// Symbols added in FFmpeg 7.1.
-#if (LIBAVCODEC_VERSION_MAJOR > 61 || LIBAVCODEC_VERSION_MINOR >= 19)
-#define AVCODEC_71_IMPORTS(X) X(avcodec_get_supported_config)
-#define HAS_AVCODEC_GET_SUPPORTED_CONFIG
-#else
-#define AVCODEC_71_IMPORTS(X)
-#endif
-
 #define VISIT_AVCODEC_IMPORTS(X)                                                                                       \
-  AVCODEC_71_IMPORTS(X)                                                                                                \
+  X(avcodec_get_supported_config)                                                                                      \
   X(avcodec_find_encoder_by_name)                                                                                      \
   X(avcodec_find_encoder)                                                                                              \
   X(avcodec_alloc_context3)                                                                                            \
@@ -1844,6 +1937,7 @@ bool MediaCaptureMF::ProcessAudioPackets(s64 video_pts, Error* error)
   X(av_channel_layout_copy)                                                                                            \
   X(av_opt_set_chlayout)                                                                                               \
   X(av_frame_alloc)                                                                                                    \
+  X(av_frame_unref)                                                                                                    \
   X(av_frame_get_buffer)                                                                                               \
   X(av_frame_free)                                                                                                     \
   X(av_frame_make_writable)                                                                                            \
@@ -1856,15 +1950,20 @@ bool MediaCaptureMF::ProcessAudioPackets(s64 video_pts, Error* error)
   X(av_opt_set_sample_fmt)                                                                                             \
   X(av_compare_ts)                                                                                                     \
   X(av_get_pix_fmt)                                                                                                    \
+  X(av_get_pix_fmt_name)                                                                                               \
   X(av_get_bytes_per_sample)                                                                                           \
   X(av_sample_fmt_is_planar)                                                                                           \
   X(av_d2q)                                                                                                            \
   X(av_hwdevice_get_type_name)                                                                                         \
   X(av_hwdevice_ctx_create)                                                                                            \
+  X(av_hwdevice_get_hwframe_constraints)                                                                               \
   X(av_hwframe_ctx_alloc)                                                                                              \
   X(av_hwframe_ctx_init)                                                                                               \
+  X(av_hwframe_constraints_free)                                                                                       \
   X(av_hwframe_transfer_data)                                                                                          \
+  X(av_hwframe_transfer_get_formats)                                                                                   \
   X(av_hwframe_get_buffer)                                                                                             \
+  X(av_free)                                                                                                           \
   X(av_buffer_ref)                                                                                                     \
   X(av_buffer_unref)
 
@@ -1943,71 +2042,57 @@ private:
   VISIT_SWRESAMPLE_IMPORTS(DECLARE_IMPORT);
 #undef DECLARE_IMPORT
 
+#define X(X) {#X, reinterpret_cast<void**>(&wrap_##X)},
+  static inline const DynamicLibrary::SymbolTable s_avcodec_symbols[] = {VISIT_AVCODEC_IMPORTS(X)};
+  static inline const DynamicLibrary::SymbolTable s_avformat_symbols[] = {VISIT_AVFORMAT_IMPORTS(X)};
+  static inline const DynamicLibrary::SymbolTable s_avutil_symbols[] = {VISIT_AVUTIL_IMPORTS(X)};
+  static inline const DynamicLibrary::SymbolTable s_swscale_symbols[] = {VISIT_SWSCALE_IMPORTS(X)};
+  static inline const DynamicLibrary::SymbolTable s_swresample_symbols[] = {VISIT_SWRESAMPLE_IMPORTS(X)};
+#undef X
+
   static bool LoadFFmpeg(Error* error);
   static void UnloadFFmpeg();
-
-  static inline DynamicLibrary s_avcodec_library;
-  static inline DynamicLibrary s_avformat_library;
-  static inline DynamicLibrary s_avutil_library;
-  static inline DynamicLibrary s_swscale_library;
-  static inline DynamicLibrary s_swresample_library;
-  static inline bool s_library_loaded = false;
 };
 
 bool MediaCaptureFFmpeg::LoadFFmpeg(Error* error)
 {
-  std::unique_lock lock(s_load_mutex);
-  if (s_library_loaded)
+  if (s_locals.avcodec_library.IsOpen())
     return true;
 
-  static constexpr auto open_dynlib = [](DynamicLibrary& lib, const char* name, int major_version) {
-    Error error;
-    const std::string full_name = DynamicLibrary::GetVersionedFilename(name, major_version);
-    if (!lib.Open(full_name.c_str(), &error))
-    {
-      ERROR_LOG("Failed to open {}: {}", name, error.GetDescription());
-      return false;
-    }
+  std::call_once(s_locals.ffmpeg_once_flag, []() {
+    static constexpr auto open_dynlib = [](DynamicLibrary& lib, const char* name,
+                                           std::span<const DynamicLibrary::SymbolTable> symbols, int major_version) {
+      Error error;
+      const std::string full_name = DynamicLibrary::GetVersionedFilename(name, major_version);
+      if (!lib.Open(full_name.c_str(), &error))
+      {
+        ERROR_LOG("Failed to open {}: {}", name, error.GetDescription());
+        return false;
+      }
 
+      if (!lib.ResolveSymbols(symbols, &error))
+      {
+        ERROR_LOG("Failed to resolve symbols for {}: {}", name, error.GetDescription());
+        return false;
+      }
+
+      return true;
+    };
+
+    bool result = open_dynlib(s_locals.avutil_library, "avutil", s_avutil_symbols, LIBAVUTIL_VERSION_MAJOR);
+    result = result && open_dynlib(s_locals.avcodec_library, "avcodec", s_avcodec_symbols, LIBAVCODEC_VERSION_MAJOR);
+    result =
+      result && open_dynlib(s_locals.avformat_library, "avformat", s_avformat_symbols, LIBAVFORMAT_VERSION_MAJOR);
+    result = result && open_dynlib(s_locals.swscale_library, "swscale", s_swscale_symbols, LIBSWSCALE_VERSION_MAJOR);
+    result = result &&
+             open_dynlib(s_locals.swresample_library, "swresample", s_swresample_symbols, LIBSWRESAMPLE_VERSION_MAJOR);
+
+    if (!result)
+      UnloadFFmpeg();
+  });
+
+  if (s_locals.avcodec_library.IsOpen())
     return true;
-  };
-
-  bool result = true;
-
-  result = result && open_dynlib(s_avutil_library, "avutil", LIBAVUTIL_VERSION_MAJOR);
-  result = result && open_dynlib(s_avcodec_library, "avcodec", LIBAVCODEC_VERSION_MAJOR);
-  result = result && open_dynlib(s_avformat_library, "avformat", LIBAVFORMAT_VERSION_MAJOR);
-  result = result && open_dynlib(s_swscale_library, "swscale", LIBSWSCALE_VERSION_MAJOR);
-  result = result && open_dynlib(s_swresample_library, "swresample", LIBSWRESAMPLE_VERSION_MAJOR);
-
-#define RESOLVE_IMPORT(X) result = result && s_avcodec_library.GetSymbol(#X, &wrap_##X);
-  VISIT_AVCODEC_IMPORTS(RESOLVE_IMPORT);
-#undef RESOLVE_IMPORT
-
-#define RESOLVE_IMPORT(X) result = result && s_avformat_library.GetSymbol(#X, &wrap_##X);
-  VISIT_AVFORMAT_IMPORTS(RESOLVE_IMPORT);
-#undef RESOLVE_IMPORT
-
-#define RESOLVE_IMPORT(X) result = result && s_avutil_library.GetSymbol(#X, &wrap_##X);
-  VISIT_AVUTIL_IMPORTS(RESOLVE_IMPORT);
-#undef RESOLVE_IMPORT
-
-#define RESOLVE_IMPORT(X) result = result && s_swscale_library.GetSymbol(#X, &wrap_##X);
-  VISIT_SWSCALE_IMPORTS(RESOLVE_IMPORT);
-#undef RESOLVE_IMPORT
-
-#define RESOLVE_IMPORT(X) result = result && s_swresample_library.GetSymbol(#X, &wrap_##X);
-  VISIT_SWRESAMPLE_IMPORTS(RESOLVE_IMPORT);
-#undef RESOLVE_IMPORT
-
-  if (result)
-  {
-    s_library_loaded = true;
-    std::atexit(&MediaCaptureFFmpeg::UnloadFFmpeg);
-    return true;
-  }
-
-  UnloadFFmpeg();
 
   Error::SetStringFmt(error,
                       TRANSLATE_FS("MediaCapture",
@@ -2026,20 +2111,17 @@ bool MediaCaptureFFmpeg::LoadFFmpeg(Error* error)
 
 void MediaCaptureFFmpeg::UnloadFFmpeg()
 {
-#define CLEAR_IMPORT(X) wrap_##X = nullptr;
-  VISIT_AVCODEC_IMPORTS(CLEAR_IMPORT);
-  VISIT_AVFORMAT_IMPORTS(CLEAR_IMPORT);
-  VISIT_AVUTIL_IMPORTS(CLEAR_IMPORT);
-  VISIT_SWSCALE_IMPORTS(CLEAR_IMPORT);
-  VISIT_SWRESAMPLE_IMPORTS(CLEAR_IMPORT);
-#undef CLEAR_IMPORT
+  DynamicLibrary::ClearSymbols(s_avcodec_symbols);
+  DynamicLibrary::ClearSymbols(s_avformat_symbols);
+  DynamicLibrary::ClearSymbols(s_avutil_symbols);
+  DynamicLibrary::ClearSymbols(s_swscale_symbols);
+  DynamicLibrary::ClearSymbols(s_swresample_symbols);
 
-  s_swresample_library.Close();
-  s_swscale_library.Close();
-  s_avutil_library.Close();
-  s_avformat_library.Close();
-  s_avcodec_library.Close();
-  s_library_loaded = false;
+  s_locals.avcodec_library.Close();
+  s_locals.avformat_library.Close();
+  s_locals.avutil_library.Close();
+  s_locals.swscale_library.Close();
+  s_locals.swresample_library.Close();
 }
 
 #undef VISIT_AVCODEC_IMPORTS
@@ -2190,111 +2272,297 @@ bool MediaCaptureFFmpeg::InternalBeginCapture(float fps, float aspect, u32 sampl
       }
     }
 
-    // Select output pixel format.
+    // Query the codec's software pixel formats before trying hardware. A null list means that the
+    // codec accepts any format, whereas a non-null empty list means that it accepts none.
+    const AVPixelFormat* supported_pixel_formats = nullptr;
+    int num_supported_pixel_formats = 0;
+    res = wrap_avcodec_get_supported_config(m_video_codec_context, vcodec, AV_CODEC_CONFIG_PIX_FORMAT, 0,
+                                            reinterpret_cast<const void**>(&supported_pixel_formats),
+                                            &num_supported_pixel_formats);
+    if (res < 0)
+    {
+      SetAVError(error, "avcodec_get_supported_config() failed: ", res);
+      return false;
+    }
+
+    const bool has_pixel_format_list = (supported_pixel_formats != nullptr);
+
+    // An explicitly selected hardware encoder must not silently turn into software encoding. The
+    // capability flag is authoritative where available, while the hardware configuration check
+    // also covers encoders which expose hardware frames without setting the flag consistently.
+    bool has_hardware_frames_config = false;
+    for (int hw_index = 0;; hw_index++)
+    {
+      const AVCodecHWConfig* config = wrap_avcodec_get_hw_config(vcodec, hw_index);
+      if (!config)
+        break;
+      if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX) != 0)
+      {
+        has_hardware_frames_config = true;
+        break;
+      }
+    }
+    const bool requested_hardware_encoder =
+      !video_codec.empty() &&
+      ((vcodec->capabilities & (AV_CODEC_CAP_HARDWARE | AV_CODEC_CAP_HYBRID)) != 0 || has_hardware_frames_config);
+
+    // Select the requested format when possible, then use formats that are broadly supported by
+    // software and hardware encoders. NV12 is intentionally preferred for hardware frames: some
+    // APIs (notably D3D11) give YUV420P special opaque-surface semantics which cannot be copied to.
     AVPixelFormat request_pix_fmt = AV_PIX_FMT_YUV420P;
+    bool has_pixel_format_override = false;
     if (const AVDictionaryEntry* de = wrap_av_dict_get(m_video_codec_arguments, "pixel_format", nullptr, 0))
     {
+      has_pixel_format_override = true;
       const AVPixelFormat de_fmt = wrap_av_get_pix_fmt(de->value);
-      request_pix_fmt = (de_fmt != AV_PIX_FMT_NONE) ? de_fmt : request_pix_fmt;
-      if (de_fmt == AV_PIX_FMT_NONE)
+      if (de_fmt != AV_PIX_FMT_NONE)
+        request_pix_fmt = de_fmt;
+      else
         WARNING_LOG("Invalid pixel format override: {}", de->value);
     }
 
-    // Can we use hardware encoding?
-    const AVCodecHWConfig* hwconfig = wrap_avcodec_get_hw_config(vcodec, 0);
-    AVPixelFormat sw_pix_fmt = request_pix_fmt;
-    if (hwconfig)
+    static constexpr std::array<AVPixelFormat, 7> software_pixel_format_preference = {
+      AV_PIX_FMT_YUV420P,     AV_PIX_FMT_NV12, AV_PIX_FMT_YUV422P, AV_PIX_FMT_YUV444P,
+      AV_PIX_FMT_YUV420P10LE, AV_PIX_FMT_P010, AV_PIX_FMT_BGRA,
+    };
+    static constexpr std::array<AVPixelFormat, 7> hardware_pixel_format_preference = {
+      AV_PIX_FMT_NV12, AV_PIX_FMT_YUV420P, AV_PIX_FMT_P010,    AV_PIX_FMT_YUV420P10LE,
+      AV_PIX_FMT_BGRA, AV_PIX_FMT_RGBA,    AV_PIX_FMT_YUYV422,
+    };
+
+    const auto contains_pixel_format = [](const AVPixelFormat* formats, int count, AVPixelFormat format) {
+      return (!formats || std::find(formats, formats + count, format) != formats + count);
+    };
+    const auto select_pixel_format = [&](const AVPixelFormat* formats, int count, AVPixelFormat requested,
+                                         const auto& preference, const auto& is_allowed) {
+      if (requested != AV_PIX_FMT_NONE && contains_pixel_format(formats, count, requested) && is_allowed(requested))
+        return requested;
+
+      for (const AVPixelFormat format : preference)
+      {
+        if (contains_pixel_format(formats, count, format) && is_allowed(format))
+          return format;
+      }
+
+      if (formats)
+      {
+        for (int i = 0; i < count; i++)
+        {
+          if (is_allowed(formats[i]))
+            return formats[i];
+        }
+      }
+
+      return AV_PIX_FMT_NONE;
+    };
+
+    AVPixelFormat sw_pix_fmt = AV_PIX_FMT_NONE;
+    const AVCodecHWConfig* hwconfig = nullptr;
+    bool hardware_dimensions_too_large = false;
+    u32 hardware_max_width = 0;
+    u32 hardware_max_height = 0;
+
+    // Try each frames-context hardware configuration. The first configuration is not necessarily
+    // usable for an encoder, and a codec may expose several devices with different transfer formats.
+    for (int hw_index = 0; (hwconfig = wrap_avcodec_get_hw_config(vcodec, hw_index)) != nullptr; hw_index++)
     {
-      // Can't do this test for hardware codecs, because they don't list the software formats as inputs.
+      if (!(hwconfig->methods & AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX) || hwconfig->pix_fmt == AV_PIX_FMT_NONE)
+        continue;
+
       Error hw_error;
+      AVBufferRef* hw_context = nullptr;
+      AVBufferRef* hw_frames = nullptr;
       INFO_LOG("Trying to use {} hardware device for video encoding.",
                wrap_av_hwdevice_get_type_name(hwconfig->device_type));
-      res = wrap_av_hwdevice_ctx_create(&m_video_hw_context, hwconfig->device_type, nullptr, nullptr, 0);
+
+      res = wrap_av_hwdevice_ctx_create(&hw_context, hwconfig->device_type, nullptr, nullptr, 0);
       if (res < 0)
       {
         SetAVError(&hw_error, "av_hwdevice_ctx_create() failed: ", res);
         ERROR_LOG(hw_error.GetDescription());
+        continue;
+      }
+
+      AVHWFramesConstraints* constraints = wrap_av_hwdevice_get_hwframe_constraints(hw_context, nullptr);
+      if (!constraints)
+      {
+        ERROR_LOG("av_hwdevice_get_hwframe_constraints() failed");
+        wrap_av_buffer_unref(&hw_context);
+        continue;
+      }
+
+      if (constraints->min_width > m_video_codec_context->width ||
+          constraints->min_height > m_video_codec_context->height ||
+          constraints->max_width < m_video_codec_context->width ||
+          constraints->max_height < m_video_codec_context->height)
+      {
+        if (constraints->max_width < m_video_codec_context->width ||
+            constraints->max_height < m_video_codec_context->height)
+        {
+          hardware_dimensions_too_large = true;
+          hardware_max_width = std::max(hardware_max_width, static_cast<u32>(std::max(constraints->max_width, 0)));
+          hardware_max_height = std::max(hardware_max_height, static_cast<u32>(std::max(constraints->max_height, 0)));
+        }
+        ERROR_LOG("Video dimensions are outside the hardware frame constraints.");
+        wrap_av_hwframe_constraints_free(&constraints);
+        wrap_av_buffer_unref(&hw_context);
+        continue;
+      }
+
+      int num_valid_sw_formats = 0;
+      if (constraints->valid_sw_formats)
+      {
+        while (constraints->valid_sw_formats[num_valid_sw_formats] != AV_PIX_FMT_NONE)
+          num_valid_sw_formats++;
+      }
+
+      bool codec_has_valid_sw_format = false;
+      if (has_pixel_format_list && constraints->valid_sw_formats)
+      {
+        for (int i = 0; i < num_valid_sw_formats; i++)
+        {
+          if (contains_pixel_format(supported_pixel_formats, num_supported_pixel_formats,
+                                    constraints->valid_sw_formats[i]))
+          {
+            codec_has_valid_sw_format = true;
+            break;
+          }
+        }
+      }
+      const auto is_allowed_sw_format = [&](AVPixelFormat format) {
+        return !codec_has_valid_sw_format ||
+               contains_pixel_format(supported_pixel_formats, num_supported_pixel_formats, format);
+      };
+
+      // valid_sw_formats describes formats that can actually be used to initialize this device.
+      // Unlike av_hwframe_transfer_get_formats(), it lists alternatives rather than just echoing
+      // the sw_format already selected in the frames context.
+      const AVPixelFormat requested_hw_format = has_pixel_format_override ? request_pix_fmt : AV_PIX_FMT_NONE;
+      sw_pix_fmt = select_pixel_format(constraints->valid_sw_formats, num_valid_sw_formats, requested_hw_format,
+                                       hardware_pixel_format_preference, is_allowed_sw_format);
+      if (sw_pix_fmt == AV_PIX_FMT_NONE)
+      {
+        ERROR_LOG("Hardware encoder does not support a usable software pixel format.");
+        wrap_av_hwframe_constraints_free(&constraints);
+        wrap_av_buffer_unref(&hw_context);
+        continue;
+      }
+      wrap_av_hwframe_constraints_free(&constraints);
+
+      const auto create_hw_frames = [&](AVPixelFormat sw_format) {
+        AVBufferRef* frames = wrap_av_hwframe_ctx_alloc(hw_context);
+        if (!frames)
+        {
+          ERROR_LOG("av_hwframe_ctx_alloc() failed");
+          return static_cast<AVBufferRef*>(nullptr);
+        }
+
+        AVHWFramesContext* frames_ctx = reinterpret_cast<AVHWFramesContext*>(frames->data);
+        frames_ctx->format = hwconfig->pix_fmt;
+        frames_ctx->sw_format = sw_format;
+        frames_ctx->width = m_video_codec_context->width;
+        frames_ctx->height = m_video_codec_context->height;
+        const int init_res = wrap_av_hwframe_ctx_init(frames);
+        if (init_res < 0)
+        {
+          SetAVError(&hw_error, "av_hwframe_ctx_init() failed: ", init_res);
+          ERROR_LOG(hw_error.GetDescription());
+          wrap_av_buffer_unref(&frames);
+          return static_cast<AVBufferRef*>(nullptr);
+        }
+
+        return frames;
+      };
+
+      hw_frames = create_hw_frames(sw_pix_fmt);
+      if (!hw_frames)
+      {
+        wrap_av_buffer_unref(&hw_context);
+        continue;
+      }
+
+      // Validate that the selected software format can actually be transferred to the hardware
+      // frame. Some implementations return only the selected sw_format from this query.
+      AVPixelFormat* transfer_formats = nullptr;
+      res = wrap_av_hwframe_transfer_get_formats(hw_frames, AV_HWFRAME_TRANSFER_DIRECTION_TO, &transfer_formats, 0);
+      if (res < 0)
+      {
+        SetAVError(&hw_error, "av_hwframe_transfer_get_formats() failed: ", res);
+        ERROR_LOG(hw_error.GetDescription());
+        wrap_av_buffer_unref(&hw_frames);
+        wrap_av_buffer_unref(&hw_context);
+        continue;
+      }
+
+      int num_transfer_formats = 0;
+      while (transfer_formats[num_transfer_formats] != AV_PIX_FMT_NONE)
+        num_transfer_formats++;
+      if (!contains_pixel_format(transfer_formats, num_transfer_formats, sw_pix_fmt))
+      {
+        ERROR_LOG("Hardware encoder does not support a transferable software pixel format.");
+        wrap_av_free(transfer_formats);
+        wrap_av_buffer_unref(&hw_frames);
+        wrap_av_buffer_unref(&hw_context);
+        continue;
+      }
+      wrap_av_free(transfer_formats);
+
+      m_video_hw_context = hw_context;
+      m_video_hw_frames = hw_frames;
+      m_video_codec_context->hw_frames_ctx = wrap_av_buffer_ref(m_video_hw_frames);
+      if (!m_video_codec_context->hw_frames_ctx)
+      {
+        ERROR_LOG("av_buffer_ref() failed for hardware frames context.");
+        wrap_av_buffer_unref(&m_video_hw_frames);
+        wrap_av_buffer_unref(&m_video_hw_context);
+        continue;
+      }
+      m_video_codec_context->pix_fmt = hwconfig->pix_fmt;
+      break;
+    }
+
+    if (requested_hardware_encoder && !m_video_hw_context)
+    {
+      if (hardware_dimensions_too_large)
+      {
+        const u32 maximum_width = (hardware_max_width != 0) ? hardware_max_width : m_video_width;
+        const u32 maximum_height = (hardware_max_height != 0) ? hardware_max_height : m_video_height;
+        Error::SetStringFmt(
+          error, "Video dimensions {}x{} exceed the maximum supported dimensions {}x{} for hardware encoder '{}'.",
+          m_video_width, m_video_height, maximum_width, maximum_height, video_codec);
       }
       else
       {
-        m_video_hw_frames = wrap_av_hwframe_ctx_alloc(m_video_hw_context);
-        if (!m_video_hw_frames)
-        {
-          ERROR_LOG("s_video_hw_frames() failed");
-          wrap_av_buffer_unref(&m_video_hw_context);
-        }
-        else
-        {
-          AVHWFramesContext* frames_ctx = reinterpret_cast<AVHWFramesContext*>(m_video_hw_frames->data);
-          frames_ctx->format = (hwconfig->pix_fmt != AV_PIX_FMT_NONE) ? hwconfig->pix_fmt : sw_pix_fmt;
-          frames_ctx->sw_format = sw_pix_fmt;
-          frames_ctx->width = m_video_codec_context->width;
-          frames_ctx->height = m_video_codec_context->height;
-          res = wrap_av_hwframe_ctx_init(m_video_hw_frames);
-          if (res < 0)
-          {
-            SetAVError(&hw_error, "av_hwframe_ctx_init() failed: ", res);
-            ERROR_LOG(hw_error.GetDescription());
-            wrap_av_buffer_unref(&m_video_hw_frames);
-            wrap_av_buffer_unref(&m_video_hw_context);
-          }
-          else
-          {
-            m_video_codec_context->hw_frames_ctx = wrap_av_buffer_ref(m_video_hw_frames);
-            if (hwconfig->pix_fmt != AV_PIX_FMT_NONE)
-              m_video_codec_context->pix_fmt = hwconfig->pix_fmt;
-          }
-        }
+        Error::SetStringFmt(error, "Failed to initialize requested hardware encoder '{}'.", video_codec);
       }
-
-      if (!m_video_hw_context)
-      {
-        ERROR_LOG("Failed to create hardware encoder, using software encoding.");
-        hwconfig = nullptr;
-      }
+      return false;
     }
 
-    if (!hwconfig)
+    if (!hwconfig || !m_video_hw_context)
     {
-      // Default to YUV 4:2:0 if the codec doesn't specify a pixel format.
-      const AVPixelFormat* supported_pixel_formats = nullptr;
-      int num_supported_pixel_formats = 0;
-#ifdef HAS_AVCODEC_GET_SUPPORTED_CONFIG
-      res = wrap_avcodec_get_supported_config(m_video_codec_context, vcodec, AV_CODEC_CONFIG_PIX_FORMAT, 0,
-                                              reinterpret_cast<const void**>(&supported_pixel_formats),
-                                              &num_supported_pixel_formats);
-      if (res < 0)
+      // For software encoders a null list means that all pixel formats are accepted.
+      const auto is_allowed_software_format = [](AVPixelFormat) { return true; };
+      sw_pix_fmt = select_pixel_format(supported_pixel_formats, num_supported_pixel_formats, request_pix_fmt,
+                                       software_pixel_format_preference, is_allowed_software_format);
+      if (sw_pix_fmt == AV_PIX_FMT_NONE)
       {
-        SetAVError(error, "avcodec_get_supported_config() failed: ", res);
+        Error::SetStringView(error, "Video codec supports no usable pixel formats.");
         return false;
-      }
-#else
-      supported_pixel_formats = vcodec->pix_fmts;
-      if (supported_pixel_formats)
-      {
-        while (supported_pixel_formats[num_supported_pixel_formats] != AV_PIX_FMT_NONE)
-          num_supported_pixel_formats++;
-      }
-#endif
-
-      if (!supported_pixel_formats || num_supported_pixel_formats == 0)
-      {
-        Error::SetStringView(error, "Video codec supports no formats.");
-        return false;
-      }
-
-      // Prefer YUV420 given the choice, but otherwise fall back to whatever it supports.
-      sw_pix_fmt = supported_pixel_formats[0];
-      for (int i = 0; i < num_supported_pixel_formats; i++)
-      {
-        if (supported_pixel_formats[i] == request_pix_fmt)
-        {
-          sw_pix_fmt = supported_pixel_formats[i];
-          break;
-        }
       }
 
       m_video_codec_context->pix_fmt = sw_pix_fmt;
+      if (has_pixel_format_override && request_pix_fmt != sw_pix_fmt)
+      {
+        WARNING_LOG("Requested video pixel format was not supported; using {} instead.",
+                    wrap_av_get_pix_fmt_name(sw_pix_fmt));
+      }
+      if (m_video_hw_context)
+      {
+        ERROR_LOG("Failed to create a compatible hardware encoder, using software encoding.");
+        wrap_av_buffer_unref(&m_video_hw_frames);
+        wrap_av_buffer_unref(&m_video_hw_context);
+        wrap_av_buffer_unref(&m_video_codec_context->hw_frames_ctx);
+      }
     }
 
     if (output_format->flags & AVFMT_GLOBALHEADER)
@@ -2304,6 +2572,16 @@ bool MediaCaptureFFmpeg::InternalBeginCapture(float fps, float aspect, u32 sampl
     if (res < 0)
     {
       SetAVError(error, "avcodec_open2() for video failed: ", res);
+      return false;
+    }
+
+    // Codec options may adjust the final software format during open. Use the format reported by
+    // the opened software encoder so swscale and avcodec receive the same format.
+    if (!IsUsingHardwareVideoEncoding())
+      sw_pix_fmt = m_video_codec_context->pix_fmt;
+    if (sw_pix_fmt == AV_PIX_FMT_NONE)
+    {
+      Error::SetStringView(error, "Video encoder did not select a pixel format.");
       return false;
     }
 
@@ -2323,19 +2601,6 @@ bool MediaCaptureFFmpeg::InternalBeginCapture(float fps, float aspect, u32 sampl
     {
       SetAVError(error, "av_frame_get_buffer() for converted frame failed: ", res);
       return false;
-    }
-
-    if (IsUsingHardwareVideoEncoding())
-    {
-      m_hw_video_frame->format = m_video_codec_context->pix_fmt;
-      m_hw_video_frame->width = m_video_codec_context->width;
-      m_hw_video_frame->height = m_video_codec_context->height;
-      res = wrap_av_hwframe_get_buffer(m_video_hw_frames, m_hw_video_frame, 0);
-      if (res < 0)
-      {
-        SetAVError(error, "av_frame_get_buffer() for HW frame failed: ", res);
-        return false;
-      }
     }
 
     m_video_stream = wrap_avformat_new_stream(m_format_context, vcodec);
@@ -2371,7 +2636,7 @@ bool MediaCaptureFFmpeg::InternalBeginCapture(float fps, float aspect, u32 sampl
       acodec = wrap_avcodec_find_encoder_by_name(TinyString(audio_codec).c_str());
       if (!acodec)
       {
-        Error::SetStringFmt(error, "Audio codec {} not found.", video_codec);
+        Error::SetStringFmt(error, "Audio codec {} not found.", audio_codec);
         return false;
       }
     }
@@ -2400,8 +2665,7 @@ bool MediaCaptureFFmpeg::InternalBeginCapture(float fps, float aspect, u32 sampl
     bool supports_format = false;
     const AVSampleFormat* supported_sample_formats = nullptr;
     int num_supported_sample_formats = 0;
-#ifdef HAS_AVCODEC_GET_SUPPORTED_CONFIG
-    res = wrap_avcodec_get_supported_config(m_video_codec_context, acodec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0,
+    res = wrap_avcodec_get_supported_config(m_audio_codec_context, acodec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0,
                                             reinterpret_cast<const void**>(&supported_sample_formats),
                                             &num_supported_sample_formats);
     if (res < 0)
@@ -2409,17 +2673,6 @@ bool MediaCaptureFFmpeg::InternalBeginCapture(float fps, float aspect, u32 sampl
       SetAVError(error, "avcodec_get_supported_config() for audio failed: ", res);
       return false;
     }
-#else
-    if (!acodec->sample_fmts)
-    {
-      Error::SetStringView(error, "Video codec supports no formats.");
-      return false;
-    }
-
-    supported_sample_formats = acodec->sample_fmts;
-    while (supported_sample_formats[num_supported_sample_formats] != AV_SAMPLE_FMT_NONE)
-      num_supported_sample_formats++;
-#endif
 
     for (int i = 0; i < num_supported_sample_formats; i++)
     {
@@ -2429,9 +2682,17 @@ bool MediaCaptureFFmpeg::InternalBeginCapture(float fps, float aspect, u32 sampl
         break;
       }
     }
+    if (!supported_sample_formats)
+      supports_format = true;
+
     if (!supports_format)
     {
       WARNING_LOG("Audio codec '{}' does not support S16 samples, using default.", acodec->name);
+      if (num_supported_sample_formats == 0)
+      {
+        Error::SetStringView(error, "Audio codec supports no sample formats.");
+        return false;
+      }
       m_audio_codec_context->sample_fmt = supported_sample_formats[0];
       m_swr_context = wrap_swr_alloc();
       if (!m_swr_context)
@@ -2696,7 +2957,12 @@ bool MediaCaptureFFmpeg::SendFrame(const PendingFrame& pf, Error* error)
   }
 
   // In case a previous frame is still using the frame.
-  wrap_av_frame_make_writable(m_converted_video_frame);
+  int res = wrap_av_frame_make_writable(m_converted_video_frame);
+  if (res < 0)
+  {
+    SetAVError(error, "av_frame_make_writable() failed: ", res);
+    return false;
+  }
 
   m_sws_context = wrap_sws_getCachedContext(m_sws_context, source_width, source_height, m_video_pixel_format,
                                             m_converted_video_frame->width, m_converted_video_frame->height,
@@ -2708,14 +2974,34 @@ bool MediaCaptureFFmpeg::SendFrame(const PendingFrame& pf, Error* error)
     return false;
   }
 
-  wrap_sws_scale(m_sws_context, reinterpret_cast<const u8**>(&source_ptr), &source_pitch, 0, source_height,
-                 m_converted_video_frame->data, m_converted_video_frame->linesize);
+  const int scaled_height =
+    wrap_sws_scale(m_sws_context, reinterpret_cast<const u8**>(&source_ptr), &source_pitch, 0, source_height,
+                   m_converted_video_frame->data, m_converted_video_frame->linesize);
+  if (scaled_height != m_converted_video_frame->height)
+  {
+    Error::SetStringFmt(error, "sws_scale() converted {} of {} rows", scaled_height, m_converted_video_frame->height);
+    return false;
+  }
 
   AVFrame* frame_to_send = m_converted_video_frame;
   if (IsUsingHardwareVideoEncoding())
   {
+    // Allocate a new hardware surface for every frame. The encoder may retain a reference to the
+    // submitted surface after avcodec_send_frame() returns, so reusing one surface corrupts frames
+    // and can also make hardware implementations fail while creating their staging texture.
+    wrap_av_frame_unref(m_hw_video_frame);
+    m_hw_video_frame->format = m_video_codec_context->pix_fmt;
+    m_hw_video_frame->width = m_video_codec_context->width;
+    m_hw_video_frame->height = m_video_codec_context->height;
+    res = wrap_av_hwframe_get_buffer(m_video_hw_frames, m_hw_video_frame, 0);
+    if (res < 0)
+    {
+      SetAVError(error, "av_hwframe_get_buffer() failed: ", res);
+      return false;
+    }
+
     // Need to transfer the frame to hardware.
-    const int res = wrap_av_hwframe_transfer_data(m_hw_video_frame, m_converted_video_frame, 0);
+    res = wrap_av_hwframe_transfer_data(m_hw_video_frame, m_converted_video_frame, 0);
     if (res < 0) [[unlikely]]
     {
       SetAVError(error, "av_hwframe_transfer_data() failed: ", res);
@@ -2728,7 +3014,7 @@ bool MediaCaptureFFmpeg::SendFrame(const PendingFrame& pf, Error* error)
   // Set the correct PTS before handing it off.
   frame_to_send->pts = pf.pts;
 
-  const int res = wrap_avcodec_send_frame(m_video_codec_context, frame_to_send);
+  res = wrap_avcodec_send_frame(m_video_codec_context, frame_to_send);
   if (res < 0) [[unlikely]]
   {
     SetAVError(error, "avcodec_send_frame() failed: ", res);
@@ -2858,8 +3144,12 @@ std::unique_ptr<MediaCapture> MediaCaptureFFmpeg::Create(Error* error)
 MediaCapture::ContainerList MediaCaptureFFmpeg::GetContainerList()
 {
   return {
-    {"avi", "Audio Video Interleave"}, {"mp4", "MPEG-4 Part 14"},         {"mkv", "Matroska Media Container"},
-    {"mov", "QuickTime File Format"},  {"mp3", "MPEG-2 Audio Layer III"}, {"wav", "Waveform Audio File Format"},
+    {"avi", TRANSLATE_DISAMBIG_STR("MediaCapture", "Audio Video Interleave", "ContainerFormat")},
+    {"mp4", TRANSLATE_DISAMBIG_STR("MediaCapture", "MPEG-4 Part 14", "ContainerFormat")},
+    {"mkv", TRANSLATE_DISAMBIG_STR("MediaCapture", "Matroska Media Container", "ContainerFormat")},
+    {"mov", TRANSLATE_DISAMBIG_STR("MediaCapture", "QuickTime File Format", "ContainerFormat")},
+    {"mp3", TRANSLATE_DISAMBIG_STR("MediaCapture", "MPEG-2 Audio Layer III", "ContainerFormat")},
+    {"wav", TRANSLATE_DISAMBIG_STR("MediaCapture", "Waveform Audio File Format", "ContainerFormat")},
   };
 }
 
@@ -2927,10 +3217,10 @@ static constexpr const std::array<const char*, static_cast<size_t>(MediaCaptureB
 static constexpr const std::array<const char*, static_cast<size_t>(MediaCaptureBackend::MaxCount)>
   s_backend_display_names = {
 #ifdef _WIN32
-    TRANSLATE_DISAMBIG_NOOP("Settings", "Media Foundation", "MediaCaptureBackend"),
+    TRANSLATE_DISAMBIG_NOOP("MediaCapture", "Media Foundation", "MediaCaptureBackend"),
 #endif
 #ifndef __ANDROID__
-    TRANSLATE_DISAMBIG_NOOP("Settings", "FFmpeg", "MediaCaptureBackend"),
+    TRANSLATE_DISAMBIG_NOOP("MediaCapture", "FFmpeg", "MediaCaptureBackend"),
 #endif
 };
 static_assert(s_backend_names.size() == static_cast<size_t>(MediaCaptureBackend::MaxCount));
@@ -2938,12 +3228,12 @@ static_assert(s_backend_display_names.size() == static_cast<size_t>(MediaCapture
 
 MediaCapture::~MediaCapture() = default;
 
-std::optional<MediaCaptureBackend> MediaCapture::ParseBackendName(const char* str)
+std::optional<MediaCaptureBackend> MediaCapture::ParseBackendName(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_backend_names)
   {
-    if (std::strcmp(name, str) == 0)
+    if (str == name)
       return static_cast<MediaCaptureBackend>(index);
 
     index++;
@@ -2959,7 +3249,7 @@ const char* MediaCapture::GetBackendName(MediaCaptureBackend backend)
 
 const char* MediaCapture::GetBackendDisplayName(MediaCaptureBackend backend)
 {
-  return Host::TranslateToCString("Settings", s_backend_display_names[static_cast<size_t>(backend)],
+  return Host::TranslateToCString("MediaCapture", s_backend_display_names[static_cast<size_t>(backend)],
                                   "MediaCaptureBackend");
 }
 

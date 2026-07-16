@@ -349,22 +349,22 @@ void GameCheatSettingsWidget::onCheatListContextMenuRequested(const QPoint& pos)
 
   QMenu* const context_menu = QtUtils::NewPopupMenu(m_ui.cheatList);
 
-  context_menu->addAction(QIcon::fromTheme("add-line"_L1), tr("Add Cheat..."), this,
+  context_menu->addAction(QIcon(u":/icons/monochrome/svg/add-line.svg"_s), tr("Add Cheat..."), this,
                           &GameCheatSettingsWidget::newCode);
   context_menu
-    ->addAction(QIcon::fromTheme("mag-line"_L1), tr("Edit Cheat..."),
+    ->addAction(QIcon(u":/icons/monochrome/svg/edit-box-line.svg"_s), tr("Edit Cheat..."),
                 [this, selected_code]() { editCode(selected_code); })
     ->setEnabled(selected != nullptr);
   context_menu
-    ->addAction(QIcon::fromTheme("minus-line"_L1), tr("Remove Cheat"),
+    ->addAction(QIcon(u":/icons/monochrome/svg/minus-line.svg"_s), tr("Remove Cheat"),
                 [this, selected_code]() { removeCode(selected_code, true); })
     ->setEnabled(selected != nullptr);
   context_menu->addSeparator();
 
-  context_menu->addAction(QIcon::fromTheme("chat-off-line"_L1), tr("Disable All Cheats"), this,
+  context_menu->addAction(QIcon(u":/icons/monochrome/svg/chat-off-line.svg"_s), tr("Disable All Cheats"), this,
                           &GameCheatSettingsWidget::disableAllCheats);
 
-  context_menu->addAction(QIcon::fromTheme("refresh-line"_L1), tr("Reload Cheats"), this,
+  context_menu->addAction(QIcon(u":/icons/monochrome/svg/refresh-line.svg"_s), tr("Reload Cheats"), this,
                           &GameCheatSettingsWidget::onReloadClicked);
 
   context_menu->popup(m_ui.cheatList->mapToGlobal(pos));
@@ -413,6 +413,7 @@ void GameCheatSettingsWidget::checkForMasterDisable()
       Host::CommitBaseSettingChanges();
       g_core_thread->applySettings(false);
     });
+    connect(mbox, &QMessageBox::finished, this, [this, cb]() { m_master_enable_ignored = cb->isChecked(); });
 
     mbox->open();
   }
@@ -600,15 +601,17 @@ void GameCheatSettingsWidget::importCodes(const std::string& file_contents)
   Cheats::CodeInfoList new_codes;
   if (!Cheats::ImportCodesFromString(&new_codes, file_contents, Cheats::FileFormat::Unknown, true, &error))
   {
-    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
-                             tr("Failed to parse file:\n%1").arg(QString::fromStdString(error.GetDescription())));
+    QtUtils::AsyncMessageBox(
+      this, QMessageBox::Critical, u"Error"_s,
+      QStringLiteral("Failed to parse file:\n%1").arg(QString::fromStdString(error.GetDescription())));
     return;
   }
 
   if (!Cheats::SaveCodesToFile(getPathForSavingCheats().c_str(), new_codes, &error))
   {
-    QtUtils::AsyncMessageBox(this, QMessageBox::Critical, tr("Error"),
-                             tr("Failed to save file:\n%1").arg(QString::fromStdString(error.GetDescription())));
+    QtUtils::AsyncMessageBox(
+      this, QMessageBox::Critical, u"Error"_s,
+      QStringLiteral("Failed to save file:\n%1").arg(QString::fromStdString(error.GetDescription())));
   }
 
   reloadList();
@@ -801,6 +804,7 @@ CheatCodeEditorDialog::CheatCodeEditorDialog(GameCheatSettingsWidget* parent, Ch
   fillUi();
 
   connect(m_ui.group, &QComboBox::currentIndexChanged, this, &CheatCodeEditorDialog::onGroupSelectedIndexChanged);
+  connect(m_ui.type, &QComboBox::currentIndexChanged, this, &CheatCodeEditorDialog::onCodeTypeChanged);
   connect(m_ui.optionsType, &QComboBox::currentIndexChanged, this, &CheatCodeEditorDialog::onOptionTypeChanged);
   connect(m_ui.rangeMin, &QSpinBox::valueChanged, this, &CheatCodeEditorDialog::onRangeMinChanged);
   connect(m_ui.rangeMax, &QSpinBox::valueChanged, this, &CheatCodeEditorDialog::onRangeMaxChanged);
@@ -941,6 +945,14 @@ void CheatCodeEditorDialog::onOptionTypeChanged(int index)
   m_ui.rangeMax->setVisible(index == 2);
 }
 
+void CheatCodeEditorDialog::onCodeTypeChanged(int index)
+{
+  const bool is_assembly = (static_cast<Cheats::CodeType>(index) == Cheats::CodeType::Assembly);
+  if (is_assembly)
+    m_ui.activation->setCurrentIndex(static_cast<int>(Cheats::CodeActivation::EndFrame));
+  m_ui.activation->setEnabled(!is_assembly);
+}
+
 void CheatCodeEditorDialog::onRangeMinChanged(int value)
 {
   m_ui.rangeMax->setValue(std::max(m_ui.rangeMax->value(), value));
@@ -973,6 +985,8 @@ void CheatCodeEditorDialog::setupAdditionalUi(const QStringList& group_names)
     m_ui.group->addItems(group_names);
 
   m_ui.group->addItem(tr("New..."));
+
+  m_ui.instructions->setFont(QtHost::GetFixedFont());
 }
 
 void CheatCodeEditorDialog::fillUi()
@@ -1010,6 +1024,7 @@ void CheatCodeEditorDialog::fillUi()
   m_new_options = m_code.options;
 
   m_ui.optionsType->setCurrentIndex(m_code.HasOptionRange() ? 2 : (m_code.HasOptionChoices() ? 1 : 0));
+  onCodeTypeChanged(m_ui.type->currentIndex());
   onOptionTypeChanged(m_ui.optionsType->currentIndex());
 }
 

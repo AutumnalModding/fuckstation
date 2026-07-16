@@ -167,7 +167,7 @@ bool PlayStationMouse::Transfer(const u8 data_in, u8* data_out)
     case TransferState::DeltaY:
     {
       const float delta_y = std::floor(m_delta_y * m_sensitivity_y);
-      m_delta_y -= delta_y / m_sensitivity_x;
+      m_delta_y -= delta_y / m_sensitivity_y;
       *data_out = static_cast<s8>(std::clamp(delta_y, static_cast<float>(std::numeric_limits<s8>::min()),
                                              static_cast<float>(std::numeric_limits<s8>::max())));
       m_transfer_state = TransferState::Idle;
@@ -219,5 +219,6 @@ const Controller::ControllerInfo PlayStationMouse::INFO = {ControllerType::PlayS
                                                            "PlayStationMouse",
                                                            TRANSLATE_NOOP("ControllerType", "Mouse"),
                                                            ICON_PF_MOUSE,
+                                                           "images/controllers/mouse.svg",
                                                            s_binding_info,
                                                            s_settings};

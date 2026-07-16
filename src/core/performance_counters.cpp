@@ -1,15 +1,16 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "performance_counters.h"
 #include "gpu.h"
 #include "gpu_backend.h"
 #include "system.h"
-#include "system_private.h"
+#include "host.h"
 #include "video_thread.h"
 
 #include "util/media_capture.h"
 
+#include "common/assert.h"
 #include "common/log.h"
 #include "common/threading.h"
 #include "common/timer.h"
@@ -139,11 +140,13 @@ u32 PerformanceCounters::GetFrameTimeHistoryPos()
 
 void PerformanceCounters::Clear()
 {
-  s_state = {};
+  DebugAssert(Host::IsOnCoreThread());
+  VideoThread::RunOnThread([]() { s_state = {}; });
 }
 
 void PerformanceCounters::Reset()
 {
+  DebugAssert(Host::IsOnCoreThread());
   VideoThread::RunOnThread(
     [frame_number = System::GetFrameNumber(), internal_frame_number = System::GetInternalFrameNumber()]() {
       const Timer::Value now_ticks = Timer::GetCurrentValue();
@@ -153,8 +156,8 @@ void PerformanceCounters::Reset()
 
       s_state.last_frame_number = frame_number;
       s_state.last_internal_frame_number = internal_frame_number;
-      s_state.last_core_thread_time = System::GetCoreThreadHandle().GetCPUTime();
-      s_state.last_video_thread_time = VideoThread::Internal::GetThreadHandle().GetCPUTime();
+      s_state.last_core_thread_time = Host::GetCoreThreadHandle().GetCPUTime();
+      s_state.last_video_thread_time = VideoThread::GetThreadHandle().GetCPUTime();
 
       s_state.average_frame_time_accumulator = 0.0f;
       s_state.minimum_frame_time_accumulator = 0.0f;
@@ -204,8 +207,8 @@ void PerformanceCounters::Update(GPUBackend* gpu, u32 frame_number, u32 internal
   s_state.fps = static_cast<float>(internal_frames_run) / time;
   s_state.speed = (s_state.vps / System::GetVideoFrameRate()) * 100.0f;
 
-  const u64 core_thread_time = System::GetCoreThreadHandle().GetCPUTime();
-  const u64 video_thread_time = VideoThread::Internal::GetThreadHandle().GetCPUTime();
+  const u64 core_thread_time = Host::GetCoreThreadHandle().GetCPUTime();
+  const u64 video_thread_time = VideoThread::GetThreadHandle().GetCPUTime();
   const u64 core_thread_delta = core_thread_time - s_state.last_core_thread_time;
   const u64 video_thread_delta = video_thread_time - s_state.last_video_thread_time;
   s_state.last_core_thread_time = core_thread_time;

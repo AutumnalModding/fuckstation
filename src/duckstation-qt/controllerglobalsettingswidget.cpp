@@ -169,7 +169,10 @@ ControllerGlobalSettingsWidget::ControllerGlobalSettingsWidget(QWidget* parent, 
     sif, m_ui.multitapMode, "ControllerPorts", "MultitapMode", &Settings::ParseMultitapModeName,
     &Settings::GetMultitapModeName, &Settings::GetMultitapModeDisplayName, Settings::DEFAULT_MULTITAP_MODE,
     MultitapMode::Count);
-  connect(m_ui.multitapMode, &QComboBox::currentIndexChanged, this, [this]() { emit bindingSetupChanged(); });
+  connect(m_ui.multitapMode, &QComboBox::currentIndexChanged, this, [this]() {
+    emit bindingSetupChanged();
+    emit m_dialog->multitapModeChanged(static_cast<MultitapMode>(m_ui.multitapMode->currentIndex()));
+  });
 }
 
 ControllerGlobalSettingsWidget::~ControllerGlobalSettingsWidget() = default;
@@ -223,7 +226,7 @@ void ControllerGlobalSettingsWidget::ledSettingsClicked()
 
   QHBoxLayout* const heading_layout = new QHBoxLayout;
   QLabel* const icon = new QLabel;
-  icon->setPixmap(QIcon::fromTheme("lightbulb-line"_L1).pixmap(32));
+  icon->setPixmap(QIcon(u":/icons/monochrome/svg/lightbulb-line.svg"_s).pixmap(32));
   QLabel* const heading = new QLabel(
     tr("<strong>Controller LED Settings</strong><br>\nThe \"alternate\" color is used when analog mode is active."));
   heading->setWordWrap(true);

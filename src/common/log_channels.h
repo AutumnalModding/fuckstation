@@ -16,6 +16,7 @@
   X(Controller)                                                                                                        \
   X(Core)                                                                                                              \
   X(CueParser)                                                                                                         \
+  X(DiscordPresence)                                                                                                   \
   X(DInputSource)                                                                                                      \
   X(DMA)                                                                                                               \
   X(DynamicLibrary)                                                                                                    \
@@ -30,6 +31,7 @@
   X(GPU_HW)                                                                                                            \
   X(GameDatabase)                                                                                                      \
   X(GameList)                                                                                                          \
+  X(HTTPCache)                                                                                                         \
   X(HTTPDownloader)                                                                                                    \
   X(Host)                                                                                                              \
   X(ImGuiManager)                                                                                                      \

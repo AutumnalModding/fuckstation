@@ -78,7 +78,7 @@ public:
 
   static const char* GetStretchModeName(AudioStretchMode mode);
   static const char* GetStretchModeDisplayName(AudioStretchMode mode);
-  static std::optional<AudioStretchMode> ParseStretchMode(const char* name);
+  static std::optional<AudioStretchMode> ParseStretchMode(std::string_view name);
 
   ALWAYS_INLINE u32 GetSampleRate() const { return m_sample_rate; }
   ALWAYS_INLINE u32 GetBufferSize() const { return m_buffer_size; }
@@ -163,7 +163,7 @@ private:
   void* m_soundtouch = nullptr;
 
   u32 m_target_buffer_size = 0;
-  u32 m_stretch_reset = STRETCH_RESET_THRESHOLD;
+  u32 m_stretch_reset = 0;
   u64 m_stretch_reset_time = 0;
 
   u32 m_stretch_ok_count = 0;

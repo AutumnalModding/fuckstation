@@ -98,7 +98,7 @@ static constinit Config s_config;
 
 #define REGS CPU::g_state.gte_regs
 
-ALWAYS_INLINE static u32 CountLeadingBits(u32 value)
+ALWAYS_INLINE u32 CountLeadingBits(u32 value)
 {
   // if top-most bit is set, we want to count ones not zeros
   if (value & UINT32_C(0x80000000))
@@ -108,7 +108,7 @@ ALWAYS_INLINE static u32 CountLeadingBits(u32 value)
 }
 
 template<u32 index>
-ALWAYS_INLINE static void CheckMACOverflow(s64 value)
+ALWAYS_INLINE void CheckMACOverflow(s64 value)
 {
   constexpr s64 MIN_VALUE = (index == 0) ? MAC0_MIN_VALUE : MAC123_MIN_VALUE;
   constexpr s64 MAX_VALUE = (index == 0) ? MAC0_MAX_VALUE : MAC123_MAX_VALUE;
@@ -137,14 +137,14 @@ ALWAYS_INLINE static void CheckMACOverflow(s64 value)
 }
 
 template<u32 index>
-ALWAYS_INLINE static s64 SignExtendMACResult(s64 value)
+ALWAYS_INLINE s64 SignExtendMACResult(s64 value)
 {
   CheckMACOverflow<index>(value);
   return SignExtendN < index == 0 ? 31 : 44 > (value);
 }
 
 template<u32 index>
-ALWAYS_INLINE static void TruncateAndSetMAC(s64 value, u8 shift)
+ALWAYS_INLINE void TruncateAndSetMAC(s64 value, u8 shift)
 {
   CheckMACOverflow<index>(value);
 
@@ -155,7 +155,7 @@ ALWAYS_INLINE static void TruncateAndSetMAC(s64 value, u8 shift)
 }
 
 template<u32 index>
-ALWAYS_INLINE static void TruncateAndSetIR(s32 value, bool lm)
+ALWAYS_INLINE void TruncateAndSetIR(s32 value, bool lm)
 {
   constexpr s32 MIN_VALUE = (index == 0) ? IR0_MIN_VALUE : IR123_MIN_VALUE;
   constexpr s32 MAX_VALUE = (index == 0) ? IR0_MAX_VALUE : IR123_MAX_VALUE;
@@ -190,7 +190,7 @@ ALWAYS_INLINE static void TruncateAndSetIR(s32 value, bool lm)
 }
 
 template<u32 index>
-ALWAYS_INLINE static void TruncateAndSetMACAndIR(s64 value, u8 shift, bool lm)
+ALWAYS_INLINE void TruncateAndSetMACAndIR(s64 value, u8 shift, bool lm)
 {
   CheckMACOverflow<index>(value);
 
@@ -206,7 +206,7 @@ ALWAYS_INLINE static void TruncateAndSetMACAndIR(s64 value, u8 shift, bool lm)
 }
 
 template<u32 index>
-ALWAYS_INLINE static u32 TruncateRGB(s32 value)
+ALWAYS_INLINE u32 TruncateRGB(s32 value)
 {
   if (value < 0 || value > 0xFF)
   {
@@ -1289,7 +1289,7 @@ void GTE::ExecuteInstruction(u32 inst_bits)
       break;
 
     case 0x11:
-      CPU::AddGTETicks(7);
+      CPU::AddGTETicks(8);
       Execute_INTPL(inst);
       break;
 
@@ -1378,9 +1378,23 @@ void GTE::ExecuteInstruction(u32 inst_bits)
       Execute_NCCT(inst);
       break;
 
-    default:
-      Panic("Missing handler");
+      // clang-format off
+    [[unlikely]] case 0: [[unlikely]] case 2: [[unlikely]] case 3: [[unlikely]] case 4:
+    [[unlikely]] case 5: [[unlikely]] case 7: [[unlikely]] case 8: [[unlikely]] case 9:
+    [[unlikely]] case 10: [[unlikely]] case 11: [[unlikely]] case 13: [[unlikely]] case 14:
+    [[unlikely]] case 15: [[unlikely]] case 21: [[unlikely]] case 23: [[unlikely]] case 24:
+    [[unlikely]] case 25: [[unlikely]] case 26: [[unlikely]] case 29: [[unlikely]] case 31:
+    [[unlikely]] case 33: [[unlikely]] case 34: [[unlikely]] case 35: [[unlikely]] case 36:
+    [[unlikely]] case 37: [[unlikely]] case 38: [[unlikely]] case 39: [[unlikely]] case 43:
+    [[unlikely]] case 44: [[unlikely]] case 47: [[unlikely]] case 49: [[unlikely]] case 50:
+    [[unlikely]] case 51: [[unlikely]] case 52: [[unlikely]] case 53: [[unlikely]] case 54:
+    [[unlikely]] case 55: [[unlikely]] case 56: [[unlikely]] case 57: [[unlikely]] case 58:
+    [[unlikely]] case 59: [[unlikely]] case 60:
+      // clang-format on
+      ERROR_LOG("Unhandled GTE opcode 0x{:08X}", inst.bits);
       break;
+
+      DefaultCaseIsUnreachable();
   }
 }
 
@@ -1411,7 +1425,7 @@ GTE::InstructionImpl GTE::GetInstructionImpl(u32 inst_bits, TickCount* ticks)
       return &Execute_DPCS;
 
     case 0x11:
-      *ticks = 7;
+      *ticks = 8;
       return &Execute_INTPL;
 
     case 0x12:

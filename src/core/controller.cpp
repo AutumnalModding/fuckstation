@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "controller.h"
@@ -21,8 +21,13 @@
 #include "IconsPromptFont.h"
 #include "fmt/format.h"
 
-static const Controller::ControllerInfo s_none_info = {
-  ControllerType::None, "None", TRANSLATE_NOOP("ControllerType", "Not Connected"), ICON_PF_NO_CONTROLLER, {}, {}};
+static const Controller::ControllerInfo s_none_info = {ControllerType::None,
+                                                       "None",
+                                                       TRANSLATE_NOOP("ControllerType", "Not Connected"),
+                                                       ICON_PF_NO_CONTROLLER,
+                                                       nullptr,
+                                                       {},
+                                                       {}};
 
 static constexpr std::array<const Controller::ControllerInfo*, static_cast<size_t>(ControllerType::Count)>
   s_controller_info = {{
@@ -204,22 +209,27 @@ const char* Controller::GetPortDisplayName(u32 port, u32 slot, bool mtap)
   return mtap ? mtap_labels[port][slot] : no_mtap_labels[port];
 }
 
-const char* Controller::GetPortDisplayName(u32 index)
+const char* Controller::GetPortDisplayName(u32 index, MultitapMode mode)
 {
   const auto& [port, slot] = ConvertPadToPortAndSlot(index);
-  return GetPortDisplayName(port, slot, g_settings.IsMultitapPortEnabled(port));
+  return GetPortDisplayName(port, slot, IsMultitapEnabledOnPort(port, mode));
+}
+
+bool Controller::IsMultitapEnabledOnPort(u32 port, MultitapMode mode)
+{
+  return (port == 0) ? (mode == MultitapMode::Port1Only || mode == MultitapMode::BothPorts) :
+                       (mode == MultitapMode::Port2Only || mode == MultitapMode::BothPorts);
+}
+
+std::array<bool, 2> Controller::GetMultitapEnabledPorts(MultitapMode mode)
+{
+  return {(mode == MultitapMode::Port1Only || mode == MultitapMode::BothPorts),
+          (mode == MultitapMode::Port2Only || mode == MultitapMode::BothPorts)};
 }
 
 std::string Controller::GetSettingsSection(u32 pad)
 {
   return fmt::format("Pad{}", pad + 1u);
-}
-
-bool Controller::InCircularDeadzone(float deadzone, float pos_x, float pos_y)
-{
-  // Calculate the actual distance from center, and compare to deadzone radius.
-  const float distance = std::sqrt(pos_x * pos_x + pos_y * pos_y);
-  return (distance <= deadzone);
 }
 
 bool Controller::CanStartInAnalogMode(ControllerType ctype)

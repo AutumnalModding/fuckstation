@@ -6,12 +6,9 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>509</width>
-    <height>499</height>
+    <width>606</width>
+    <height>547</height>
    </rect>
-  </property>
-  <property name="windowTitle">
-   <string>Form</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <property name="leftMargin">
@@ -31,7 +28,7 @@
      <property name="title">
       <string>Display</string>
      </property>
-     <layout class="QGridLayout" name="gridLayout" columnstretch="0,1" columnminimumwidth="150,0">
+     <layout class="QGridLayout" name="gridLayout" columnstretch="0,1,0,1" columnminimumwidth="110,0,110,0">
       <item row="0" column="0">
        <widget class="QLabel" name="label_29">
         <property name="text">
@@ -39,7 +36,7 @@
         </property>
        </widget>
       </item>
-      <item row="0" column="1">
+      <item row="0" column="1" colspan="3">
        <widget class="QSpinBox" name="osdScale">
         <property name="suffix">
          <string>%</string>
@@ -59,7 +56,7 @@
         </property>
        </widget>
       </item>
-      <item row="1" column="1">
+      <item row="1" column="1" colspan="3">
        <widget class="QSpinBox" name="osdMargin">
         <property name="suffix">
          <string>px</string>
@@ -70,14 +67,34 @@
        </widget>
       </item>
       <item row="2" column="0">
-       <widget class="QLabel" name="label_4">
+       <widget class="QLabel" name="fullscreenUIThemeLabel">
         <property name="text">
          <string>Theme:</string>
         </property>
        </widget>
       </item>
-      <item row="2" column="1">
+      <item row="2" column="1" colspan="3">
        <widget class="QComboBox" name="fullscreenUITheme"/>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="imguiFontLabel">
+        <property name="text">
+         <string>Font:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QComboBox" name="imguiFont"/>
+      </item>
+      <item row="3" column="2">
+       <widget class="QLabel" name="imguiFixedFontLabel">
+        <property name="text">
+         <string>Overlay Font:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="3">
+       <widget class="QComboBox" name="imguiFixedFont"/>
       </item>
      </layout>
     </widget>

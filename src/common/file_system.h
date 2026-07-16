@@ -56,9 +56,6 @@ struct FILESYSTEM_FIND_DATA
 namespace FileSystem {
 using FindResultsArray = std::vector<FILESYSTEM_FIND_DATA>;
 
-/// Returns the display name of a filename. Usually this is the same as the path.
-std::string GetDisplayNameFromPath(std::string_view path);
-
 /// Returns a list of "root directories" (i.e. root/home directories on Linux, drive letters on Windows).
 std::vector<std::string> GetRootDirectoryList();
 
@@ -102,6 +99,12 @@ struct FileDeleter
 using ManagedCFilePtr = std::unique_ptr<std::FILE, FileDeleter>;
 ManagedCFilePtr OpenManagedCFile(const char* path, const char* mode, Error* error = nullptr);
 std::FILE* OpenCFile(const char* path, const char* mode, Error* error = nullptr);
+
+/// Opens a new temporary file for read/write in binary mode. The temporary path is generated
+/// by appending a unique suffix to base_path. If out_path is non-null, the generated path is
+/// written to it.
+std::FILE* OpenTemporaryCFile(std::string_view base_path, std::string* out_path, Error* error = nullptr);
+ManagedCFilePtr OpenTemporaryManagedCFile(std::string_view base_path, std::string* out_path, Error* error = nullptr);
 
 /// Atomically opens a file in read/write mode, and if the file does not exist, creates it.
 /// On Windows, if retry_ms is positive, this function will retry opening the file for this

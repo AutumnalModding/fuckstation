@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
@@ -6,6 +6,8 @@
 #include "util/window_info.h"
 
 #include "common/types.h"
+
+class Error;
 
 enum class RenderAPI : u8;
 
@@ -35,3 +37,10 @@ bool SetWindowRoundedCornerState(QWidget* widget, bool enabled);
 #endif
 
 } // namespace QtUtils
+
+namespace QtHost {
+
+/// Prevents the screensaver from being inhibited, if it is not supported on the current platform.
+void DisableScreensaverInhibit();
+
+} // namespace QtHost

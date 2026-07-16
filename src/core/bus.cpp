@@ -526,8 +526,8 @@ void Bus::RecalculateMemoryTimings()
             s_MEMCTRL.spu_delay_size.data_bus_16bit ? 16 : 8, g_spu_access_time[0] + 1, g_spu_access_time[1] + 1,
             g_spu_access_time[2] + 1);
   TRACE_LOG("EXP1 Memory Timing: {} bit bus, byte={}, halfword={}, word={}",
-            s_MEMCTRL.spu_delay_size.data_bus_16bit ? 16 : 8, g_spu_access_time[0] + 1, g_spu_access_time[1] + 1,
-            g_spu_access_time[2] + 1);
+            s_MEMCTRL.exp1_delay_size.data_bus_16bit ? 16 : 8, g_exp1_access_time[0] + 1, g_exp1_access_time[1] + 1,
+            g_exp1_access_time[2] + 1);
 }
 
 void* Bus::GetFastmemBase(bool isc)
@@ -830,6 +830,8 @@ static constexpr std::array<std::tuple<PhysicalMemoryAddress, PhysicalMemoryAddr
     {Bus::EXP1_BASE, Bus::EXP1_BASE + Bus::EXP1_SIZE, false},
     {CPU::SCRATCHPAD_ADDR, CPU::SCRATCHPAD_ADDR + CPU::SCRATCHPAD_SIZE, true},
     {Bus::BIOS_BASE, Bus::BIOS_BASE + Bus::BIOS_SIZE, false},
+    {0, VRAM_SIZE, true},
+    {0, SPU::RAM_SIZE, true},
   }};
 
 PhysicalMemoryAddress Bus::GetMemoryRegionStart(MemoryRegion region)
@@ -861,7 +863,7 @@ u8* Bus::GetMemoryRegionPointer(MemoryRegion region)
       return (g_unprotected_ram + ((RAM_2MB_SIZE * 2) & g_ram_mask));
 
     case MemoryRegion::RAMMirror3:
-      return (g_unprotected_ram + ((RAM_8MB_SIZE * 3) & g_ram_mask));
+      return (g_unprotected_ram + ((RAM_2MB_SIZE * 3) & g_ram_mask));
 
     case MemoryRegion::EXP1:
       return nullptr;
@@ -871,6 +873,12 @@ u8* Bus::GetMemoryRegionPointer(MemoryRegion region)
 
     case MemoryRegion::BIOS:
       return g_bios;
+
+    case MemoryRegion::VRAM:
+      return reinterpret_cast<u8*>(g_vram);
+
+    case MemoryRegion::SPURAM:
+      return SPU::GetWritableRAM().data();
 
     default:
       return nullptr;
@@ -995,6 +1003,7 @@ bool Bus::InjectExecutable(std::span<const u8> buffer, bool set_pc, Error* error
     {
       Error::SetStringFmt(error, "Failed to upload {} bytes to memory at address 0x{:08X}.", data_load_size,
                           header.load_address);
+      return false;
     }
   }
 
@@ -1218,15 +1227,13 @@ bool Bus::SideloadEXE(const std::string& path, Error* error)
     return false;
   }
 
-  // Stupid Android...
-  std::string filename = FileSystem::GetDisplayNameFromPath(path);
-
+  const std::string_view extension = Path::GetExtension(path);
   bool okay = true;
-  if (StringUtil::EndsWithNoCase(filename, ".cpe"))
+  if (StringUtil::EqualNoCase(extension, "cpe"))
   {
     okay = InjectCPE(exe_data->cspan(), true, error);
   }
-  else if (StringUtil::EndsWithNoCase(filename, ".elf"))
+  else if (StringUtil::EqualNoCase(extension, "elf"))
   {
     ELFFile elf;
     if (!elf.Open(std::move(exe_data.value()), error))
@@ -1602,23 +1609,21 @@ void Bus::EXP2WriteHandler(VirtualMemoryAddress address, u32 value)
   {
     DEV_LOG("BIOS POST2 status: {:02X}", value & UINT32_C(0x0F));
   }
-#if 0
-  // TODO: Put behind configuration variable
-  else if (offset == 0x81)
+  else if (offset >= 0x81 && offset <= 0x82 && g_settings.pcsx_expansion_region_enable)
   {
-    Log_WarningPrint("pcsx_debugbreak()");
-    Host::ReportErrorAsync("Error", "pcsx_debugbreak()");
-    System::PauseSystem(true);
-    CPU::ExitExecution();
+    if (offset == 0x81)
+    {
+      WARNING_LOG("pcsx_debugbreak()");
+      System::PauseSystem(true);
+      CPU::ExitExecution();
+    }
+    else // if (offset == 0x82)
+    {
+      WARNING_LOG("pcsx_exit() with status 0x{:02X}", value & UINT32_C(0xFF));
+      System::ShutdownSystem(false);
+      CPU::ExitExecution();
+    }
   }
-  else if (offset == 0x82)
-  {
-    Log_WarningFmt("pcsx_exit() with status 0x{:02X}", value & UINT32_C(0xFF));
-    Host::ReportErrorAsync("Error", fmt::format("pcsx_exit() with status 0x{:02X}", value & UINT32_C(0xFF)));
-    System::ShutdownSystem(false);
-    CPU::ExitExecution();
-  }
-#endif
   else
   {
     WARNING_LOG("EXP2 write: 0x{:08X} <- 0x{:08X}", address, value);
@@ -1728,7 +1733,7 @@ void Bus::HWHandlers::MemCtrlWrite(PhysicalMemoryAddress address, u32 value)
 
   value = FIXUP_WORD_WRITE_VALUE(size, offset, value);
 
-  const u32 write_mask = (index == 8) ? COMDELAY::WRITE_MASK : MEMDELAY::WRITE_MASK;
+  const u32 write_mask = (index < 2) ? 0xFFFFFFFFu : ((index == 8) ? COMDELAY::WRITE_MASK : MEMDELAY::WRITE_MASK);
   const u32 new_value = (s_MEMCTRL.regs[index] & ~write_mask) | (value & write_mask);
   if (s_MEMCTRL.regs[index] != new_value)
   {
@@ -1884,7 +1889,7 @@ template<MemoryAccessSize size>
 u32 Bus::HWHandlers::GPURead(PhysicalMemoryAddress address)
 {
   const u32 offset = address & GPU_MASK;
-  u32 value = g_gpu.ReadRegister(FIXUP_WORD_OFFSET(size, offset));
+  u32 value = GPU::ReadRegister(FIXUP_WORD_OFFSET(size, offset));
   value = FIXUP_WORD_READ_VALUE(size, offset, value);
   BUS_CYCLES(2);
   return value;
@@ -1894,7 +1899,7 @@ template<MemoryAccessSize size>
 void Bus::HWHandlers::GPUWrite(PhysicalMemoryAddress address, u32 value)
 {
   const u32 offset = address & GPU_MASK;
-  g_gpu.WriteRegister(FIXUP_WORD_OFFSET(size, offset), FIXUP_WORD_WRITE_VALUE(size, offset, value));
+  GPU::WriteRegister(FIXUP_WORD_OFFSET(size, offset), FIXUP_WORD_WRITE_VALUE(size, offset, value));
 }
 
 template<MemoryAccessSize size>

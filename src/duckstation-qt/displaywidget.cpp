@@ -51,7 +51,7 @@ DisplayWidget::DisplayWidget(QWidget* parent) : QWidget(parent)
 
 DisplayWidget::~DisplayWidget() = default;
 
-void DisplayWidget::registerScreenChangeEvent()
+void DisplayWidget::connectScreenChangedEvent()
 {
   DebugAssert(!m_screen_change_registered);
 
@@ -60,9 +60,36 @@ void DisplayWidget::registerScreenChangeEvent()
     parent_widget = this;
   QWindow* parent_window_handle = parent_widget->windowHandle();
   if (parent_window_handle)
-    connect(parent_window_handle, &QWindow::screenChanged, this, [this]() { checkForSizeChange(true); });
+    connect(parent_window_handle, &QWindow::screenChanged, this, &DisplayWidget::onScreenChanged);
 
   m_screen_change_registered = true;
+  connectScreenRefreshRateChangedEvent();
+}
+
+void DisplayWidget::connectScreenRefreshRateChangedEvent()
+{
+  if (m_screen_refresh_rate_changed_connection)
+  {
+    disconnect(m_screen_refresh_rate_changed_connection);
+    m_screen_refresh_rate_changed_connection = {};
+  }
+
+  if (QScreen* const widget_screen = screen())
+  {
+    m_screen_refresh_rate_changed_connection =
+      connect(widget_screen, &QScreen::refreshRateChanged, this, &DisplayWidget::onScreenRefreshRateChanged);
+  }
+}
+
+void DisplayWidget::onScreenChanged()
+{
+  connectScreenRefreshRateChangedEvent();
+  checkForSizeChange(true);
+}
+
+void DisplayWidget::onScreenRefreshRateChanged()
+{
+  checkForSizeChange(true);
 }
 
 const std::optional<WindowInfo>& DisplayWidget::getWindowInfo(RenderAPI render_api, Error* error)
@@ -72,7 +99,7 @@ const std::optional<WindowInfo>& DisplayWidget::getWindowInfo(RenderAPI render_a
     m_window_info = QtUtils::GetWindowInfoForWidget(this, render_api, error);
 
     if (m_window_info.has_value() && !m_screen_change_registered)
-      registerScreenChangeEvent();
+      connectScreenChangedEvent();
   }
 
   m_render_api = m_window_info.has_value() ? render_api : RenderAPI::None;
@@ -83,6 +110,11 @@ void DisplayWidget::clearWindowInfo()
 {
   m_render_api = RenderAPI::None;
   m_window_info.reset();
+}
+
+void DisplayWidget::setIgnoreDoubleClick(bool enabled)
+{
+  m_ignore_double_click = enabled;
 }
 
 void DisplayWidget::checkForSizeChange(bool update_refresh_rate)
@@ -368,8 +400,7 @@ bool DisplayWidget::event(QEvent* event)
 
       // don't toggle fullscreen when we're bound.. that wouldn't end well.
       if (static_cast<const QMouseEvent*>(event)->button() == Qt::LeftButton && QtHost::IsSystemValid() &&
-          ((!QtHost::IsSystemPaused() && !m_relative_mouse_enabled &&
-            !InputManager::HasAnyBindingsForKey(InputManager::MakePointerButtonKey(0, 0))) ||
+          ((!QtHost::IsSystemPaused() && !m_relative_mouse_enabled && !m_ignore_double_click) ||
            (QtHost::IsSystemPaused() && !ImGuiManager::WantsMouseInput())) &&
           Core::GetBoolSettingValue("Main", "DoubleClickTogglesFullscreen", true))
       {

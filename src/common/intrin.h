@@ -60,7 +60,7 @@ inline constexpr u32 VECTOR_ALIGNMENT = 16;
 
 /// Aligns allocation/pitch size to preferred host size.
 template<typename T>
-ALWAYS_INLINE static T VectorAlign(T value)
+ALWAYS_INLINE T VectorAlign(T value)
 {
   return Common::AlignUpPow2(value, VECTOR_ALIGNMENT);
 }
@@ -108,7 +108,7 @@ ALWAYS_INLINE_RELEASE static void MemsetPtrs(T* ptr, T value, u32 count)
     *(dest++) = value;
 }
 
-ALWAYS_INLINE static void MultiPause()
+ALWAYS_INLINE void MultiPause()
 {
 #if defined(CPU_ARCH_X86) || defined(CPU_ARCH_X64)
   _mm_pause();
@@ -140,6 +140,15 @@ ALWAYS_INLINE static void MultiPause()
 #elif defined(CPU_ARCH_RISCV64)
   // Probably wrong... pause is optional :/
   asm volatile("fence" ::: "memory");
+#elif defined(CPU_ARCH_LOONGARCH64)
+  asm volatile("ibar 0" ::: "memory");
+  asm volatile("ibar 0" ::: "memory");
+  asm volatile("ibar 0" ::: "memory");
+  asm volatile("ibar 0" ::: "memory");
+  asm volatile("ibar 0" ::: "memory");
+  asm volatile("ibar 0" ::: "memory");
+  asm volatile("ibar 0" ::: "memory");
+  asm volatile("ibar 0" ::: "memory");
 #else
 #pragma warning("Missing implementation")
 #endif

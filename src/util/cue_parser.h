@@ -78,8 +78,6 @@ public:
 private:
   Track* GetMutableTrack(u32 n);
 
-  void SetError(u32 line_number, Error* error, const char* format, ...);
-
   static std::string_view GetToken(const char*& line);
   static std::optional<MSF> GetMSF(std::string_view token);
 
@@ -90,6 +88,9 @@ private:
   bool HandleIndexCommand(const char* line, u32 line_number, Error* error);
   bool HandlePregapCommand(const char* line, u32 line_number, Error* error);
   bool HandleFlagCommand(const char* line, u32 line_number, Error* error);
+  bool HandleCopyCommand(u32 line_number, bool enabled, Error* error);
+  bool HandlePreEmphasisCommand(u32 line_number, bool enabled, Error* error);
+  bool HandleFourChannelAudioCommand(u32 line_number, bool enabled, Error* error);
 
   bool CompleteLastTrack(u32 line_number, Error* error);
   bool SetTrackLengths(u32 line_number, Error* error);

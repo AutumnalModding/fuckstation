@@ -1,3 +1,9 @@
+# SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
+# SPDX-License-Identifier: CC-BY-NC-ND-4.0 + Packaging Restriction
+#
+# NOTE: In addition to the terms of CC-BY-NC-ND-4.0, you may not use this file to create
+# packages or build recipes without explicit permission from the copyright holder.
+
 add_library(core
   achievements.cpp
   achievements.h
@@ -18,8 +24,10 @@ add_library(core
   cdrom_subq_replacement.h
   cheats.cpp
   cheats.h
+  cheats_private.h
   controller.cpp
   controller.h
+  controller_helpers.h
   core.cpp
   core.h
   cpu_code_cache.cpp
@@ -38,6 +46,8 @@ add_library(core
   ddgo_controller.h
   digital_controller.cpp
   digital_controller.h
+  discord_presence.cpp
+  discord_presence.h
   dma.cpp
   dma.h
   fullscreenui.cpp
@@ -58,7 +68,6 @@ add_library(core
   gpu.h
   gpu_backend.cpp
   gpu_backend.h
-  gpu_commands.cpp
   gpu_dump.cpp
   gpu_dump.h
   gpu_helpers.h
@@ -141,6 +150,7 @@ add_library(core
   video_thread.cpp
   video_thread.h
   video_thread_commands.h
+  video_thread_private.h
 )
 
 set(RECOMPILER_SRCS
@@ -151,7 +161,7 @@ set(RECOMPILER_SRCS
 target_precompile_headers(core PRIVATE "pch.h")
 target_include_directories(core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(core PUBLIC Threads::Threads common util)
-target_link_libraries(core PRIVATE xxhash imgui rapidyaml rcheevos cpuinfo::cpuinfo ZLIB::ZLIB zstd::libzstd_shared libzip::zip speex_resampler_headers)
+target_link_libraries(core PRIVATE xxhash imgui rapidyaml rcheevos cpuinfo::cpuinfo ZLIB::ZLIB zstd::libzstd_shared speex_resampler_headers)
 
 if(CPU_ARCH_X64)
   target_compile_definitions(core PUBLIC "ENABLE_RECOMPILER=1" "ENABLE_MMAP_FASTMEM=1")
@@ -173,7 +183,7 @@ if(CPU_ARCH_ARM32)
     cpu_recompiler_arm32.cpp
     cpu_recompiler_arm32.h
   )
-  target_link_libraries(core PUBLIC vixl)
+  target_link_libraries(core PRIVATE vixl)
   message(STATUS "Building ARM32 recompiler.")
 endif()
 if(CPU_ARCH_ARM64)
@@ -183,7 +193,7 @@ if(CPU_ARCH_ARM64)
     cpu_recompiler_arm64.cpp
     cpu_recompiler_arm64.h
   )
-  target_link_libraries(core PUBLIC vixl)
+  target_link_libraries(core PRIVATE vixl)
   message(STATUS "Building ARM64 recompiler.")
 endif()
 if(CPU_ARCH_RISCV64)
@@ -193,8 +203,18 @@ if(CPU_ARCH_RISCV64)
     cpu_recompiler_riscv64.cpp
     cpu_recompiler_riscv64.h
   )
-  target_link_libraries(core PUBLIC biscuit::biscuit riscv-disas)
+  target_link_libraries(core PRIVATE biscuit::biscuit riscv-disas)
   message(STATUS "Building RISC-V-64 recompiler.")
+endif()
+if(CPU_ARCH_LOONGARCH64)
+  target_compile_definitions(core PUBLIC "ENABLE_RECOMPILER=1" "ENABLE_MMAP_FASTMEM=1")
+  target_sources(core PRIVATE
+    ${RECOMPILER_SRCS}
+    cpu_recompiler_loongarch64.cpp
+    cpu_recompiler_loongarch64.h
+  )
+  target_link_libraries(core PRIVATE lagoon)
+  message(STATUS "Building LoongArch64 recompiler.")
 endif()
 
 function(add_core_resources target)
@@ -202,10 +222,6 @@ function(add_core_resources target)
 
   add_resources(${target} "resources" ${CMAKE_SOURCE_DIR}/data/resources)
 
-  if(APPLE)
-    # Copy discord-rpc into the bundle
-    get_target_property(DISCORD_RPC_LIBRARY DiscordRPC::discord-rpc IMPORTED_LOCATION_RELEASE)
-    target_sources(${target} PRIVATE "${DISCORD_RPC_LIBRARY}")
-    set_source_files_properties("${DISCORD_RPC_LIBRARY}" PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
-  endif()
+  # Copy dynamically-loaded libraries into the bundle.
+  bundle_libraries(${target} DiscordRPC::discord-rpc)
 endfunction()

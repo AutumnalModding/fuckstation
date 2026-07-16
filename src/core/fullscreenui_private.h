@@ -53,14 +53,18 @@ enum class SettingsPage : u8
 // Utility
 //////////////////////////////////////////////////////////////////////////
 
+MainWindowType GetCurrentMainWindow();
+bool SetPendingMainWindowSwitch();
+bool CanCurrentMainWindowStack();
 void SwitchToMainWindow(MainWindowType type);
-void ReturnToMainWindow();
-void ReturnToMainWindow(float transition_time);
-void ReturnToPreviousWindow();
+void ReturnToMainWindow(TransitionEffect effect = TransitionEffect::Fade);
+void ReturnToMainWindow(TransitionEffect effect, float transition_time);
+void ReturnToPreviousWindow(TransitionEffect effect = TransitionEffect::Fade);
 bool AreAnyDialogsOpen();
+bool AreAnyDialogsInteractable();
 
-void PauseForMenuOpen(bool was_paused, bool set_pause_menu_open);
-void ClosePauseMenu();
+void PauseAndOpenMenuFromCoreThread(void (*callback)());
+void ClosePauseMenu(TransitionEffect effect = TransitionEffect::Fade, float transition_time = SHORT_TRANSITION_TIME);
 void ClosePauseMenuImmediately();
 
 void ExitFullscreenAndOpenURL(std::string_view url);
@@ -107,13 +111,14 @@ void RemoveCoverCacheEntry(const std::string& path);
 //////////////////////////////////////////////////////////////////////////
 
 void ClearSettingsState();
-void SwitchToSettings();
+void SwitchToSettings(SettingsPage page = SettingsPage::Interface);
 bool SwitchToGameSettings(SettingsPage page = SettingsPage::Summary);
 void SwitchToGameSettings(const GameList::Entry* entry, SettingsPage page = SettingsPage::Summary);
 bool SwitchToGameSettingsForPath(const std::string& path, SettingsPage page = SettingsPage::Summary);
 void DrawSettingsWindow();
 SettingsPage GetCurrentSettingsPage();
 bool IsInputBindingDialogOpen();
+bool IsInputBindingDialogInteractable();
 
 //////////////////////////////////////////////////////////////////////////
 // Achievements
@@ -129,7 +134,7 @@ enum class AchievementNotificationNoteType : u8
 };
 
 /// Schedules an achievement notification to be shown.
-void AddAchievementNotification(std::string key, float duration, std::string image_path, std::string title,
+void AddAchievementNotification(std::string key, float duration, std::string image_url, std::string title,
                                 std::string text, std::string note = {},
                                 AchievementNotificationNoteType note_type = AchievementNotificationNoteType::None,
                                 u16 min_width = 0, bool small_font = false);

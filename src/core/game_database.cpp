@@ -17,6 +17,7 @@
 #include "common/heterogeneous_containers.h"
 #include "common/log.h"
 #include "common/path.h"
+#include "common/progress_callback.h"
 #include "common/ryml_helpers.h"
 #include "common/string_util.h"
 #include "common/timer.h"
@@ -39,11 +40,43 @@ LOG_CHANNEL(GameDatabase);
 
 namespace GameDatabase {
 
+namespace {
 enum : u32
 {
   GAME_DATABASE_CACHE_SIGNATURE = 0x45434C48,
   GAME_DATABASE_CACHE_VERSION = 33,
 };
+
+/// Map of track hashes for image verification
+struct TrackData
+{
+  TrackData(std::string serial_, std::string revision_str_, uint32_t revision_)
+    : serial(std::move(serial_)), revision_str(std::move(revision_str_)), revision(revision_)
+  {
+  }
+
+  friend bool operator==(const TrackData& left, const TrackData& right)
+  {
+    // 'revisionString' is deliberately ignored in comparisons as it's redundant with comparing 'revision'! Do not
+    // change!
+    return left.serial == right.serial && left.revision == right.revision;
+  }
+
+  std::string serial;
+  std::string revision_str;
+  u32 revision;
+};
+
+struct TrackHashMatchResult
+{
+  std::vector<bool> track_matches;
+  std::string revision;
+  std::string serial;
+};
+
+using TrackHashesMap = std::multimap<CDImageHasher::Hash, TrackData>;
+
+} // namespace
 
 static const Entry* GetEntryForId(std::string_view code);
 
@@ -58,7 +91,10 @@ static bool ParseYamlDiscSetEntry(DiscSetEntry* entry, const ryml::ConstNodeRef&
 static bool ParseYamlCodes(UnorderedStringMap<std::string_view>& lookup, const ryml::ConstNodeRef& value,
                            std::string_view serial);
 static void BindDiscSetsToEntries();
-static bool LoadTrackHashes();
+
+static bool EnsureTrackHashesLoaded(Error* error);
+static bool LoadTrackHashes(Error* error);
+static TrackHashMatchResult MatchTrackHashes(const CDImageHasher::TrackHashes& track_hashes);
 
 static constexpr const std::array<const char*, static_cast<int>(CompatibilityRating::Count)>
   s_compatibility_rating_names = {{
@@ -268,7 +304,7 @@ const GameDatabase::Entry* GameDatabase::GetEntryForDisc(CDImage* image)
 {
   std::string id;
   GameHash hash;
-  System::GetGameDetailsFromImage(image, &id, &hash);
+  System::GetGameDetailsFromImage(image, &id, &hash, nullptr);
   const Entry* entry = GetEntryForGameDetails(id, hash);
   if (entry)
     return entry;
@@ -461,7 +497,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
   {
     settings.display_line_end_offset = display_line_end_offset.value();
     if (display_osd_messages)
-      INFO_LOG("GameDB: Display line end offset set to {}.", settings.display_line_start_offset);
+      INFO_LOG("GameDB: Display line end offset set to {}.", settings.display_line_end_offset);
   }
   if (dma_max_slice_ticks.has_value())
   {
@@ -574,7 +610,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
 
   if (HasTrait(Trait::DisableCDROMReadSpeedup))
   {
-    if (settings.cdrom_read_speedup != 1)
+    if (display_osd_messages && settings.cdrom_read_speedup != 1)
       append_message(TRANSLATE_SV("GameDatabase", "CD-ROM read speedup disabled."));
 
     settings.cdrom_read_speedup = 1;
@@ -582,7 +618,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
 
   if (HasTrait(Trait::DisableCDROMSeekSpeedup))
   {
-    if (settings.cdrom_seek_speedup != 1)
+    if (display_osd_messages && settings.cdrom_seek_speedup != 1)
       append_message(TRANSLATE_SV("GameDatabase", "CD-ROM seek speedup disabled."));
 
     settings.cdrom_seek_speedup = 1;
@@ -857,7 +893,7 @@ void GameDatabase::Entry::ApplySettings(Settings& settings, bool display_osd_mes
     if (display_osd_messages && settings.gpu_pgxp_enable && !settings.gpu_pgxp_disable_2d)
       append_message(TRANSLATE_SV("GameDatabase", "PGXP disabled on 2D polygons."));
 
-    g_settings.gpu_pgxp_disable_2d = true;
+    settings.gpu_pgxp_disable_2d = true;
   }
 
   if (gpu_pgxp_preserve_proj_fp.has_value())
@@ -1333,6 +1369,13 @@ bool GameDatabase::SaveToCache()
     writer.WriteU32(it.second);
   }
 
+  if (!writer.Flush(&error))
+  {
+    ERROR_LOG("Failed to write cache file: {}", error.GetDescription());
+    FileSystem::DiscardAtomicRenamedFile(file);
+    return false;
+  }
+
   return true;
 }
 
@@ -1749,24 +1792,22 @@ bool GameDatabase::ParseYamlCodes(UnorderedStringMap<std::string_view>& lookup, 
   return (added > 0);
 }
 
-void GameDatabase::EnsureTrackHashesMapLoaded()
+bool GameDatabase::EnsureTrackHashesLoaded(Error* error)
 {
   if (s_state.track_hashes_loaded)
-    return;
+    return true;
 
-  s_state.track_hashes_loaded = true;
-  LoadTrackHashes();
+  return (s_state.track_hashes_loaded = LoadTrackHashes(error));
 }
 
-bool GameDatabase::LoadTrackHashes()
+bool GameDatabase::LoadTrackHashes(Error* error)
 {
   Timer load_timer;
 
-  Error error;
-  std::optional<std::string> gamedb_data(Host::ReadResourceFileToString(DISCDB_YAML_FILENAME, false, &error));
+  std::optional<std::string> gamedb_data(Host::ReadResourceFileToString(DISCDB_YAML_FILENAME, false, error));
   if (!gamedb_data.has_value())
   {
-    ERROR_LOG("Failed to read disc database: {}", error.GetDescription());
+    Error::AddPrefix(error, "Failed to read disc database: ");
     return false;
   }
 
@@ -1839,8 +1880,119 @@ bool GameDatabase::LoadTrackHashes()
   return !s_state.track_hashes_map.empty();
 }
 
-const GameDatabase::TrackHashesMap& GameDatabase::GetTrackHashesMap()
+GameDatabase::TrackHashMatchResult GameDatabase::MatchTrackHashes(const CDImageHasher::TrackHashes& track_hashes)
 {
-  EnsureTrackHashesMapLoaded();
-  return s_state.track_hashes_map;
+  TrackHashMatchResult result = {std::vector<bool>(track_hashes.size(), false), {}, {}};
+
+  DebugAssert(!track_hashes.empty());
+  const auto data_track_matches = s_state.track_hashes_map.equal_range(track_hashes[0]);
+  if (data_track_matches.first != data_track_matches.second)
+  {
+    auto best_data_match = data_track_matches.second;
+    for (auto iter = data_track_matches.first; iter != data_track_matches.second; ++iter)
+    {
+      std::vector<bool> current_verification_results(track_hashes.size(), false);
+      const auto& data_track_attribs = iter->second;
+      current_verification_results[0] = true; // Data track already matched
+
+      for (auto audio_tracks_iter = std::next(track_hashes.begin()); audio_tracks_iter != track_hashes.end();
+           ++audio_tracks_iter)
+      {
+        auto audio_track_matches = s_state.track_hashes_map.equal_range(*audio_tracks_iter);
+        for (auto audio_iter = audio_track_matches.first; audio_iter != audio_track_matches.second; ++audio_iter)
+        {
+          // If audio track comes from the same revision and code as the data track, "pass" it
+          if (audio_iter->second == data_track_attribs)
+          {
+            current_verification_results[std::distance(track_hashes.begin(), audio_tracks_iter)] = true;
+            break;
+          }
+        }
+      }
+
+      const auto old_matches_count = std::count(result.track_matches.begin(), result.track_matches.end(), true);
+      const auto new_matches_count =
+        std::count(current_verification_results.begin(), current_verification_results.end(), true);
+
+      if (new_matches_count > old_matches_count)
+      {
+        best_data_match = iter;
+        result.track_matches = std::move(current_verification_results);
+
+        // If all elements got matched, early out
+        {
+        }
+      }
+    }
+
+    result.revision = best_data_match->second.revision_str;
+    result.serial = best_data_match->second.serial;
+  }
+
+  return result;
+}
+
+bool GameDatabase::VerifyImage(CDImage* image, std::string_view expected_serial, TrackVerificationResult* result,
+                               ProgressCallback* progress, Error* error)
+{
+  CDImageHasher::TrackHashes track_hashes;
+  const u32 num_tracks = image->GetTrackCount();
+  track_hashes.reserve(num_tracks);
+  progress->SetState(TRANSLATE_SV("GameDatabase", "Verifying Image"), 0, num_tracks, true);
+
+  for (u32 track = 0; track < num_tracks; track++)
+  {
+    progress->SetProgressValue(track);
+    progress->PushState();
+
+    CDImageHasher::Hash hash;
+    if (!CDImageHasher::GetTrackHash(image, static_cast<u8>(track + 1), &hash, progress, error))
+    {
+      progress->PopState();
+      return false;
+    }
+
+    track_hashes.emplace_back(hash);
+    progress->PopState();
+  }
+
+  if (track_hashes.empty())
+  {
+    Error::SetStringView(error, "Image contains no tracks.");
+    return false;
+  }
+
+  if (!EnsureTrackHashesLoaded(error))
+    return false;
+
+  TrackHashMatchResult match = MatchTrackHashes(track_hashes);
+  std::string summary;
+  if (!match.revision.empty())
+    summary = fmt::format(TRANSLATE_FS("GameDatabase", "Revision: {}"), match.revision);
+  else
+    summary = {};
+
+  if (match.serial != expected_serial)
+  {
+    if (match.serial.empty())
+    {
+      summary = TRANSLATE_STR("GameDatabase", "No known dump found that matches this hash.");
+    }
+    else
+    {
+      const std::string mismatch =
+        fmt::format(TRANSLATE_FS("GameDatabase", "Serial Mismatch: Disc {} vs Hash {}"), expected_serial, match.serial);
+      summary = summary.empty() ? mismatch : fmt::format("{} | {}", mismatch, summary);
+    }
+  }
+
+  result->track_hashes = std::move(track_hashes);
+  result->track_matches = std::move(match.track_matches);
+  result->summary = std::move(summary);
+  return true;
+}
+
+std::string GameDatabase::GetRedumpSearchURL(std::string_view hash)
+{
+  return fmt::format("https://redump.info/discs?q={}", hash);
 }

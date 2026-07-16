@@ -17,6 +17,7 @@
 class QWheelEvent;
 
 enum class DiscRegion : u8;
+enum class MultitapMode : u8;
 
 namespace GameDatabase {
 enum class Trait : u32;
@@ -29,6 +30,8 @@ struct Entry;
 
 class GameSummaryWidget;
 class GameListSettingsWidget;
+class MemoryCardSettingsWidget;
+class AchievementSettingsWidget;
 
 class SettingsWindow final : public QWidget
 {
@@ -53,7 +56,8 @@ public:
   ALWAYS_INLINE const GameDatabase::Entry* getDatabaseEntry() const { return m_database_entry; }
   ALWAYS_INLINE bool hasDatabaseEntry() const { return (m_database_entry != nullptr); }
 
-  ALWAYS_INLINE GameListSettingsWidget* getGameListSettingsWidget() const { return m_game_list_settings; }
+  GameListSettingsWidget* getGameListSettingsWidget() const;
+  AchievementSettingsWidget* getAchievementSettingsWidget() const;
 
   void registerWidgetHelp(QObject* object, QString title, QString recommended_value, QString text);
   bool eventFilter(QObject* object, QEvent* event) override;
@@ -62,7 +66,7 @@ public:
   bool getEffectiveBoolValue(const char* section, const char* key, bool default_value) const;
   int getEffectiveIntValue(const char* section, const char* key, int default_value) const;
   float getEffectiveFloatValue(const char* section, const char* key, float default_value) const;
-  std::string getEffectiveStringValue(const char* section, const char* key, const char* default_value = "") const;
+  std::string getEffectiveStringValue(const char* section, const char* key, std::string_view default_value = {}) const;
   Qt::CheckState getCheckState(const char* section, const char* key, bool default_value);
 
   // Helper functions for reading setting values for this layer (game settings or global).
@@ -83,12 +87,15 @@ public:
   bool hasGameTrait(GameDatabase::Trait trait);
   bool isGameHashStable() const;
 
+  MultitapMode getEffectiveMultitapMode() const;
+  void onMultitapModeChanged(MultitapMode mode);
+
   int getCategoryRow() const;
   void setCategoryRow(int index);
   void setCategory(const char* category);
 
 Q_SIGNALS:
-  void settingsResetToDefaults();
+  void debugOptionsVisibilityChanged(bool enabled);
 
 protected:
   void closeEvent(QCloseEvent* event) override;
@@ -107,7 +114,7 @@ private:
   void addPages();
   void reloadPages();
 
-  void addWidget(QWidget* widget, QString title, QLatin1StringView icon, QString help_text);
+  void addWidget(QWidget* widget, QString title, QString icon, QString help_text);
   bool handleWheelEvent(QWheelEvent* event);
 
   void onCategoryCurrentRowChanged(int row);
@@ -121,7 +128,6 @@ private:
   const GameDatabase::Entry* m_database_entry = nullptr;
 
   GameSummaryWidget* m_game_summary = nullptr;
-  GameListSettingsWidget* m_game_list_settings = nullptr;
 
   std::array<QString, MAX_SETTINGS_WIDGETS> m_category_help_text;
 

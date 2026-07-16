@@ -23,6 +23,7 @@ namespace FullscreenUI {
 void Initialize();
 bool IsInitialized();
 bool HasActiveWindow();
+bool HasActiveOrPendingWindow();
 void CheckForConfigChanges(const GPUSettings& old_settings);
 void OnSystemStarting();
 void OnSystemPaused();
@@ -55,15 +56,12 @@ public:
   explicit BackgroundProgressCallback(std::string name);
   ~BackgroundProgressCallback() override;
 
-  void SetStatusText(const std::string_view text) override;
-  void SetProgressRange(u32 range) override;
-  void SetProgressValue(u32 value) override;
-
   void SetCancelled();
 
-private:
-  void Redraw(bool force);
+protected:
+  void StateChanged(StateChange changed) override;
 
+private:
   std::string m_name;
   int m_last_progress_percent = -1;
 };
@@ -81,14 +79,10 @@ public:
 
   void Close();
 
-  void PushState() override;
-  void PopState() override;
-
-  void SetCancellable(bool cancellable) override;
   void SetTitle(const std::string_view title) override;
-  void SetStatusText(const std::string_view text) override;
-  void SetProgressRange(u32 range) override;
-  void SetProgressValue(u32 value) override;
+
+protected:
+  void StateChanged(StateChange changed) override;
 
 private:
   void Redraw(bool force);

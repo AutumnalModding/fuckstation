@@ -77,7 +77,7 @@ static constexpr std::pair<const char*, QAction * Ui::MainWindow::*> s_toolbar_a
   {"StartFile", &Ui::MainWindow::actionStartFile},
   {"StartBIOS", &Ui::MainWindow::actionStartBios},
   {"StartDisc", &Ui::MainWindow::actionStartDisc},
-  {"FullscreenUI", &Ui::MainWindow::actionStartFullscreenUI2},
+  {"FullscreenUI", &Ui::MainWindow::actionToolbarStartFullscreenUI},
   {nullptr, nullptr},
   {"PowerOff", &Ui::MainWindow::actionCloseGame},
   {"PowerOffWithoutSaving", &Ui::MainWindow::actionCloseGameWithoutSaving},
@@ -91,13 +91,16 @@ static constexpr std::pair<const char*, QAction * Ui::MainWindow::*> s_toolbar_a
   {"LoadState", &Ui::MainWindow::actionLoadState},
   {"SaveState", &Ui::MainWindow::actionSaveState},
   {nullptr, nullptr},
+  {"Debugger", &Ui::MainWindow::actionCPUDebugger},
   {"MemoryScanner", &Ui::MainWindow::actionMemoryScanner},
   {"MemoryEditor", &Ui::MainWindow::actionMemoryEditor},
   {nullptr, nullptr},
   {"Fullscreen", &Ui::MainWindow::actionFullscreen},
-  {"Settings", &Ui::MainWindow::actionSettings2},
+  {"Settings", &Ui::MainWindow::actionToolbarSettings},
   {"ControllerSettings", &Ui::MainWindow::actionControllerSettings},
   {"ControllerPresets", &Ui::MainWindow::actionControllerProfiles},
+  {nullptr, nullptr},
+  {"Exit", &Ui::MainWindow::actionExit},
 };
 
 static constexpr const char* DEFAULT_TOOLBAR_ACTIONS =
@@ -493,6 +496,7 @@ void MainWindow::updateDisplayWidgetCursor()
 
   m_display_widget->updateRelativeMode(s_locals.system_valid && !s_locals.system_paused && m_relative_mouse_mode);
   m_display_widget->updateCursor(s_locals.system_valid && !s_locals.system_paused && shouldHideMouseCursor());
+  m_display_widget->setIgnoreDoubleClick(m_ignore_double_click);
 }
 
 void MainWindow::updateDisplayRelatedActions()
@@ -567,10 +571,11 @@ QWidget* MainWindow::getDisplayContainer() const
   return (m_display_container ? static_cast<QWidget*>(m_display_container) : static_cast<QWidget*>(m_display_widget));
 }
 
-void MainWindow::onMouseModeRequested(bool relative_mode, bool hide_cursor)
+void MainWindow::onMouseModeRequested(bool relative_mode, bool hide_cursor, bool ignore_double_click)
 {
   m_relative_mouse_mode = relative_mode;
   m_hide_mouse_cursor = hide_cursor;
+  m_ignore_double_click = ignore_double_click;
   updateDisplayWidgetCursor();
 }
 
@@ -579,6 +584,7 @@ void MainWindow::onSystemStarting()
   s_locals.system_starting = true;
   s_locals.system_valid = false;
   s_locals.system_paused = false;
+  m_ui.actionCDROMLidStateAutomatic->setChecked(true);
 
   updateLogWidget();
   switchToEmulationView();
@@ -977,19 +983,23 @@ void MainWindow::populateLoadStateMenu(std::string_view game_serial, QMenu* menu
                       tr("Undo Load State"));
   load_from_state->setEnabled(s_locals.undo_state_timestamp.has_value());
   connect(load_from_state, &QAction::triggered, g_core_thread, &CoreThread::undoLoadState);
-  menu->addSeparator();
 
   if (!game_serial.empty())
   {
+    menu->addSeparator();
+
     for (u32 slot = 1; slot <= System::PER_GAME_SAVE_STATE_SLOTS; slot++)
       add_slot(tr("Game Save %1 (%2)"), tr("Game Save %1 (Empty)"), game_serial, static_cast<s32>(slot));
-
-    menu->addSeparator();
   }
 
-  std::string_view empty_serial;
-  for (u32 slot = 1; slot <= System::GLOBAL_SAVE_STATE_SLOTS; slot++)
-    add_slot(tr("Global Save %1 (%2)"), tr("Global Save %1 (Empty)"), empty_serial, static_cast<s32>(slot));
+  if (System::AreGlobalSaveStatesEnabled())
+  {
+    menu->addSeparator();
+
+    std::string_view empty_serial;
+    for (u32 slot = 1; slot <= System::GLOBAL_SAVE_STATE_SLOTS; slot++)
+      add_slot(tr("Global Save %1 (%2)"), tr("Global Save %1 (Empty)"), empty_serial, static_cast<s32>(slot));
+  }
 }
 
 void MainWindow::populateSaveStateMenu(std::string_view game_serial, QMenu* menu)
@@ -1020,19 +1030,23 @@ void MainWindow::populateSaveStateMenu(std::string_view game_serial, QMenu* menu
 
     g_core_thread->saveState(QDir::toNativeSeparators(path));
   });
-  menu->addSeparator();
 
   if (!game_serial.empty())
   {
+    menu->addSeparator();
+
     for (u32 slot = 1; slot <= System::PER_GAME_SAVE_STATE_SLOTS; slot++)
       add_slot(tr("Game Save %1 (%2)"), tr("Game Save %1 (Empty)"), game_serial, static_cast<s32>(slot));
-
-    menu->addSeparator();
   }
 
-  std::string_view empty_serial;
-  for (u32 slot = 1; slot <= System::GLOBAL_SAVE_STATE_SLOTS; slot++)
-    add_slot(tr("Global Save %1 (%2)"), tr("Global Save %1 (Empty)"), empty_serial, static_cast<s32>(slot));
+  if (System::AreGlobalSaveStatesEnabled())
+  {
+    menu->addSeparator();
+
+    std::string_view empty_serial;
+    for (u32 slot = 1; slot <= System::GLOBAL_SAVE_STATE_SLOTS; slot++)
+      add_slot(tr("Global Save %1 (%2)"), tr("Global Save %1 (Empty)"), empty_serial, static_cast<s32>(slot));
+  }
 }
 
 void MainWindow::onCheatsMenuAboutToShow()
@@ -1388,6 +1402,7 @@ void MainWindow::onChangeDiscMenuAboutToShow()
   else if (const GameDatabase::Entry* entry = System::GetGameDatabaseEntry(); entry && entry->disc_set)
   {
     auto lock = GameList::GetLock();
+    GameList::EnsureLoaded(lock);
     for (const auto& [title, glentry] :
          GameList::GetEntriesInDiscSet(entry->disc_set, m_game_list_widget->getModel()->getShowLocalizedTitles()))
     {
@@ -1423,7 +1438,7 @@ void MainWindow::onFullscreenUIStartedOrStopped(bool running)
 {
   s_locals.fullscreen_ui_started = running;
   m_ui.actionStartFullscreenUI->setText(running ? tr("Stop Big Picture Mode") : tr("Start Big Picture Mode"));
-  m_ui.actionStartFullscreenUI2->setText(running ? tr("Exit Big Picture") : tr("Big Picture"));
+  m_ui.actionToolbarStartFullscreenUI->setText(running ? tr("Exit Big Picture") : tr("Big Picture"));
 }
 
 void MainWindow::onCloseGameActionTriggered()
@@ -1930,18 +1945,18 @@ void MainWindow::setupAdditionalUi()
     QActionGroup* const order_group = new QActionGroup(m_ui.menuSortBy);
 
     QAction* const ascending_action = new QAction(tr("&Ascending"), order_group);
-    ascending_action->setIcon(QIcon::fromTheme(QIcon::ThemeIcon::GoUp));
+    ascending_action->setIcon(QIcon(u":/icons/monochrome/svg/sort-asc.svg"_s));
     ascending_action->setCheckable(true);
     ascending_action->setChecked(current_sort_order == Qt::AscendingOrder);
-    ascending_action->setObjectName("SortAscending"_L1);
+    ascending_action->setObjectName(u"SortAscending"_s);
     m_ui.menuSortBy->addAction(ascending_action);
     connect(ascending_action, &QAction::triggered, this, &MainWindow::onViewSortOrderActionTriggered);
 
     QAction* const descending_action = new QAction(tr("&Descending"), order_group);
-    descending_action->setIcon(QIcon::fromTheme(QIcon::ThemeIcon::GoDown));
+    descending_action->setIcon(QIcon(u":/icons/monochrome/svg/sort-desc.svg"_s));
     descending_action->setCheckable(true);
     descending_action->setChecked(current_sort_order == Qt::DescendingOrder);
-    descending_action->setObjectName("SortDescending"_L1);
+    descending_action->setObjectName(u"SortDescending"_s);
     m_ui.menuSortBy->addAction(descending_action);
     connect(descending_action, &QAction::triggered, this, &MainWindow::onViewSortOrderActionTriggered);
   }
@@ -1975,6 +1990,10 @@ void MainWindow::setupAdditionalUi()
 #endif
 
   QtUtils::StyleChildMenus(this);
+
+#ifdef __APPLE__
+  QtUtils::SetIsMaskForMonochromeMenuBarActionIcons(menuBar());
+#endif
 }
 
 void MainWindow::onGameListSortIndicatorOrderChanged(int column, Qt::SortOrder order)
@@ -1984,9 +2003,9 @@ void MainWindow::onGameListSortIndicatorOrderChanged(int column, Qt::SortOrder o
   {
     bool activate = false;
 
-    if (action->objectName() == "SortAscending"_L1)
+    if (action->objectName() == u"SortAscending"_s)
       activate = (order == Qt::AscendingOrder);
-    else if (action->objectName() == "SortDescending"_L1)
+    else if (action->objectName() == u"SortDescending"_s)
       activate = (order == Qt::DescendingOrder);
     else
       activate = (action->data() == column);
@@ -2213,7 +2232,7 @@ void MainWindow::updateEmulationActions()
   m_ui.actionStartBios->setDisabled(starting_or_running);
   m_ui.actionResumeLastState->setDisabled(starting_or_running || achievements_hardcore_mode);
   m_ui.actionStartFullscreenUI->setDisabled(starting_or_running);
-  m_ui.actionStartFullscreenUI2->setDisabled(starting_or_running);
+  m_ui.actionToolbarStartFullscreenUI->setDisabled(starting_or_running);
 
   m_ui.actionCloseGame->setDisabled(starting_or_not_running);
   m_ui.actionCloseGameWithoutSaving->setDisabled(starting_or_not_running);
@@ -2231,6 +2250,8 @@ void MainWindow::updateEmulationActions()
   m_ui.actionMemoryScanner->setDisabled(achievements_hardcore_mode);
   m_ui.actionFreeCamera->setDisabled(achievements_hardcore_mode);
   m_ui.actionReloadTextureReplacements->setDisabled(starting_or_not_running);
+  m_ui.menuCDROMLidState->setDisabled(starting_or_not_running);
+  m_ui.actionCDROMLidState->setDisabled(starting_or_not_running);
   m_ui.actionDumpRAM->setDisabled(starting_or_not_running || achievements_hardcore_mode);
   m_ui.actionDumpVRAM->setDisabled(starting_or_not_running || achievements_hardcore_mode);
   m_ui.actionDumpSPURAM->setDisabled(starting_or_not_running || achievements_hardcore_mode);
@@ -2502,7 +2523,7 @@ void MainWindow::connectSignals()
   connect(m_ui.menuCheats, &QMenu::aboutToShow, this, &MainWindow::onCheatsMenuAboutToShow);
   connect(m_ui.actionCheatsToolbar, &QAction::triggered, [this] { m_ui.menuCheats->popup(QCursor::pos()); });
   connect(m_ui.actionStartFullscreenUI, &QAction::triggered, this, &MainWindow::onStartFullscreenUITriggered);
-  connect(m_ui.actionStartFullscreenUI2, &QAction::triggered, this, &MainWindow::onStartFullscreenUITriggered);
+  connect(m_ui.actionToolbarStartFullscreenUI, &QAction::triggered, this, &MainWindow::onStartFullscreenUITriggered);
   connect(m_ui.actionRemoveDisc, &QAction::triggered, this, &MainWindow::onRemoveDiscActionTriggered);
   connect(m_ui.actionAddGameDirectory, &QAction::triggered,
           [this]() { getSettingsWindow()->getGameListSettingsWidget()->addSearchDirectory(this); });
@@ -2519,7 +2540,7 @@ void MainWindow::connectSignals()
   connect(m_ui.actionExit, &QAction::triggered, this, &MainWindow::close);
   connect(m_ui.actionFullscreen, &QAction::triggered, g_core_thread, &CoreThread::toggleFullscreen);
   connect(m_ui.actionSettings, &QAction::triggered, [this]() { doSettings(); });
-  connect(m_ui.actionSettings2, &QAction::triggered, this, &MainWindow::onSettingsTriggeredFromToolbar);
+  connect(m_ui.actionToolbarSettings, &QAction::triggered, this, &MainWindow::onSettingsTriggeredFromToolbar);
   connect(m_ui.actionInterfaceSettings, &QAction::triggered, [this]() { doSettings("Interface"); });
   connect(m_ui.actionBIOSSettings, &QAction::triggered, [this]() { doSettings("BIOS"); });
   connect(m_ui.actionConsoleSettings, &QAction::triggered, [this]() { doSettings("Console"); });
@@ -2535,9 +2556,9 @@ void MainWindow::connectSignals()
   connect(m_ui.actionPostProcessingSettings, &QAction::triggered, [this]() { doSettings("Post-Processing"); });
   connect(m_ui.actionAudioSettings, &QAction::triggered, [this]() { doSettings("Audio"); });
   connect(m_ui.actionAchievementSettings, &QAction::triggered, [this]() { doSettings("Achievements"); });
-  connect(m_ui.actionFolderSettings, &QAction::triggered, [this]() { doSettings("Folders"); });
   connect(m_ui.actionCaptureSettings, &QAction::triggered, [this]() { doSettings("Capture"); });
   connect(m_ui.actionAdvancedSettings, &QAction::triggered, [this]() { doSettings("Advanced"); });
+  connect(m_ui.actionDebuggingSettings, &QAction::triggered, [this]() { doSettings("Debugging"); });
   connect(m_ui.actionControllerProfiles, &QAction::triggered, this, &MainWindow::onSettingsControllerProfilesTriggered);
   connect(m_ui.actionViewToolbar, &QAction::triggered, this, &MainWindow::onViewToolbarActionTriggered);
   connect(m_ui.actionViewLockToolbar, &QAction::triggered, this, &MainWindow::onViewToolbarLockActionTriggered);
@@ -2565,8 +2586,8 @@ void MainWindow::connectSignals()
   connect(m_ui.actionISOBrowser, &QAction::triggered, this, &MainWindow::onToolsISOBrowserTriggered);
   connect(m_ui.actionControllerTest, &QAction::triggered, g_core_thread, &CoreThread::startControllerTest);
   connect(m_ui.actionCoverDownloader, &QAction::triggered, this, &MainWindow::onToolsCoverDownloaderTriggered);
-  connect(m_ui.actionToolsDownloadAchievementGameIcons, &QAction::triggered, this,
-          &MainWindow::onToolsDownloadAchievementGameIconsTriggered);
+  connect(m_ui.actionToolsRefreshAchievementDatabase, &QAction::triggered, g_main_window,
+          &MainWindow::onToolsRefreshAchievementDatabaseTriggered);
   connect(m_ui.actionToolsRefreshAchievementProgress, &QAction::triggered, g_main_window,
           &MainWindow::refreshAchievementProgress);
   connect(m_ui.actionMediaCapture, &QAction::triggered, this, &MainWindow::onToolsMediaCaptureTriggered);
@@ -2604,6 +2625,7 @@ void MainWindow::connectSignals()
   connect(g_core_thread, &CoreThread::onReleaseRenderWindowRequested, this, &MainWindow::releaseRenderWindow);
   connect(g_core_thread, &CoreThread::onResizeRenderWindowRequested, this, &MainWindow::displayResizeRequested,
           Qt::BlockingQueuedConnection);
+  connect(g_core_thread, &CoreThread::settingsReloaded, this, &MainWindow::onSettingsReloaded);
   connect(g_core_thread, &CoreThread::systemStarting, this, &MainWindow::onSystemStarting);
   connect(g_core_thread, &CoreThread::systemStarted, this, &MainWindow::onSystemStarted);
   connect(g_core_thread, &CoreThread::systemStopping, this, &MainWindow::onSystemStopping);
@@ -2656,6 +2678,9 @@ void MainWindow::connectSignals()
                                              &Settings::GetLogLevelName, &Settings::GetLogLevelDisplayName,
                                              Log::DEFAULT_LOG_LEVEL, Log::Level::MaxCount);
   connect(m_ui.menuLogChannels, &QMenu::aboutToShow, this, &MainWindow::onDebugLogChannelsMenuAboutToShow);
+  connect(m_ui.actionCDROMLidStateAutomatic, &QAction::triggered, this, &MainWindow::onDebugCDROMLidStateChanged);
+  connect(m_ui.actionCDROMLidStateOpen, &QAction::triggered, this, &MainWindow::onDebugCDROMLidStateChanged);
+  connect(m_ui.actionCDROMLidStateClosed, &QAction::triggered, this, &MainWindow::onDebugCDROMLidStateChanged);
   SettingWidgetBinder::BindWidgetToBoolSetting(nullptr, m_ui.actionLogToSystemConsole, "Logging", "LogToConsole",
                                                false);
   SettingWidgetBinder::BindWidgetToBoolSetting(nullptr, m_ui.actionLogToFile, "Logging", "LogToFile", false);
@@ -2783,7 +2808,17 @@ void MainWindow::restoreRenderWindowGeometryFromConfig()
 SettingsWindow* MainWindow::getSettingsWindow()
 {
   if (!m_settings_window)
+  {
     m_settings_window = new SettingsWindow();
+    connect(m_settings_window, &SettingsWindow::debugOptionsVisibilityChanged, this,
+            &MainWindow::updateDebugMenuVisibility);
+
+    if (m_controller_settings_window)
+    {
+      connect(m_controller_settings_window, &ControllerSettingsWindow::multitapModeChanged, m_settings_window,
+              &SettingsWindow::onMultitapModeChanged);
+    }
+  }
 
   return m_settings_window;
 }
@@ -2821,7 +2856,16 @@ void MainWindow::openGamePropertiesForCurrentGame(const char* category /* = null
 ControllerSettingsWindow* MainWindow::getControllerSettingsWindow()
 {
   if (!m_controller_settings_window)
+  {
     m_controller_settings_window = new ControllerSettingsWindow();
+
+    // What a pain in the butt to sync...
+    if (m_settings_window)
+    {
+      connect(m_controller_settings_window, &ControllerSettingsWindow::multitapModeChanged, m_settings_window,
+              &SettingsWindow::onMultitapModeChanged);
+    }
+  }
 
   return m_controller_settings_window;
 }
@@ -2880,13 +2924,14 @@ void MainWindow::onSettingsControllerProfilesTriggered()
   QtUtils::ShowOrRaiseWindow(m_input_profile_editor_window, this);
 }
 
-void MainWindow::openInputProfileEditor(const std::string_view name)
+ControllerSettingsWindow* MainWindow::openInputProfileEditor(const std::string_view name)
 {
   if (!m_input_profile_editor_window)
     m_input_profile_editor_window = new ControllerSettingsWindow(nullptr, true);
 
   QtUtils::ShowOrRaiseWindow(m_input_profile_editor_window, this);
   m_input_profile_editor_window->switchProfile(name);
+  return m_input_profile_editor_window;
 }
 
 void MainWindow::closeEvent(QCloseEvent* event)
@@ -2895,7 +2940,8 @@ void MainWindow::closeEvent(QCloseEvent* event)
   // When recreating, g_main_window will be the new window at this point.
   if (!QtHost::IsSystemValidOrStarting() || g_main_window != this)
   {
-    QtUtils::SaveWindowGeometry(this);
+    if (!QtHost::InNoGUIMode())
+      QtUtils::SaveWindowGeometry(this);
 
     if (s_locals.fullscreen_ui_started && g_main_window == this)
       g_core_thread->stopFullscreenUI();
@@ -3009,6 +3055,8 @@ void MainWindow::updateDebugMenuVisibility()
 {
   const bool visible = QtHost::ShouldShowDebugOptions();
   m_ui.menuDebug->menuAction()->setVisible(visible);
+  m_ui.actionDebuggingSettings->setVisible(visible);
+  m_ui.actionCPUDebugger->setVisible(visible); // so it doesn't appear in the toolbar
 }
 
 void MainWindow::refreshGameList(bool invalidate_cache)
@@ -3126,7 +3174,7 @@ void MainWindow::requestExit(bool allow_confirm /* = true */)
   requestShutdown(allow_confirm, true, g_settings.save_state_on_exit, true, true, true, true);
 }
 
-void MainWindow::checkForSettingChanges()
+void MainWindow::onSettingsReloaded()
 {
 #ifdef _WIN32
   if (const bool disable_window_rounded_corners =
@@ -3264,8 +3312,8 @@ void MainWindow::onAchievementsLoginSuccess(const QString& username, quint32 poi
 
 void MainWindow::onAchievementsActiveChanged(bool active)
 {
+  m_ui.actionToolsRefreshAchievementDatabase->setEnabled(active);
   m_ui.actionToolsRefreshAchievementProgress->setEnabled(active);
-  m_ui.actionToolsDownloadAchievementGameIcons->setEnabled(active);
 }
 
 void MainWindow::onAchievementsHardcoreModeChanged(bool enabled)
@@ -3336,19 +3384,19 @@ void MainWindow::onToolsCoverDownloaderTriggered()
   QtUtils::ShowOrRaiseWindow(m_cover_download_window, this, true);
 }
 
-void MainWindow::onToolsDownloadAchievementGameIconsTriggered()
+void MainWindow::onToolsRefreshAchievementDatabaseTriggered()
 {
   QtAsyncTaskWithProgressDialog::create(
-    this, TRANSLATE_STR("GameListWidget", "Download Game Icons"),
-    TRANSLATE_STR("GameListWidget", "Downloading game icons..."), false, true, 0, 0, 0.0f, true,
+    this, TRANSLATE_STR("MainWindow", "Refresh Achievement Progress"), {}, false, true, 0, 0, 0.0f, true,
     [](ProgressCallback* progress) {
       Error error;
-      const bool result = Achievements::DownloadGameIcons(progress, &error);
+      const bool result = Achievements::RefreshGameList(progress, &error);
       return [error = std::move(error), result]() {
         if (!result)
           g_main_window->reportError(tr("Error"), QString::fromStdString(error.GetDescription()));
 
-        g_main_window->m_game_list_widget->getModel()->invalidateColumn(GameListModel::Column_Icon);
+        g_main_window->m_ui.statusBar->showMessage(tr("RA: Updated achievement game database."));
+        g_main_window->m_game_list_widget->getModel()->invalidateColumn(GameListModel::Column_Achievements);
       };
     });
 }
@@ -3480,19 +3528,7 @@ AutoUpdaterDialog* MainWindow::createAutoUpdaterDialog(QWidget* parent, bool dis
     return nullptr;
   }
 
-  Error error;
-  m_auto_updater_dialog = AutoUpdaterDialog::create(parent, &error);
-  if (!m_auto_updater_dialog)
-  {
-    if (display_message)
-    {
-      QtUtils::AsyncMessageBox(
-        parent, QMessageBox::Critical, tr("Error"),
-        tr("Failed to create auto updater: %1").arg(QString::fromStdString(error.GetDescription())));
-    }
-
-    return nullptr;
-  }
+  m_auto_updater_dialog = new AutoUpdaterDialog(parent);
 
   // display status message indicating check is in progress
   // technically this could conflict with the game list refresh, but this is only for manual update checks.
@@ -3576,6 +3612,13 @@ void MainWindow::onDebugLogChannelsMenuAboutToShow()
 {
   m_ui.menuLogChannels->clear();
   LogWindow::populateFilterMenu(m_ui.menuLogChannels);
+}
+
+void MainWindow::onDebugCDROMLidStateChanged()
+{
+  const bool manual_control = !m_ui.actionCDROMLidStateAutomatic->isChecked();
+  const bool manual_open = (manual_control && m_ui.actionCDROMLidStateOpen->isChecked());
+  g_core_thread->setLidState(manual_control, manual_open);
 }
 
 MainWindow::SystemLock MainWindow::pauseAndLockSystem()

@@ -73,24 +73,14 @@ void ReleaseJITMemory(void* ptr, size_t size);
 
 /// Flushes the instruction cache on the host for the specified range.
 /// Only needed outside of X86, X86 has coherent D/I cache.
-#if !defined(CPU_ARCH_ARM32) && !defined(CPU_ARCH_ARM64) && !defined(CPU_ARCH_RISCV64)
+#if !defined(CPU_ARCH_ARM32) && !defined(CPU_ARCH_ARM64) && !defined(CPU_ARCH_RISCV64) && !defined(CPU_ARCH_LOONGARCH64)
 // clang-format off
-ALWAYS_INLINE static void FlushInstructionCache(void* address, size_t size) { }
+ALWAYS_INLINE void FlushInstructionCache(void* address, size_t size) { }
 // clang-format on
 #else
 void FlushInstructionCache(void* address, size_t size);
 #endif
 
-/// JIT write protect for Apple Silicon. Needs to be called prior to writing to any RWX pages.
-#if !defined(__APPLE__) || !defined(__aarch64__)
-// clang-format off
-ALWAYS_INLINE static void BeginCodeWrite() { }
-ALWAYS_INLINE static void EndCodeWrite() { }
-// clang-format on
-#else
-void BeginCodeWrite();
-void EndCodeWrite();
-#endif
 } // namespace MemMap
 
 class SharedMemoryMappingArea

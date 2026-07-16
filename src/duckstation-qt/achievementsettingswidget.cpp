@@ -57,7 +57,11 @@ AchievementSettingsWidget::AchievementSettingsWidget(SettingsWindow* dialog, QWi
     &Settings::ParseAchievementChallengeIndicatorMode, &Settings::GetAchievementChallengeIndicatorModeName,
     &Settings::GetAchievementChallengeIndicatorModeDisplayName, Settings::DEFAULT_ACHIEVEMENT_CHALLENGE_INDICATOR_MODE,
     AchievementChallengeIndicatorMode::MaxCount);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.progressIndicators, "Cheevos", "ProgressIndicators", true);
+  SettingWidgetBinder::BindWidgetToEnumSetting(
+    sif, m_ui.progressIndicatorMode, "Cheevos", "ProgressIndicatorMode",
+    &Settings::ParseAchievementProgressIndicatorMode, &Settings::GetAchievementProgressIndicatorModeName,
+    &Settings::GetAchievementProgressIndicatorModeDisplayName, Settings::DEFAULT_ACHIEVEMENT_PROGRESS_INDICATOR_MODE,
+    AchievementProgressIndicatorMode::MaxCount);
   SettingWidgetBinder::BindWidgetToEnumSetting(
     sif, m_ui.indicatorLocation, "Cheevos", "IndicatorLocation", &Settings::ParseNotificationLocation,
     &Settings::GetNotificationLocationName, &Settings::GetNotificationLocationDisplayName,
@@ -114,12 +118,13 @@ AchievementSettingsWidget::AchievementSettingsWidget(SettingsWindow* dialog, QWi
   dialog->registerWidgetHelp(m_ui.indicatorScaleCustom, tr("Custom Indicator Scale"), tr("100%"),
                              tr("Sets the custom scale percentage for challenge/progress indicators."));
   dialog->registerWidgetHelp(
-    m_ui.progressIndicators, tr("Show Progress Indicators"), tr("Checked"),
+    m_ui.progressIndicatorMode, tr("Progress Indicators"), tr("Checked"),
     tr("Shows a popup in the selected location when progress towards a measured achievement changes."));
 
   connect(m_ui.enable, &QCheckBox::checkStateChanged, this, &AchievementSettingsWidget::updateEnableState);
   connect(m_ui.hardcoreMode, &QCheckBox::checkStateChanged, this,
           &AchievementSettingsWidget::onHardcoreModeStateChanged);
+  connect(m_ui.spectatorMode, &QCheckBox::checkStateChanged, this, &AchievementSettingsWidget::updateEnableState);
   connect(m_ui.achievementNotifications, &QCheckBox::checkStateChanged, this,
           &AchievementSettingsWidget::updateEnableState);
   connect(m_ui.leaderboardNotifications, &QCheckBox::checkStateChanged, this,
@@ -131,7 +136,9 @@ AchievementSettingsWidget::AchievementSettingsWidget(SettingsWindow* dialog, QWi
 
   if (!m_dialog->isPerGameSettings())
   {
-    connect(m_ui.loginButton, &QPushButton::clicked, this, &AchievementSettingsWidget::onLoginLogoutPressed);
+    connect(m_ui.login, &QPushButton::clicked, this, &AchievementSettingsWidget::onLoginPressed);
+    connect(m_ui.logout, &QPushButton::clicked, this, &AchievementSettingsWidget::onLogoutPressed);
+    connect(m_ui.registerUser, &QPushButton::clicked, this, &AchievementSettingsWidget::onRegisterUserPressed);
     connect(m_ui.viewProfile, &QPushButton::clicked, this, &AchievementSettingsWidget::onViewProfilePressed);
     connect(g_core_thread, &CoreThread::achievementsLoginSuccess, this, &AchievementSettingsWidget::updateLoginState);
     updateLoginState();
@@ -143,23 +150,6 @@ AchievementSettingsWidget::AchievementSettingsWidget(SettingsWindow* dialog, QWi
     m_ui.loginBox->deleteLater();
     m_ui.loginBox = nullptr;
   }
-
-  // RAIntegration is not available on non-win32/x64.
-#ifdef RC_CLIENT_SUPPORTS_RAINTEGRATION
-  if (Achievements::IsRAIntegrationAvailable())
-    SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.useRAIntegration, "Cheevos", "UseRAIntegration", false);
-  else
-    m_ui.useRAIntegration->setEnabled(false);
-
-  dialog->registerWidgetHelp(
-    m_ui.useRAIntegration, tr("Enable RAIntegration (Development Only)"), tr("Unchecked"),
-    tr("When enabled, DuckStation will load the RAIntegration DLL which allows for achievement development.<br>The "
-       "RA_Integration.dll file must be placed in the same directory as the DuckStation executable."));
-#else
-  m_ui.settingsLayout->removeWidget(m_ui.useRAIntegration);
-  delete m_ui.useRAIntegration;
-  m_ui.useRAIntegration = nullptr;
-#endif
 
   updateEnableState();
   onAchievementsNotificationDurationSliderChanged();
@@ -175,7 +165,7 @@ void AchievementSettingsWidget::setupAdditionalUi()
     {
       const int global_value = Core::GetIntSettingValue("Cheevos", key, Settings::ACHIEVEMENT_NOTIFICATION_SCALE_AUTO);
       cb->addItem(
-        qApp->translate("SettingsDialog", "Use Global Setting [%1]")
+        QCoreApplication::translate("SettingWidgetBinder", "Use Global Setting [%1]")
           .arg((global_value < 0) ? tr("Use OSD Scale") : ((global_value == 0) ? tr("Automatic") : tr("Custom"))));
     }
 
@@ -244,10 +234,12 @@ void AchievementSettingsWidget::setupAdditionalUi()
 void AchievementSettingsWidget::updateEnableState()
 {
   const bool enabled = m_dialog->getEffectiveBoolValue("Cheevos", "Enabled", false);
+  const bool spectator_enabled = m_dialog->getEffectiveBoolValue("Cheevos", "SpectatorMode", false);
   m_ui.hardcoreMode->setEnabled(enabled);
-  m_ui.encoreMode->setEnabled(enabled);
   m_ui.spectatorMode->setEnabled(enabled);
+  m_ui.encoreMode->setEnabled(enabled && !spectator_enabled);
   m_ui.unofficialAchievements->setEnabled(enabled);
+  m_ui.prefetchBadges->setEnabled(enabled);
   m_ui.notificationsGroup->setEnabled(enabled);
   m_ui.progressTrackingGroup->setEnabled(enabled);
 
@@ -300,30 +292,25 @@ void AchievementSettingsWidget::onLeaderboardsNotificationDurationSliderChanged(
 
 void AchievementSettingsWidget::updateLoginState()
 {
-  std::string username;
-  std::string badge_path;
+  m_ui.userBadge->setPixmap(QPixmap(QtHost::GetResourceQPath("images/ra-generic-user.png", true)));
+
+  QString qusername;
+  QString qbadge_path;
 
   {
     const auto lock = Achievements::GetLock();
     if (Achievements::IsLoggedIn())
     {
-      if (const char* username_ptr = Achievements::GetLoggedInUserName())
-        username = username_ptr;
-
-      badge_path = Achievements::GetLoggedInUserBadgePath();
+      qusername = QString::fromStdString(Achievements::GetLoggedInUserName());
+      QtUtils::SetLabelPixmapPathOrURL(m_ui.userBadge, Achievements::GetLoggedInUserIconURL(), true);
     }
     else
     {
-      username = Core::GetBaseStringSettingValue("Cheevos", "Username");
+      qusername = QString::fromStdString(Core::GetBaseStringSettingValue("Cheevos", "Username"));
     }
   }
 
-  if (badge_path.empty())
-    badge_path = QtHost::GetResourcePath("images/ra-generic-user.png", true);
-
-  m_ui.userBadge->setPixmap(QPixmap(QString::fromStdString(badge_path)));
-
-  const bool logged_in = !username.empty();
+  const bool logged_in = !qusername.isEmpty();
 
   if (logged_in)
   {
@@ -331,31 +318,44 @@ void AchievementSettingsWidget::updateLoginState()
       StringUtil::FromChars<u64>(Core::GetBaseStringSettingValue("Cheevos", "LoginTimestamp", "0")).value_or(0);
     const QString login_timestamp =
       QtHost::FormatNumber(Host::NumberFormatType::ShortDateTime, static_cast<s64>(login_unix_timestamp));
-    m_ui.loginStatus->setText(
-      tr("Logged in as %1\nToken generated at %2").arg(QString::fromStdString(username)).arg(login_timestamp));
-    m_ui.loginButton->setText(tr("Logout"));
+    m_ui.loginStatus->setText(tr("Logged in as %1\nToken generated at %2").arg(qusername).arg(login_timestamp));
   }
   else
   {
     m_ui.loginStatus->setText(tr("Not Logged In."));
-    m_ui.loginButton->setText(tr("Login..."));
   }
 
+  m_ui.viewProfile->setVisible(logged_in);
   m_ui.viewProfile->setEnabled(logged_in);
+  m_ui.logout->setVisible(logged_in);
+  m_ui.logout->setEnabled(logged_in);
+  m_ui.registerUser->setVisible(!logged_in);
+  m_ui.registerUser->setEnabled(!logged_in);
+  m_ui.login->setVisible(!logged_in);
+  m_ui.login->setEnabled(!logged_in);
 }
 
-void AchievementSettingsWidget::onLoginLogoutPressed()
+void AchievementSettingsWidget::onLoginPressed()
 {
-  if (!Core::GetBaseStringSettingValue("Cheevos", "Username").empty())
-  {
-    Host::RunOnCoreThread([]() { Achievements::Logout(); }, true);
-    updateLoginState();
-    return;
-  }
-
   AchievementLoginDialog* login = new AchievementLoginDialog(this, Achievements::LoginRequestReason::UserInitiated);
   connect(login, &AchievementLoginDialog::accepted, this, &AchievementSettingsWidget::onLoginCompleted);
   login->open();
+}
+
+void AchievementSettingsWidget::onLogoutPressed()
+{
+  if (Core::GetBaseStringSettingValue("Cheevos", "Username").empty())
+    return;
+
+  Host::RunOnCoreThread([]() {
+    Achievements::Logout();
+    Host::RunOnUIThread([]() {
+      SettingsWindow* settings = g_main_window ? g_main_window->getSettingsWindow() : nullptr;
+      AchievementSettingsWidget* achievement_settings = settings ? settings->getAchievementSettingsWidget() : nullptr;
+      if (achievement_settings)
+        achievement_settings->updateLoginState();
+    });
+  });
 }
 
 void AchievementSettingsWidget::onLoginCompleted()
@@ -372,13 +372,16 @@ void AchievementSettingsWidget::onLoginCompleted()
     m_ui.hardcoreMode->setChecked(true);
 }
 
+void AchievementSettingsWidget::onRegisterUserPressed()
+{
+  QtUtils::OpenURL(this, QUrl(QString::fromLatin1(Achievements::RA_REGISTER_URL)));
+}
+
 void AchievementSettingsWidget::onViewProfilePressed()
 {
   const std::string username(Core::GetBaseStringSettingValue("Cheevos", "Username"));
   if (username.empty())
     return;
 
-  const QByteArray encoded_username(QUrl::toPercentEncoding(QString::fromStdString(username)));
-  QtUtils::OpenURL(
-    this, QUrl(QStringLiteral("https://retroachievements.org/user/%1").arg(QString::fromUtf8(encoded_username))));
+  QtUtils::OpenURL(this, QUrl(QString::fromStdString(Achievements::GetProfileURL(username))));
 }

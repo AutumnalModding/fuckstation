@@ -1,56 +1,52 @@
+# SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
+# SPDX-License-Identifier: CC-BY-NC-ND-4.0 + Packaging Restriction
+#
+# NOTE: In addition to the terms of CC-BY-NC-ND-4.0, you may not use this file to create
+# packages or build recipes without explicit permission from the copyright holder.
+
 include(CheckSourceCompiles)
 
 function(disable_compiler_warnings_for_target target)
-	if(MSVC)
-		target_compile_options(${target} PRIVATE "/W0")
-	else()
-		target_compile_options(${target} PRIVATE "-w")
-	endif()
+  target_compile_options(${target} PRIVATE "-w")
 endfunction()
 
 function(detect_operating_system)
-	message(STATUS "CMake Version: ${CMAKE_VERSION}")
-	message(STATUS "CMake System Name: ${CMAKE_SYSTEM_NAME}")
+  message(STATUS "CMake Version: ${CMAKE_VERSION}")
+  message(STATUS "CMake System Name: ${CMAKE_SYSTEM_NAME}")
 
-	# LINUX wasn't added until CMake 3.25.
-	if (CMAKE_VERSION VERSION_LESS 3.25.0 AND CMAKE_SYSTEM_NAME MATCHES "Linux")
-		# Have to make it visible in this scope as well for below.
-		set(LINUX TRUE PARENT_SCOPE)
-		set(LINUX TRUE)
-	endif()
+  # LINUX wasn't added until CMake 3.25.
+  if (CMAKE_VERSION VERSION_LESS 3.25.0 AND CMAKE_SYSTEM_NAME MATCHES "Linux")
+    # Have to make it visible in this scope as well for below.
+    set(LINUX TRUE PARENT_SCOPE)
+    set(LINUX TRUE)
+  endif()
 
-	if(WIN32)
-		message(STATUS "Building for Windows.")
-	elseif(APPLE AND NOT IOS)
-		message(STATUS "Building for MacOS.")
-	elseif(LINUX)
-		message(STATUS "Building for Linux.")
-	elseif(BSD)
-		message(STATUS "Building for *BSD.")
-	else()
-		message(FATAL_ERROR "Unsupported platform.")
-	endif()
+  if(WIN32)
+    message(FATAL_ERROR "Building for Windows with CMake is not supported. "
+                        "Open the solution file with Visual Studio.")
+  elseif(APPLE AND NOT IOS)
+    message(STATUS "Building for MacOS.")
+  elseif(LINUX)
+    message(STATUS "Building for Linux.")
+  elseif(BSD)
+    message(STATUS "Building for *BSD.")
+  else()
+    message(FATAL_ERROR "Unsupported platform.")
+  endif()
 endfunction()
 
 function(detect_compiler)
-	if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-		set(COMPILER_CLANG_CL TRUE PARENT_SCOPE)
-		set(IS_SUPPORTED_COMPILER TRUE PARENT_SCOPE)
-		message(STATUS "Building with Clang-CL.")
-	elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
-		set(COMPILER_CLANG TRUE PARENT_SCOPE)
-		set(IS_SUPPORTED_COMPILER TRUE PARENT_SCOPE)
-		message(STATUS "Building with Clang/LLVM.")
-	elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-		set(COMPILER_GCC TRUE PARENT_SCOPE)
-		set(IS_SUPPORTED_COMPILER FALSE PARENT_SCOPE)
-		message(STATUS "Building with GNU GCC.")
-	elseif(MSVC)
-		set(IS_SUPPORTED_COMPILER TRUE PARENT_SCOPE)
-		message(STATUS "Building with MSVC.")
-	else()
-		message(FATAL_ERROR "Unknown compiler: ${CMAKE_CXX_COMPILER_ID}")
-	endif()
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+      set(COMPILER_CLANG TRUE PARENT_SCOPE)
+      set(IS_SUPPORTED_COMPILER TRUE PARENT_SCOPE)
+      message(STATUS "Building with Clang/LLVM.")
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+      set(COMPILER_GCC TRUE PARENT_SCOPE)
+      set(IS_SUPPORTED_COMPILER FALSE PARENT_SCOPE)
+      message(STATUS "Building with GNU GCC.")
+    else()
+      message(FATAL_ERROR "Unknown compiler: ${CMAKE_CXX_COMPILER_ID}")
+    endif()
 endfunction()
 
 function(detect_architecture)
@@ -71,13 +67,9 @@ function(detect_architecture)
          CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(STATUS "Building x86_64 binaries.")
     set(CPU_ARCH_X64 TRUE PARENT_SCOPE)
-    if(NOT MSVC OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT DISABLE_SSE4)
+    if(NOT DISABLE_SSE4)
       set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msse4.1" PARENT_SCOPE)
       set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4.1" PARENT_SCOPE)
-    elseif(MSVC AND NOT DISABLE_SSE4)
-      # Clang defines these macros, MSVC does not.
-      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /D__SSE3__ /D__SSE4_1__" PARENT_SCOPE)
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /D__SSE3__ /D__SSE4_1__" PARENT_SCOPE)
     endif()
   elseif(("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "aarch64" OR "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm64") AND
          CMAKE_SIZEOF_VOID_P EQUAL 8) # Might have an A64 kernel, e.g. Raspbian.
@@ -110,6 +102,9 @@ function(detect_architecture)
 
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${EXTRA_CFLAGS}" PARENT_SCOPE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${EXTRA_CFLAGS}" PARENT_SCOPE)
+  elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "loongarch64")
+    message(STATUS "Building LoongArch 64 binaries.")
+    set(CPU_ARCH_LOONGARCH64 TRUE PARENT_SCOPE)
   else()
     message(FATAL_ERROR "Unknown system processor: ${CMAKE_SYSTEM_PROCESSOR}")
   endif()
@@ -370,8 +365,42 @@ function(add_resources TARGET DEST_SUBDIR SOURCE_DIR)
       add_custom_command(TARGET ${TARGET} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_PATH}"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SOURCE_FILE}" "${DEST_PATH}/"
-        COMMENT "Copying ${REL_PATH} to ${DEST_SUBDIR}"
       )
     endif()
   endforeach()
+endfunction()
+
+function(bundle_libraries TARGET)
+  unset(LIBRARY_SOURCES)
+  foreach(NAME IN LISTS ARGN)
+    get_target_property(dyn_lib_path ${NAME} IMPORTED_LOCATION_RELEASE)
+    get_target_property(dyn_lib_soname ${NAME} IMPORTED_SONAME_RELEASE)
+    if(dyn_lib_soname)
+      string(REPLACE "@rpath/" "" dyn_lib_soname_filename "${dyn_lib_soname}")
+      get_filename_component(dyn_lib_dir "${dyn_lib_path}" DIRECTORY)
+      set(dyn_lib_major_path "${dyn_lib_dir}/${dyn_lib_soname_filename}")
+      if(EXISTS "${dyn_lib_major_path}")
+        set(dyn_lib_path "${dyn_lib_major_path}")
+      else()
+        message(WARNING "Could not find major-versioned symlink for ${NAME}.")
+      endif()
+    else()
+      message(FATAL_ERROR "Could not find ${NAME}.")
+    endif()
+
+    message(STATUS "Bundling imported library ${dyn_lib_soname}")
+
+    if(APPLE)
+      target_sources(${target} PRIVATE "${dyn_lib_path}")
+      set_source_files_properties("${dyn_lib_path}" PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
+    else()
+      list(APPEND LIBRARY_SOURCES "${dyn_lib_path}")
+    endif()
+  endforeach()
+
+  if(NOT APPLE)
+    add_custom_command(TARGET ${TARGET} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${LIBRARY_SOURCES} "$<TARGET_FILE_DIR:${TARGET}>"
+    )
+  endif()
 endfunction()

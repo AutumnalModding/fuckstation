@@ -73,7 +73,6 @@ public:
   CoreThread();
   ~CoreThread();
 
-  void start();
   void stop();
 
   ALWAYS_INLINE QEventLoop* getEventLoop() const { return m_event_loop; }
@@ -105,6 +104,7 @@ Q_SIGNALS:
   void errorReported(const QString& title, const QString& message);
   void statusMessage(const QString& message);
   void settingsResetToDefault(bool host, bool system, bool controller);
+  void settingsReloaded();
   void systemStarting();
   void systemStarted();
   void systemStopping();
@@ -119,7 +119,7 @@ Q_SIGNALS:
   void onResizeRenderWindowRequested(qint32 width, qint32 height);
   void onReleaseRenderWindowRequested();
   void inputProfileLoaded();
-  void mouseModeRequested(bool relative, bool hide_cursor);
+  void mouseModeRequested(bool relative, bool hide_cursor, bool ignore_double_click);
   void fullscreenUIStartedOrStopped(bool running);
   void achievementsLoginRequested(Achievements::LoginRequestReason reason);
   void achievementsLoginSuccess(const QString& username, quint32 points, quint32 sc_points, quint32 unread_messages);
@@ -153,6 +153,7 @@ public:
   void setSystemPaused(bool paused);
   void changeDisc(const QString& new_disc_path, bool reset_system, bool check_memcard_busy);
   void changeDiscFromPlaylist(quint32 index);
+  void setLidState(bool manual_control, bool manual_state);
   void loadState(const QString& path);
   void loadState(bool global, qint32 slot);
   void saveState(const QString& path);
@@ -179,6 +180,7 @@ public:
   void captureGPUFrameDump();
   void startControllerTest();
   void openGamePropertiesForCurrentGame(const QString& category = {});
+  void setHTTPDownloaderActive(bool active);
   void setVideoThreadRunIdle(bool active);
   void updateFullscreenUITheme();
   void runOnCoreThread(const std::function<void()>& callback);
@@ -196,7 +198,6 @@ private:
   void onRenderWindowResized(int width, int height, float scale, float refresh_rate);
   void onRenderWindowKeyEvent(int key, bool pressed);
   void onRenderWindowTextEntered(const QString& text);
-  void doBackgroundControllerPoll();
   void processAuxiliaryRenderWindowInputEvent(void* userdata, quint32 event, quint32 param1, quint32 param2,
                                               quint32 param3);
 
@@ -208,26 +209,25 @@ private:
   void confirmActionWithSafetyCheck(const QString& action, bool check_achievements, bool cancel_resume_on_accept,
                                     std::function<void(bool)> callback) const;
 
-  static void videoThreadEntryPoint();
-
   QThread* m_ui_thread;
-  QSemaphore m_started_semaphore;
   QEventLoop* m_event_loop = nullptr;
   QTimer* m_background_controller_polling_timer = nullptr;
   std::unique_ptr<InputDeviceListModel> m_input_device_list_model;
 
   bool m_shutdown_flag = false;
+  bool m_http_downloader_active = false;
   bool m_video_thread_run_idle = false;
   bool m_is_fullscreen_ui_started = false;
   bool m_was_paused_by_focus_loss = false;
+
+  RenderAPI m_last_render_api = RenderAPI::None;
+  bool m_last_hardware_renderer = false;
 
   float m_last_speed = std::numeric_limits<float>::infinity();
   float m_last_game_fps = std::numeric_limits<float>::infinity();
   float m_last_video_fps = std::numeric_limits<float>::infinity();
   u32 m_last_render_width = std::numeric_limits<u32>::max();
   u32 m_last_render_height = std::numeric_limits<u32>::max();
-  RenderAPI m_last_render_api = RenderAPI::None;
-  bool m_last_hardware_renderer = false;
 };
 
 class InputDeviceListModel final : public QAbstractListModel
@@ -242,8 +242,16 @@ public:
     QString display_name;
   };
 
+  struct Effect
+  {
+    InputBindingInfo::Type type;
+    InputBindingKey key;
+    std::string name;
+    std::string display_name;
+  };
+
   using DeviceList = QList<Device>;
-  using EffectList = QList<QPair<InputBindingInfo::Type, InputBindingKey>>;
+  using EffectList = QList<Effect>;
 
   explicit InputDeviceListModel(QObject* parent = nullptr);
   ~InputDeviceListModel() override;

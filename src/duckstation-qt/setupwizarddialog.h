@@ -12,6 +12,8 @@
 #include <string>
 #include <utility>
 
+class GameListSearchDirectoriesModel;
+
 class SetupWizardDialog final : public QDialog
 {
   Q_OBJECT
@@ -29,6 +31,8 @@ private:
     Page_Controller,
     Page_Graphics,
     Page_Achievements,
+    Page_Interface,
+    Page_GameListView,
     Page_Complete,
     Page_Count,
   };
@@ -36,10 +40,13 @@ private:
   void setupUi();
   void setupLanguagePage(bool initial);
   void setupBIOSPage();
-  void setupGameListPage();
+  void setupGameListPage(bool initial);
   void setupControllerPage(bool initial);
   void setupGraphicsPage(bool initial);
+  void updateResolutionScaleWarning();
   void setupAchievementsPage(bool initial);
+  void setupInterfacePage();
+  void setupGameListViewPage();
   void updateStylesheets();
 
   void updatePageLabels(int prev_page);
@@ -58,25 +65,28 @@ private:
   void onAddSearchDirectoryButtonClicked();
   void onRemoveSearchDirectoryButtonClicked();
   void onSearchDirectoryListSelectionChanged();
-  void onSearchDirectoryListItemChanged(QTreeWidgetItem* item, int column);
   void refreshDirectoryList();
 
   void doMultipleDeviceAutomaticBinding(u32 port, QLabel* update_label);
-
-  void addPathToTable(const std::string& path, bool recursive);
 
   QString findCurrentDeviceForPort(u32 port) const;
   void openAutomaticMappingMenu(u32 port, QLabel* update_label);
   void doDeviceAutomaticBinding(u32 port, QLabel* update_label, const QString& device);
 
-  void onAchievementsLoginLogoutClicked();
+  void onAchievementsLoginPressed();
+  void onAchievementsLogoutPressed();
   void onAchievementsLoginCompleted();
-  void onAchievementsViewProfileClicked();
+  void onAchievementsRegisterUserPressed();
+  void onAchievementsViewProfilePressed();
   void updateAchievementsEnableState();
   void updateAchievementsLoginState();
 
+  void onGridViewChanged(bool checked);
+  void onStartFullscreenUIChanged(bool checked);
+
 private:
   Ui::SetupWizardDialog m_ui;
+  GameListSearchDirectoriesModel* m_directory_model;
 
   std::array<QLabel*, Page_Count> m_page_labels;
 };

@@ -75,6 +75,7 @@ inline constexpr float LAYOUT_SMALL_POPUP_PADDING = 20.0f;
 inline constexpr float LAYOUT_LARGE_POPUP_PADDING = 30.0f;
 inline constexpr float LAYOUT_LARGE_POPUP_ROUNDING = 40.0f;
 inline constexpr float LAYOUT_WIDGET_FRAME_ROUNDING = 20.0f;
+inline constexpr float LAYOUT_FRAME_BORDER_SIZE = 1.0f;
 inline constexpr ImVec2 LAYOUT_CENTER_ALIGN_TEXT = ImVec2(0.5f, 0.0f);
 
 struct ALIGN_TO_CACHE_LINE UIStyles
@@ -85,6 +86,7 @@ struct ALIGN_TO_CACHE_LINE UIStyles
   ImVec4 BackgroundHighlight;
   ImVec4 PopupBackgroundColor;
   ImVec4 PopupFrameBackgroundColor;
+  ImVec4 PopupHighlight;
   ImVec4 DisabledColor;
   ImVec4 PrimaryColor;
   ImVec4 PrimaryLightColor;
@@ -122,6 +124,7 @@ struct ALIGN_TO_CACHE_LINE UIStyles
   bool BlurMenuBackground : 1;
   bool SoundEffects : 1;
   bool IsDarkTheme : 1;
+  bool UsingPSIcons : 1;
 };
 
 extern UIStyles UIStyle;
@@ -195,6 +198,13 @@ ALWAYS_INLINE std::string_view RemoveHash(std::string_view s)
   return (pos != std::string_view::npos) ? s.substr(0, pos) : s;
 }
 
+#if 0
+ALWAYS_INLINE ImVec2 ApplyPivot(const ImVec2& pos, const ImVec2& size, const ImVec2& pivot)
+{
+  return ImVec2(pos.x - size.x * pivot.x, pos.y - size.y * pivot.y);
+}
+#endif
+
 /// Localization support.
 #define FSUI_TR_CONTEXT std::string_view("FullscreenUI")
 
@@ -247,20 +257,30 @@ bool UpdateLayoutScale();
 
 /// Texture cache.
 const std::shared_ptr<GPUTexture>& GetPlaceholderTexture();
-std::shared_ptr<GPUTexture> LoadTexture(std::string_view path, u32 svg_width = 0, u32 svg_height = 0);
+std::shared_ptr<GPUTexture> LoadTexture(std::string_view path);
+std::shared_ptr<GPUTexture> LoadTexture(std::string_view path, std::string_view name);
+std::shared_ptr<GPUTexture> LoadTexture(std::string_view path, u32 svg_width, u32 svg_height);
+std::shared_ptr<GPUTexture> LoadTexture(std::string_view path, const ImVec2& size);
 GPUTexture* FindCachedTexture(std::string_view name);
 GPUTexture* FindCachedTexture(std::string_view name, u32 svg_width, u32 svg_height);
+GPUTexture* FindCachedTexture(std::string_view name, const ImVec2& size);
 GPUTexture* GetCachedTexture(std::string_view name);
+GPUTexture* GetCachedTexture(std::string_view path, std::string_view name);
 GPUTexture* GetCachedTexture(std::string_view name, u32 svg_width, u32 svg_height);
+GPUTexture* GetCachedTexture(std::string_view name, const ImVec2& size);
 GPUTexture* GetCachedTextureAsync(std::string_view name);
+GPUTexture* GetCachedTextureAsync(std::string_view path, std::string_view name);
 GPUTexture* GetCachedTextureAsync(std::string_view name, u32 svg_width, u32 svg_height);
+GPUTexture* GetCachedTextureAsync(std::string_view name, const ImVec2& size);
 bool InvalidateCachedTexture(std::string_view path);
 bool TextureNeedsSVGDimensions(std::string_view path);
 void UploadAsyncTextures();
+void QueueTextureRecycle(std::unique_ptr<GPUTexture> texture);
+void RecycleQueuedTextures();
 
 /// Screen transitions.
-inline constexpr float SHORT_TRANSITION_TIME = 0.08f;
-inline constexpr float DEFAULT_TRANSITION_TIME = 0.15f;
+inline constexpr float SHORT_TRANSITION_TIME = 0.15f;
+inline constexpr float DEFAULT_TRANSITION_TIME = 0.22f;
 inline constexpr float LONG_TRANSITION_TIME = 0.3f;
 
 enum class TransitionState : u8
@@ -270,14 +290,25 @@ enum class TransitionState : u8
   Active,
 };
 
+enum class TransitionEffect : u8
+{
+  None,
+  Fade,
+  ZoomIn,
+  ZoomOut,
+  SlideLeft,
+  SlideRight,
+};
+
 using TransitionStartCallback = std::function<void()>;
 void BeginTransition(TransitionStartCallback func, float time = DEFAULT_TRANSITION_TIME);
 void BeginTransition(float time, TransitionStartCallback func);
+void BeginTransition(TransitionEffect effect, float time, TransitionStartCallback func);
 void CancelTransition();
 bool IsTransitionActive();
 TransitionState GetTransitionState();
-GPUTexture* GetTransitionRenderTexture(GPUSwapChain* swap_chain);
-void RenderTransitionBlend(GPUSwapChain* swap_chain);
+GPUTexture* GetTransitionRenderTexture(GPUSwapChain* const swap_chain);
+void RenderTransitionBlend(GPUSwapChain* const swap_chain, GPUTexture* const transition_texture);
 void UpdateTransitionState();
 
 /// Screen blurring.
@@ -324,7 +355,7 @@ enum class FocusResetType : u8
 };
 void QueueResetFocus(FocusResetType type);
 void CancelResetFocus();
-void ResetFocusHere();
+bool ResetFocusHere();
 bool IsFocusResetQueued();
 bool IsFocusResetFromWindowChange();
 FocusResetType GetQueuedFocusResetType();
@@ -359,6 +390,7 @@ bool BeginFullscreenWindow(const ImVec2& position, const ImVec2& size, const cha
                            const ImVec2& padding = ImVec2(), ImGuiWindowFlags flags = 0, bool blur = false);
 void EndFullscreenWindow(bool allow_wrap_x = false, bool allow_wrap_y = true);
 void SetWindowNavWrapping(bool allow_wrap_x = false, bool allow_wrap_y = true);
+bool BeginBlurWindow(const char* name, bool* p_open = nullptr, ImGuiWindowFlags flags = 0, bool blur = true);
 
 bool IsGamepadInputSource();
 std::string_view GetControllerIconMapping(std::string_view icon);
@@ -397,12 +429,15 @@ void RenderMultiLineShadowedTextClipped(ImDrawList* draw_list, ImFont* font, flo
                                         const ImVec2& pos_min, const ImVec2& pos_max, u32 color, std::string_view text,
                                         const ImVec2& align, float wrap_width, const ImRect* clip_rect = nullptr,
                                         float shadow_offset = LayoutScale(LAYOUT_SHADOW_OFFSET));
+ImVec2 RenderOutlinedText(ImDrawList* draw_list, ImFont* font, float size, float weight, const ImVec2& pos, ImU32 col,
+                          std::string_view text);
 void RenderAutoLabelText(ImDrawList* draw_list, ImFont* font, float font_size, float font_weight, float label_weight,
                          const ImVec2& pos_min, const ImVec2& pos_max, u32 color, std::string_view text,
                          char separator = ':', float shadow_offset = LayoutScale(LAYOUT_SHADOW_OFFSET));
 void TextAlignedMultiLine(float align_x, const char* text, const char* text_end = nullptr, float wrap_width = -1.0f);
 void TextUnformatted(std::string_view text);
 void MenuHeading(std::string_view title, bool draw_line = true);
+void MenuSeparator();
 bool MenuHeadingButton(std::string_view title, std::string_view value = {}, float font_size = UIStyle.LargeFontSize,
                        bool enabled = true, bool draw_line = true);
 bool MenuButton(std::string_view title, std::string_view summary, bool enabled = true,
@@ -414,6 +449,9 @@ bool MenuButtonWithValue(std::string_view title, std::string_view summary, std::
 bool MenuButtonWithVisibilityQuery(std::string_view str_id, std::string_view title, std::string_view summary,
                                    std::string_view value, bool* visible, bool enabled = true,
                                    const ImVec2& text_align = ImVec2(0.0f, 0.0f));
+bool MenuButtonWithInlineValue(std::string_view title, std::string_view value, std::string_view right_value,
+                               bool enabled = true, const float min_title_width = 0.0f,
+                               const ImVec2& text_align = ImVec2(0.0f, 0.0f));
 bool MenuImageButton(std::string_view title, std::string_view summary, std::string_view value, ImTextureID image,
                      const ImVec2& image_size = ImVec2(0.0f, 0.0f), bool enabled = true,
                      const ImVec2& uv0 = ImVec2(0.0f, 0.0f), const ImVec2& uv1 = ImVec2(1.0f, 1.0f));
@@ -429,11 +467,13 @@ bool RangeButton(std::string_view title, std::string_view summary, float* value,
 bool EnumChoiceButtonImpl(std::string_view title, std::string_view summary, s32* value_pointer,
                           const char* (*to_display_name_function)(s32 value, void* opaque), void* opaque, u32 count,
                           bool enabled);
+bool MenuActionButton(std::string_view title, std::string_view summary, std::string_view value,
+                      bool dropdown_icon = false, bool enabled = true);
 
 template<typename DataType, typename CountType>
-ALWAYS_INLINE static bool EnumChoiceButton(std::string_view title, std::string_view summary, DataType* value_pointer,
-                                           const char* (*to_display_name_function)(DataType value), CountType count,
-                                           bool enabled = true)
+ALWAYS_INLINE bool EnumChoiceButton(std::string_view title, std::string_view summary, DataType* value_pointer,
+                                    const char* (*to_display_name_function)(DataType value), CountType count,
+                                    bool enabled = true)
 {
   s32 value = static_cast<s32>(*value_pointer);
   auto to_display_name_wrapper = [](s32 value, void* opaque) -> const char* {
@@ -507,13 +547,25 @@ bool WasSplitWindowChanged();
 void FocusSplitWindowContent();
 bool SplitWindowIsNavWindow();
 
+bool InputTextWithIcon(const char* str_id, std::string_view icon, const char* hint, char* buf, size_t buf_size,
+                       float width, float font_size, float font_weight, ImGuiInputTextFlags flags = 0,
+                       ImGuiInputTextCallback callback = nullptr, void* user_data = nullptr);
+
+bool AreAnyWidgetsDialogOpen();
+bool AreAnyWidgetsDialogInteractable();
+
 using FileSelectorCallback = std::function<void(std::string path)>;
 using FileSelectorFilters = std::vector<std::string>;
 bool IsFileSelectorOpen();
-void OpenFileSelector(std::string_view title, bool select_directory, FileSelectorCallback callback,
-                      FileSelectorFilters filters = FileSelectorFilters(),
-                      std::string initial_directory = std::string());
+void OpenFileSelector(std::string_view title, FileSelectorFilters filters, std::string initial_directory,
+                      FileSelectorCallback callback);
 void CloseFileSelector();
+
+using DirectorySelectorCallback = std::function<void(std::string path)>;
+bool IsDirectorySelectorOpen();
+void OpenDirectorySelector(std::string_view title, std::string initial_directory, std::string default_directory,
+                           DirectorySelectorCallback callback);
+void CloseDirectorySelector();
 
 using ChoiceDialogCallback = std::function<void(s32 index, const std::string& title, bool checked)>;
 using ChoiceDialogOptions = std::vector<std::pair<std::string, bool>>;
@@ -522,26 +574,33 @@ void OpenChoiceDialog(std::string_view title, bool checkable, ChoiceDialogOption
                       ChoiceDialogCallback callback);
 void CloseChoiceDialog();
 
+using DropdownDialogCallback = std::function<void(s32 index, const std::string& title)>;
+using DropdownDialogOptions = std::vector<std::pair<std::string, bool>>;
+bool IsDropdownDialogOpen();
+std::string_view GetDropdownDialogHiddenTitle();
+void OpenDropdownDialog(std::string_view hidden_title, DropdownDialogOptions options, DropdownDialogCallback callback,
+                        float min_width = 0.0f);
+void CloseDropdownDialog();
+
 using InputStringDialogCallback = std::function<void(std::string text)>;
 bool IsInputDialogOpen();
 void OpenInputStringDialog(std::string_view title, std::string message, std::string caption, std::string ok_button_text,
-                           InputStringDialogCallback callback);
+                           std::string initial_value, InputStringDialogCallback callback);
 void CloseInputDialog();
 
 using ConfirmMessageDialogCallback = std::function<void(bool)>;
 using InfoMessageDialogCallback = std::function<void()>;
 using MessageDialogCallback = std::function<void(s32)>;
 bool IsMessageBoxDialogOpen();
-void OpenConfirmMessageDialog(std::string_view icon, std::string_view title, std::string message,
+void OpenConfirmMessageDialog(std::string icon, std::string_view title, std::string message,
                               ConfirmMessageDialogCallback callback,
                               std::string yes_button_text = FSUI_ICONSTR(ICON_FA_CHECK, "Yes"),
                               std::string no_button_text = FSUI_ICONSTR(ICON_FA_XMARK, "No"));
-void OpenInfoMessageDialog(std::string_view icon, std::string_view title, std::string message,
+void OpenInfoMessageDialog(std::string icon, std::string_view title, std::string message,
                            InfoMessageDialogCallback callback = {},
                            std::string button_text = FSUI_ICONSTR(ICON_FA_SQUARE_XMARK, "Close"));
-void OpenMessageDialog(std::string_view icon, std::string_view title, std::string message,
-                       MessageDialogCallback callback, std::string first_button_text, std::string second_button_text,
-                       std::string third_button_text);
+void OpenMessageDialog(std::string icon, std::string_view title, std::string message, MessageDialogCallback callback,
+                       std::string first_button_text, std::string second_button_text, std::string third_button_text);
 void CloseMessageDialog();
 
 std::unique_ptr<ProgressCallbackWithPrompt> OpenModalProgressDialog(std::string title,
@@ -602,6 +661,7 @@ public:
 
   ALWAYS_INLINE const std::string& GetTitle() const { return m_title; }
   ALWAYS_INLINE bool IsOpen() const { return (m_state != State::Inactive); }
+  ALWAYS_INLINE bool IsInteractable() const { return (m_state >= State::Open && m_state <= State::Opening); }
 
   void StartClose();
   void CloseImmediately();
@@ -625,13 +685,15 @@ protected:
   void SetTitleAndOpen(std::string title);
 
   bool BeginRender(float scaled_window_padding = LayoutScale(20.0f), float scaled_window_rounding = LayoutScale(20.0f),
-                   const ImVec2& scaled_window_size = ImVec2(0.0f, 0.0f));
+                   const ImVec2& scaled_window_size = ImVec2(0.0f, 0.0f), const ImVec2* position = nullptr,
+                   const ImVec2* pivot = nullptr);
   void EndRender();
 
   std::string m_title;
   float m_animation_time_remaining = 0.0f;
   State m_state = State::Inactive;
   bool m_user_closeable = true;
+  bool m_reverse_animation = false;
 };
 
 // Wrapper for computing menu button bounds.
@@ -650,6 +712,8 @@ struct MenuButtonBounds
   float available_non_value_width;
 
   MenuButtonBounds(const std::string_view& title, const std::string_view& value, const std::string_view& summary);
+  MenuButtonBounds(const std::string_view& title, const std::string_view& value, float value_x_padding,
+                   const std::string_view& summary);
   MenuButtonBounds(const std::string_view& title, const std::string_view& value, const std::string_view& summary,
                    float left_margin, float title_value_size = UIStyle.LargeFontSize,
                    float summary_size = UIStyle.MediumFontSize);

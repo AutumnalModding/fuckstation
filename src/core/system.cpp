@@ -13,10 +13,12 @@
 #include "cpu_code_cache.h"
 #include "cpu_core.h"
 #include "cpu_pgxp.h"
+#include "discord_presence.h"
 #include "dma.h"
 #include "fullscreenui.h"
 #include "game_database.h"
 #include "game_list.h"
+#include "gdb_server.h"
 #include "gpu.h"
 #include "gpu_backend.h"
 #include "gpu_dump.h"
@@ -42,33 +44,30 @@
 #include "video_presenter.h"
 #include "video_thread.h"
 
-#include "scmversion/scmversion.h"
-
-#include "util/audio_stream.h"
 #include "util/cd_image.h"
 #include "util/compress_helpers.h"
 #include "util/gpu_device.h"
+#include "util/http_downloader.h"
 #include "util/imgui_manager.h"
 #include "util/ini_settings_interface.h"
 #include "util/input_manager.h"
 #include "util/iso_reader.h"
 #include "util/media_capture.h"
 #include "util/postprocessing.h"
-#include "util/sockets.h"
 #include "util/state_wrapper.h"
 #include "util/translation.h"
 
 #include "common/align.h"
 #include "common/binary_reader_writer.h"
-#include "common/dynamic_library.h"
 #include "common/error.h"
 #include "common/file_system.h"
 #include "common/layered_settings_interface.h"
 #include "common/log.h"
+#include "common/md5_digest.h"
 #include "common/memmap.h"
 #include "common/path.h"
-#include "common/ryml_helpers.h"
 #include "common/string_util.h"
+#include "common/threading.h"
 #include "common/time_helpers.h"
 #include "common/timer.h"
 
@@ -76,10 +75,8 @@
 #include "IconsFontAwesome.h"
 #include "IconsPromptFont.h"
 
-#include "cpuinfo.h"
 #include "fmt/chrono.h"
 #include "fmt/format.h"
-#include "imgui.h"
 #include "xxhash.h"
 
 #include <cctype>
@@ -88,21 +85,8 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
-#include <thread>
 
 LOG_CHANNEL(System);
-
-#ifdef _WIN32
-#include "common/windows_headers.h"
-#include <Objbase.h>
-#endif
-
-#ifndef __ANDROID__
-#define ENABLE_DISCORD_PRESENCE 1
-#define ENABLE_GDB_SERVER 1
-#define ENABLE_SOCKET_MULTIPLEXER 1
-#include "gdb_server.h"
-#endif
 
 // #define PROFILE_MEMORY_SAVE_STATES 1
 
@@ -147,9 +131,6 @@ struct UndoSaveStateBuffer : public SaveStateBuffer
 
 } // namespace
 
-static void CheckCacheLineSize();
-static void LogStartupInformation();
-
 static const SettingsInterface& GetInputSourceSettingsLayer(std::unique_lock<std::mutex>& lock);
 static const SettingsInterface& GetControllerSettingsLayer(std::unique_lock<std::mutex>& lock);
 static const SettingsInterface& GetHotkeySettingsLayer(std::unique_lock<std::mutex>& lock);
@@ -159,6 +140,10 @@ static bool ReadExecutableFromImage(IsoReader& iso, std::string* out_executable_
                                     std::vector<u8>* out_executable_data);
 static GameHash GetGameHashFromBuffer(std::string_view exe_name, std::span<const u8> exe_buffer,
                                       const IsoReader::ISOPrimaryVolumeDescriptor& iso_pvd, u32 track_1_length);
+
+/// Returns the achievements game hash for a given executable.
+static std::optional<Achievements::GameHash> GetAchievementsHash(const std::string& executable_name,
+                                                                 const std::vector<u8>& executable_data);
 
 /// Settings that are looked up on demand.
 static bool ShouldStartFullscreen();
@@ -180,7 +165,6 @@ static void ClearRunningGame();
 static void DestroySystem();
 
 static void RecreateGPU(GPURenderer new_renderer);
-static std::string GetScreenshotPath(const char* extension);
 static bool StartMediaCapture(std::string path, bool capture_video, bool capture_audio, u32 video_width,
                               u32 video_height);
 static void StopMediaCapture(std::unique_ptr<MediaCapture> cap);
@@ -230,22 +214,15 @@ static void DoMemoryState(StateWrapper& sw, MemorySaveState& mss, bool update_di
 static bool IsExecutionInterrupted();
 static void CheckForAndExitExecution();
 
-static void SetRewinding(bool enabled);
 static void DoRewind();
 
 static bool DoRunahead();
 
 static void UpdateSessionTime(const std::string& prev_serial);
 
-#ifdef ENABLE_DISCORD_PRESENCE
-static void InitializeDiscordPresence();
-static void ShutdownDiscordPresence();
-static void PollDiscordPresence();
-#endif
-
 namespace {
 
-struct ALIGN_TO_CACHE_LINE StateVars
+struct StateVars
 {
   TickCount ticks_per_second = 0;
   TickCount max_slice_ticks = 0;
@@ -317,16 +294,11 @@ struct ALIGN_TO_CACHE_LINE StateVars
   GameHash running_game_hash = 0;
   bool running_game_custom_title = false;
 
-  // Prevent screensaver inhibits when running on platforms that don't have it (e.g. gamescope).
-  bool disable_screensaver_inhibit = false;
-
   std::atomic_bool startup_cancelled{false};
 
   std::unique_ptr<INISettingsInterface> game_settings_interface;
   std::unique_ptr<INISettingsInterface> input_settings_interface;
   std::string input_profile_name;
-
-  Threading::ThreadHandle core_thread_handle;
 
   // temporary save state, created when loading, used to undo load state
   std::optional<UndoSaveStateBuffer> undo_load_state;
@@ -336,149 +308,15 @@ struct ALIGN_TO_CACHE_LINE StateVars
 
   // internal async task counters
   std::atomic_uint32_t outstanding_save_state_tasks{0};
-
-  // process start time
-  Timer::Value process_start_time = 0;
-
-#ifdef ENABLE_SOCKET_MULTIPLEXER
-  std::unique_ptr<SocketMultiplexer> socket_multiplexer;
-#endif
-
-#ifdef ENABLE_DISCORD_PRESENCE
-  bool discord_presence_active = false;
-  std::time_t discord_presence_time_epoch;
-#endif
 };
 
 } // namespace
 
-static StateVars s_state;
+ALIGN_TO_CACHE_LINE static StateVars s_state;
 
 } // namespace System
 
-static TinyString GetTimestampStringForFileName()
-{
-  return TinyString::from_format("{:%Y-%m-%d-%H-%M-%S}", Common::LocalTime(std::time(nullptr)).value_or(std::tm{}));
-}
-
-bool System::PerformEarlyHardwareChecks(Error* error)
-{
-  // This shouldn't fail... if it does, just hope for the best.
-  cpuinfo_initialize();
-
-#ifdef CPU_ARCH_X64
-#ifdef CPU_ARCH_SSE41
-  if (!cpuinfo_has_x86_sse4_1())
-  {
-    Error::SetStringFmt(
-      error, "<h3>Your CPU does not support the SSE4.1 instruction set.</h3><p>SSE4.1 is required for this version of "
-             "DuckStation. Please download and switch to the legacy SSE2 version.</p><p>You can download this from <a "
-             "href=\"https://www.duckstation.org/\">www.duckstation.org</a> under \"Other Platforms\".");
-    return false;
-  }
-#else
-  if (cpuinfo_has_x86_sse4_1())
-  {
-    Error::SetStringFmt(
-      error, "You are running the <strong>legacy SSE2 DuckStation executable</strong> on a CPU that supports the "
-             "SSE4.1 instruction set.\nPlease download and switch to the regular, non-SSE2 version.\nYou can download "
-             "this from <a href=\"https://www.duckstation.org/\">www.duckstation.org</a>.");
-  }
-#endif
-#endif
-
-#ifndef DYNAMIC_HOST_PAGE_SIZE
-  // Check page size. If it doesn't match, it is a fatal error.
-  const size_t runtime_host_page_size = MemMap::GetRuntimePageSize();
-  if (runtime_host_page_size == 0)
-  {
-    Error::SetStringFmt(error, "Cannot determine size of page. Continuing with expectation of {} byte pages.",
-                        runtime_host_page_size);
-  }
-  else if (HOST_PAGE_SIZE != runtime_host_page_size)
-  {
-    Error::SetStringFmt(
-      error, "Page size mismatch. This build was compiled with {} byte pages, but the system has {} byte pages.",
-      HOST_PAGE_SIZE, runtime_host_page_size);
-    return false;
-  }
-#else
-  if (HOST_PAGE_SIZE == 0 || HOST_PAGE_SIZE < MIN_HOST_PAGE_SIZE || HOST_PAGE_SIZE > MAX_HOST_PAGE_SIZE)
-  {
-    Error::SetStringFmt(error, "Page size of {} bytes is out of the range supported by this build: {}-{}.",
-                        HOST_PAGE_SIZE, MIN_HOST_PAGE_SIZE, MAX_HOST_PAGE_SIZE);
-    return false;
-  }
-#endif
-
-  return true;
-}
-
-void System::CheckCacheLineSize()
-{
-  u32 max_line_size = 0;
-  if (cpuinfo_initialize())
-  {
-    const u32 num_l1is = cpuinfo_get_l1i_caches_count();
-    const u32 num_l1ds = cpuinfo_get_l1d_caches_count();
-    const u32 num_l2s = cpuinfo_get_l2_caches_count();
-    for (u32 i = 0; i < num_l1is; i++)
-    {
-      const cpuinfo_cache* cache = cpuinfo_get_l1i_cache(i);
-      if (cache)
-        max_line_size = std::max(max_line_size, cache->line_size);
-    }
-    for (u32 i = 0; i < num_l1ds; i++)
-    {
-      const cpuinfo_cache* cache = cpuinfo_get_l1d_cache(i);
-      if (cache)
-        max_line_size = std::max(max_line_size, cache->line_size);
-    }
-    for (u32 i = 0; i < num_l2s; i++)
-    {
-      const cpuinfo_cache* cache = cpuinfo_get_l2_cache(i);
-      if (cache)
-        max_line_size = std::max(max_line_size, cache->line_size);
-    }
-  }
-
-  if (max_line_size == 0)
-  {
-    ERROR_LOG("Cannot determine size of cache line. Continuing with expectation of {} byte lines.",
-              HOST_CACHE_LINE_SIZE);
-  }
-  else if (HOST_CACHE_LINE_SIZE != max_line_size)
-  {
-    // Not fatal, but does have performance implications.
-    WARNING_LOG(
-      "Cache line size mismatch. This build was compiled with {} byte lines, but the system has {} byte lines.",
-      HOST_CACHE_LINE_SIZE, max_line_size);
-  }
-}
-
-void System::LogStartupInformation()
-{
-#if !defined(CPU_ARCH_X64) || defined(CPU_ARCH_SSE41)
-  const std::string_view suffix = {};
-#else
-  const std::string_view suffix = " [Legacy SSE2]";
-#endif
-  INFO_LOG("DuckStation for {} ({}){}", TARGET_OS_STR, CPU_ARCH_STR, suffix);
-  INFO_LOG("Version: {} [{}]", g_scm_tag_str, g_scm_branch_str);
-  INFO_LOG("SCM Timestamp: {}", g_scm_date_str);
-  if (const cpuinfo_package* package = cpuinfo_initialize() ? cpuinfo_get_package(0) : nullptr) [[likely]]
-  {
-    INFO_LOG("Host CPU: {}", package->name);
-    INFO_LOG("CPU has {} logical processor(s) and {} core(s) across {} cluster(s).", package->processor_count,
-             package->core_count, package->cluster_count);
-  }
-
-#ifdef DYNAMIC_HOST_PAGE_SIZE
-  INFO_LOG("Host Page Size: {} bytes", HOST_PAGE_SIZE);
-#endif
-}
-
-bool System::ProcessStartup(Error* error)
+bool System::AllocatePersistentMemory(Error* error)
 {
   Timer timer;
 
@@ -497,121 +335,13 @@ bool System::ProcessStartup(Error* error)
   }
 
   VERBOSE_LOG("Memory allocation took {} ms.", timer.GetTimeMilliseconds());
-
-  CheckCacheLineSize();
-
-  // Initialize rapidyaml before anything can use it.
-  SetRymlCallbacks();
-
-#ifdef __linux__
-  // Disable screensaver inhibit if running on gamescope.
-  const char* desktop = std::getenv("XDG_CURRENT_DESKTOP");
-  if (!desktop)
-    desktop = std::getenv("XDG_SESSION_DESKTOP");
-  if (!desktop || std::strlen(desktop) == 0 || std::strstr(desktop, "gamescope"))
-  {
-    INFO_LOG("Missing XDG_CURRENT_DESKTOP ({}) or running under gamescope, disabling screensaver inhibit.",
-             desktop ? desktop : "null");
-    s_state.disable_screensaver_inhibit = true;
-  }
-
-  // Running DuckStation out of /usr is not supported and makes no sense.
-  if (std::memcmp(EmuFolders::AppRoot.data(), "/usr/", 5) == 0)
-    return false;
-#endif
-
-  s_state.process_start_time = Timer::GetCurrentValue();
   return true;
 }
 
-void System::ProcessShutdown()
+void System::ReleasePersistentMemory()
 {
   Bus::ReleaseMemory();
   CPU::CodeCache::ProcessShutdown();
-}
-
-float System::GetProcessUptime()
-{
-  return static_cast<float>(Timer::ConvertValueToSeconds(Timer::GetCurrentValue() - s_state.process_start_time));
-}
-
-bool System::CoreThreadInitialize(Error* error)
-{
-#ifdef _WIN32
-  // On Win32, we have a bunch of things which use COM (e.g. SDL, Cubeb, etc).
-  // We need to initialize COM first, before anything else does, because otherwise they might
-  // initialize it in single-threaded/apartment mode, which can't be changed to multithreaded.
-  HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-  if (FAILED(hr))
-  {
-    Error::SetHResult(error, "CoInitializeEx() failed: ", hr);
-    return false;
-  }
-#endif
-
-  s_state.core_thread_handle = Threading::ThreadHandle::GetForCallingThread();
-
-  // This will call back to Host::LoadSettings() -> ReloadSources().
-  LoadSettings(false);
-
-  LogStartupInformation();
-
-  VideoThread::Internal::ProcessStartup();
-
-  if (g_settings.achievements_enabled)
-    Achievements::Initialize();
-
-#ifdef ENABLE_DISCORD_PRESENCE
-  if (g_settings.enable_discord_presence)
-    InitializeDiscordPresence();
-#endif
-
-  return true;
-}
-
-void System::CoreThreadShutdown()
-{
-#ifdef ENABLE_DISCORD_PRESENCE
-  ShutdownDiscordPresence();
-#endif
-
-  Achievements::Shutdown();
-
-  GPUDevice::UnloadDynamicLibraries();
-
-  InputManager::CloseSources();
-
-  s_state.core_thread_handle = {};
-
-#ifdef _WIN32
-  CoUninitialize();
-#endif
-}
-
-const Threading::ThreadHandle& System::GetCoreThreadHandle()
-{
-  return s_state.core_thread_handle;
-}
-
-void System::SetCoreThreadHandle(Threading::ThreadHandle handle)
-{
-  s_state.core_thread_handle = std::move(handle);
-}
-
-void System::IdlePollUpdate()
-{
-  InputManager::PollSources();
-
-#ifdef ENABLE_DISCORD_PRESENCE
-  PollDiscordPresence();
-#endif
-
-  Achievements::IdleUpdate();
-
-#ifdef ENABLE_SOCKET_MULTIPLEXER
-  if (s_state.socket_multiplexer)
-    s_state.socket_multiplexer->PollEventsWithTimeout(0);
-#endif
 }
 
 System::State System::GetState()
@@ -764,7 +494,7 @@ void System::UpdateOverclock()
   s_state.max_slice_ticks = ScaleTicksToOverclock(MASTER_CLOCK / 10);
   SPU::CPUClockChanged();
   CDROM::CPUClockChanged();
-  g_gpu.CPUClockChanged();
+  GPU::CPUClockChanged();
   Timers::CPUClocksChanged();
   UpdateThrottlePeriod();
 }
@@ -815,6 +545,11 @@ const GameDatabase::Entry* System::GetGameDatabaseEntry()
 GameHash System::GetGameHash()
 {
   return s_state.running_game_hash;
+}
+
+bool System::IsRunningGameCustomTitle()
+{
+  return s_state.running_game_custom_title;
 }
 
 bool System::IsRunningUnknownGame()
@@ -939,7 +674,7 @@ std::string System::GetGameHashId(GameHash hash)
 }
 
 bool System::GetGameDetailsFromImage(CDImage* cdi, std::string* out_id, GameHash* out_hash,
-                                     std::string* out_executable_name, std::vector<u8>* out_executable_data)
+                                     std::optional<std::array<u8, 16>>* out_achievements_hash)
 {
   IsoReader iso;
   std::string id;
@@ -951,10 +686,8 @@ bool System::GetGameDetailsFromImage(CDImage* cdi, std::string* out_id, GameHash
       out_id->clear();
     if (out_hash)
       *out_hash = 0;
-    if (out_executable_name)
-      out_executable_name->clear();
-    if (out_executable_data)
-      out_executable_data->clear();
+    if (out_achievements_hash)
+      out_achievements_hash->reset();
     return false;
   }
 
@@ -999,11 +732,8 @@ bool System::GetGameDetailsFromImage(CDImage* cdi, std::string* out_id, GameHash
 
   if (out_hash)
     *out_hash = hash;
-
-  if (out_executable_name)
-    *out_executable_name = std::move(exe_name);
-  if (out_executable_data)
-    *out_executable_data = std::move(exe_buffer);
+  if (out_achievements_hash)
+    *out_achievements_hash = GetAchievementsHash(exe_name, exe_buffer);
 
   return true;
 }
@@ -1014,7 +744,7 @@ GameHash System::GetGameHashFromFile(const char* path)
   if (!data)
     return 0;
 
-  return GetGameHashFromBuffer(FileSystem::GetDisplayNameFromPath(path), data->cspan());
+  return GetGameHashFromBuffer(Path::GetFileName(path), data->cspan());
 }
 
 GameHash System::GetGameHashFromBuffer(const std::string_view path, const std::span<const u8> data)
@@ -1171,6 +901,31 @@ GameHash System::GetGameHashFromBuffer(std::string_view exe_name, std::span<cons
   return hash;
 }
 
+std::optional<Achievements::GameHash> System::GetAchievementsHash(const std::string& executable_name,
+                                                                  const std::vector<u8>& executable_data)
+{
+  // NOTE: Assumes executable_data is aligned to 4 bytes at least.. it should be.
+  const BIOS::PSEXEHeader* header = reinterpret_cast<const BIOS::PSEXEHeader*>(executable_data.data());
+  if (executable_data.size() < sizeof(BIOS::PSEXEHeader) || !BIOS::IsValidPSExeHeader(*header, executable_data.size()))
+  {
+    ERROR_LOG("PS-EXE header is invalid in '{}' ({} bytes)", executable_name, executable_data.size());
+    return std::nullopt;
+  }
+
+  const u32 hash_size = std::min(header->file_size + 2048, static_cast<u32>(executable_data.size()));
+
+  MD5Digest digest;
+  digest.Update(executable_name.data(), static_cast<u32>(executable_name.size()));
+  if (hash_size > 0)
+    digest.Update(executable_data.data(), hash_size);
+
+  std::optional<Achievements::GameHash> ret;
+  digest.Final(ret.emplace());
+
+  DEV_LOG("RA Hash for '{}': {} ({} bytes hashed)", executable_name, Achievements::GameHashToString(ret), hash_size);
+  return ret;
+}
+
 DiscRegion System::GetRegionForSerial(const std::string_view serial)
 {
   static constexpr const std::pair<const char*, DiscRegion> region_prefixes[] = {
@@ -1278,7 +1033,7 @@ void System::RecreateGPU(GPURenderer renderer)
 
   ClearMemorySaveStates(true, false);
 
-  g_gpu.UpdateDisplay(false);
+  GPU::UpdateDisplay(false);
   if (IsPaused())
     VideoThread::PresentCurrentFrame();
 }
@@ -1298,7 +1053,7 @@ void System::LoadSettings(bool display_osd_messages)
 
   // Fix up automatic resolution scale, yuck.
   if (g_settings.gpu_automatic_resolution_scale && IsValid())
-    g_settings.gpu_resolution_scale = g_gpu.CalculateAutomaticResolutionScale();
+    g_settings.gpu_resolution_scale = GPU::CalculateAutomaticResolutionScale();
 
   // show safe mode warning if it's toggled on, or on startup
   if (IsValidOrInitializing() && (display_osd_messages || (!previous_safe_mode && g_settings.disable_all_enhancements)))
@@ -1308,7 +1063,6 @@ void System::LoadSettings(bool display_osd_messages)
   g_settings.ApplySettingRestrictions();
 
   Settings::UpdateLogConfig(si);
-  Host::LoadSettings(si, lock);
   InputManager::ReloadSourcesAndBindings(GetInputSourceSettingsLayer(lock), controller_si, GetHotkeySettingsLayer(lock),
                                          lock);
 
@@ -1397,7 +1151,7 @@ const SettingsInterface& System::GetHotkeySettingsLayer(std::unique_lock<std::mu
   }
 }
 
-void System::SetDefaultSettings(SettingsInterface& si)
+void System::SetDefaultSettings(SettingsInterface& si, bool ignore_user_prefs)
 {
   Settings temp;
 
@@ -1405,10 +1159,11 @@ void System::SetDefaultSettings(SettingsInterface& si)
   for (u32 i = 0; i < NUM_CONTROLLER_AND_CARD_PORTS; i++)
     temp.controller_types[i] = g_settings.controller_types[i];
 
-  temp.Save(si, false);
+  temp.Save(si, ignore_user_prefs, false);
 
   si.SetBoolValue("Main", "StartPaused", false);
   si.SetBoolValue("Main", "StartFullscreen", false);
+  si.SetBoolValue("Main", "StartFullscreenUI", false);
 
   Settings::SetDefaultLogConfig(si);
 
@@ -1419,6 +1174,8 @@ void System::SetDefaultSettings(SettingsInterface& si)
 #ifndef __ANDROID__
   si.SetStringValue("MediaCapture", "Backend", MediaCapture::GetBackendName(Settings::DEFAULT_MEDIA_CAPTURE_BACKEND));
   si.SetStringValue("MediaCapture", "Container", Settings::DEFAULT_MEDIA_CAPTURE_CONTAINER);
+  si.SetStringValue("MediaCapture", "FileNameFormat",
+                    Settings::GetCaptureFileNameFormatName(Settings::DEFAULT_MEDIA_CAPTURE_FILENAME_FORMAT));
   si.SetBoolValue("MediaCapture", "VideoCapture", true);
   si.SetUIntValue("MediaCapture", "VideoWidth", Settings::DEFAULT_MEDIA_CAPTURE_VIDEO_WIDTH);
   si.SetUIntValue("MediaCapture", "VideoHeight", Settings::DEFAULT_MEDIA_CAPTURE_VIDEO_HEIGHT);
@@ -1426,7 +1183,7 @@ void System::SetDefaultSettings(SettingsInterface& si)
   si.SetUIntValue("MediaCapture", "VideoBitrate", Settings::DEFAULT_MEDIA_CAPTURE_VIDEO_BITRATE);
   si.SetStringValue("MediaCapture", "VideoCodec", "");
   si.SetBoolValue("MediaCapture", "VideoCodecUseArgs", false);
-  si.SetStringValue("MediaCapture", "AudioCodecArgs", "");
+  si.SetStringValue("MediaCapture", "VideoCodecArgs", "");
   si.SetBoolValue("MediaCapture", "AudioCapture", true);
   si.SetUIntValue("MediaCapture", "AudioBitrate", Settings::DEFAULT_MEDIA_CAPTURE_AUDIO_BITRATE);
   si.SetStringValue("MediaCapture", "AudioCodec", "");
@@ -1485,7 +1242,7 @@ void System::ApplySettings(bool display_osd_messages)
   }
 
   CheckForSettingsChanges(old_settings);
-  Host::CheckForSettingsChanges(old_settings);
+  Host::OnSettingsReloaded();
 }
 
 void System::ReloadGameSettings(bool display_osd_messages)
@@ -1636,7 +1393,7 @@ bool System::UpdateGameSettingsLayer()
   if (new_interface)
   {
     if (!new_interface->GetBoolValue("ControllerPorts", "UseGameSettingsForController", false))
-      new_interface->GetStringValue("ControllerPorts", "InputProfileName", &input_profile_name);
+      input_profile_name = new_interface->GetStringValue("ControllerPorts", "InputProfileName");
   }
 
   if (!s_state.game_settings_interface && !new_interface && s_state.input_profile_name == input_profile_name)
@@ -1685,7 +1442,7 @@ void System::ResetSystem()
     return;
 
   SaveUndoLoadState();
-
+  ClearMemorySaveStates(false, false);
   InternalReset();
 
   // Reset boot mode/reload BIOS if needed. Preserve exe/psf boot.
@@ -1875,10 +1632,10 @@ bool System::BootSystem(SystemBootParameters parameters, Error* error)
   s_state.gpu_dump_player = std::move(gpu_dump);
   Host::OnSystemStarting();
   FullscreenUI::OnSystemStarting();
+  Achievements::OnSystemStarting(parameters.disable_achievements_hardcore_mode);
 
   // Update running game, this will apply settings as well.
   UpdateRunningGame(disc ? disc->GetPath() : parameters.path, disc.get(), true);
-  Achievements::OnSystemStarting(disc.get(), parameters.disable_achievements_hardcore_mode);
 
   // Determine console region. Has to be done here, because gamesettings can override it.
   s_state.region = (g_settings.region == ConsoleRegion::Auto) ? auto_console_region : g_settings.region;
@@ -1952,7 +1709,7 @@ bool System::BootSystem(SystemBootParameters parameters, Error* error)
     if (Core::GetBoolSettingValue("CDROM", "AllowBootingWithoutSBIFile", false))
     {
       Host::ConfirmMessageAsync(
-        "Confirm Unsupported Configuration",
+        "images/warning.svg", "Confirm Unsupported Configuration",
         fmt::format(TRANSLATE_FS("System",
                                  "You are attempting to run a libcrypt protected game without an SBI file:\n\n{0}: "
                                  "{1}\n\nThe game will likely not run properly.\n\nPlease check the README for "
@@ -2012,6 +1769,7 @@ bool System::BootSystem(SystemBootParameters parameters, Error* error)
     GDBServer::Initialize(g_settings.gdb_server_port);
 #endif
 
+  Achievements::OnSystemStarted();
   Host::OnSystemStarted();
 
   if (parameters.load_image_to_ram || g_settings.cdrom_load_image_to_ram)
@@ -2075,8 +1833,7 @@ bool System::Initialize(std::unique_ptr<CDImage> disc, DiscRegion disc_region, b
     return false;
   }
 
-  // TODO: Drop class
-  g_gpu.Initialize();
+  GPU::Initialize();
 
   // Game info must be set prior to backend creation because of texture replacements.
   // We don't do it in UpdateRunningGame() when booting because it can fail in a number of locations.
@@ -2157,7 +1914,7 @@ void System::DestroySystem()
   Timers::Shutdown();
   Pad::Shutdown();
   CDROM::Shutdown();
-  g_gpu.Shutdown();
+  GPU::Shutdown();
   DMA::Shutdown();
   PIO::Shutdown();
   CPU::CodeCache::Shutdown();
@@ -2217,7 +1974,9 @@ void System::ClearRunningGame()
   Host::OnSystemGameChanged(s_state.running_game_path, s_state.running_game_serial, s_state.running_game_title,
                             s_state.running_game_hash);
 
-  UpdateRichPresence(true);
+#ifdef ENABLE_DISCORD_PRESENCE
+  DiscordPresence::Update(true);
+#endif
 }
 
 void System::Execute()
@@ -2268,17 +2027,18 @@ void System::FrameDone()
 
     Cheats::ApplyFrameEndCodes();
 
+    HTTPDownloader::PollRequests();
+
     if (Achievements::IsActive())
       Achievements::FrameUpdate();
   }
 
 #ifdef ENABLE_DISCORD_PRESENCE
-  PollDiscordPresence();
+  DiscordPresence::Poll();
 #endif
 
-#ifdef ENABLE_SOCKET_MULTIPLEXER
-  if (s_state.socket_multiplexer)
-    s_state.socket_multiplexer->PollEventsWithTimeout(0);
+#ifdef ENABLE_GDB_SERVER
+  GDBServer::Poll(0);
 #endif
 
   // Save states for rewind and runahead.
@@ -2314,7 +2074,7 @@ void System::FrameDone()
     }
 
     // Late submission of frame. This is needed because the input poll can determine whether we need to rewind.
-    g_gpu.QueuePresentCurrentFrame();
+    GPU::QueuePresentCurrentFrame();
 
     SaveMemoryState(AllocateMemoryState());
   }
@@ -2490,35 +2250,32 @@ void System::Throttle(Timer::Value current_time, Timer::Value sleep_until)
     return;
   }
 
-#ifdef ENABLE_SOCKET_MULTIPLEXER
-  // If we are using the socket multiplier, and have clients, then use it to sleep instead.
+#ifdef ENABLE_GDB_SERVER
+  // If we are running the GDB server and have clients, then use it to sleep instead.
   // That way in a query->response->query->response chain, we don't process only one message per frame.
-  if (s_state.socket_multiplexer && s_state.socket_multiplexer->HasAnyClientSockets())
+  if (GDBServer::HasAnyClients())
   {
     Timer::Value poll_start_time = current_time;
     for (;;)
     {
       const u32 sleep_ms = static_cast<u32>(Timer::ConvertValueToMilliseconds(sleep_until - poll_start_time));
-      s_state.socket_multiplexer->PollEventsWithTimeout(sleep_ms);
+      GDBServer::Poll(sleep_ms);
       poll_start_time = Timer::GetCurrentValue();
       if (poll_start_time >= sleep_until || (!g_settings.display_optimal_frame_pacing && sleep_ms == 0))
         break;
     }
   }
   else
+#endif
   {
     // Use a spinwait if we undersleep for all platforms except android.. don't want to burn battery.
     // Linux also seems to do a much better job of waking up at the requested time.
-#if !defined(__linux__)
+#if !defined(__linux__) && !defined(__ANDROID__)
     Timer::SleepUntil(sleep_until, g_settings.display_optimal_frame_pacing);
 #else
     Timer::SleepUntil(sleep_until, false);
 #endif
   }
-#else
-  // No spinwait on Android, see above.
-  Timer::SleepUntil(sleep_until, false);
-#endif
 
 #if 0
   const Timer::Value time_after_sleep = Timer::GetCurrentValue();
@@ -2618,7 +2375,7 @@ bool System::DoState(StateWrapper& sw, bool update_display)
   if (!sw.DoMarker("InterruptController") || !InterruptController::DoState(sw))
     return false;
 
-  if (!sw.DoMarker("GPU") || !g_gpu.DoState(sw))
+  if (!sw.DoMarker("GPU") || !GPU::DoState(sw))
     return false;
 
   if (!sw.DoMarker("CDROM") || !CDROM::DoState(sw))
@@ -2683,7 +2440,7 @@ bool System::DoState(StateWrapper& sw, bool update_display)
 
   // If we're paused, need to update the display FB.
   if (update_display)
-    g_gpu.UpdateDisplay(false);
+    GPU::UpdateDisplay(false);
 
   return true;
 }
@@ -2881,7 +2638,6 @@ void System::DoMemoryState(StateWrapper& sw, MemorySaveState& mss, bool update_d
 #else
 #define SAVE_COMPONENT(name, expr) expr
 #endif
-
   sw.Do(&s_state.frame_number);
   sw.Do(&s_state.internal_frame_number);
 
@@ -2895,7 +2651,7 @@ void System::DoMemoryState(StateWrapper& sw, MemorySaveState& mss, bool update_d
   SAVE_COMPONENT("DMA", DMA::DoState(sw));
   SAVE_COMPONENT("InterruptController", InterruptController::DoState(sw));
 
-  g_gpu.DoMemoryState(sw, mss);
+  GPU::DoMemoryState(sw, mss);
 
   SAVE_COMPONENT("CDROM", CDROM::DoState(sw));
   SAVE_COMPONENT("Pad", Pad::DoState(sw, true));
@@ -2909,7 +2665,7 @@ void System::DoMemoryState(StateWrapper& sw, MemorySaveState& mss, bool update_d
 #undef SAVE_COMPONENT
 
   if (update_display)
-    g_gpu.UpdateDisplay(false);
+    GPU::UpdateDisplay(false);
 }
 
 bool System::LoadBIOS(Error* error)
@@ -2947,7 +2703,7 @@ void System::InternalReset()
   PIO::Reset();
   DMA::Reset();
   InterruptController::Reset();
-  g_gpu.Reset(true);
+  GPU::Reset(true);
   CDROM::Reset();
   Pad::Reset();
   Timers::Reset();
@@ -3146,23 +2902,14 @@ bool System::LoadStateFromBuffer(const SaveStateBuffer& buffer, Error* error, bo
   // Updating game/loading settings can turn on hardcore mode. Catch this.
   Achievements::DisableHardcoreMode(true, true);
 
-  return LoadStateDataFromBuffer(buffer.state_data.cspan(0, buffer.state_size), buffer.version, error, update_display);
-}
-
-bool System::LoadStateDataFromBuffer(std::span<const u8> data, u32 version, Error* error, bool update_display)
-{
-  if (IsShutdown()) [[unlikely]]
-  {
-    Error::SetStringView(error, "System is invalid.");
-    return 0;
-  }
-
-  StateWrapper sw(data, StateWrapper::Mode::Read, version);
+  StateWrapper sw(buffer.state_data.cspan(0, buffer.state_size), StateWrapper::Mode::Read, buffer.version);
   if (!DoState(sw, update_display))
   {
     Error::SetStringView(error, "Save state stream is corrupted.");
     return false;
   }
+
+  Cheats::ApplyAllOnDisableCodes();
 
   InterruptExecution();
 
@@ -3170,7 +2917,7 @@ bool System::LoadStateDataFromBuffer(std::span<const u8> data, u32 version, Erro
   ResetThrottler();
 
   if (update_display)
-    g_gpu.UpdateDisplay(true);
+    GPU::UpdateDisplay(true);
 
   return true;
 }
@@ -3570,11 +3317,16 @@ bool System::SaveStateDataToBuffer(std::span<u8> data, size_t* data_size, Error*
   if (IsShutdown()) [[unlikely]]
   {
     Error::SetStringView(error, "System is invalid.");
-    return 0;
+    return false;
   }
 
+  // back up and restore memory affected by cheats when saving state
+  const Cheats::RollbackLog cheat_rollback_log = Cheats::ApplyOnDisableCodes();
   StateWrapper sw(data, StateWrapper::Mode::Write, SAVE_STATE_VERSION);
-  if (!DoState(sw, false))
+  const bool result = DoState(sw, false);
+  Cheats::ReapplyOnDisableCodes(cheat_rollback_log);
+
+  if (!result)
   {
     Error::SetStringView(error, "DoState() failed");
     return false;
@@ -3582,6 +3334,11 @@ bool System::SaveStateDataToBuffer(std::span<u8> data, size_t* data_size, Error*
 
   *data_size = sw.GetPosition();
   return true;
+}
+
+bool System::AreGlobalSaveStatesEnabled()
+{
+  return Core::GetBaseBoolSettingValue("Main", "EnableGlobalStates", false);
 }
 
 bool System::SaveStateBufferToFile(const SaveStateBuffer& buffer, std::FILE* fp, Error* error,
@@ -3651,7 +3408,7 @@ bool System::SaveStateBufferToFile(const SaveStateBuffer& buffer, std::FILE* fp,
   // re-write header
   if (std::fwrite(&header, sizeof(header), 1, fp) != 1 || std::fflush(fp) != 0)
   {
-    Error::SetErrno(error, "fwrite()/fflush() to rewrite header failed: {}", errno);
+    Error::SetErrno(error, "fwrite()/fflush() to rewrite header failed: ", errno);
     return false;
   }
 
@@ -3847,12 +3604,13 @@ void System::UpdateSpeedLimiterState()
   {
     const u64 typical_time =
       std::min(std::max<u64>((new_scheduler_period / 1000000) * 1000000, MIN_FRAME_TIME_NS), TYPICAL_FRAME_TIME_NS);
-    if (s_state.core_thread_handle)
+    const Threading::ThreadHandle& core_thread = Host::GetCoreThreadHandle();
+    if (core_thread)
     {
-      s_state.core_thread_handle.SetTimeConstraints(s_state.optimal_frame_pacing, new_scheduler_period, typical_time,
-                                                    new_scheduler_period);
+      core_thread.SetTimeConstraints(s_state.optimal_frame_pacing, new_scheduler_period, typical_time,
+                                     new_scheduler_period);
     }
-    const Threading::ThreadHandle& video_thread = VideoThread::Internal::GetThreadHandle();
+    const Threading::ThreadHandle& video_thread = VideoThread::GetThreadHandle();
     if (video_thread)
     {
       video_thread.SetTimeConstraints(s_state.optimal_frame_pacing, new_scheduler_period, typical_time,
@@ -3929,9 +3687,6 @@ PresentSkipMode System::GetEffectivePresentSkipMode()
 
 void System::InhibitScreensaver(bool inhibit)
 {
-  if (s_state.disable_screensaver_inhibit)
-    return;
-
   Error error;
   if (!Host::SetScreensaverInhibit(inhibit, &error))
   {
@@ -3974,36 +3729,7 @@ void System::SetTurboEnabled(bool enabled)
   UpdateSpeedLimiterState();
 }
 
-void System::SetRewindState(bool enabled)
-{
-  if (!System::IsValid())
-    return;
-
-  if (!g_settings.rewind_enable)
-  {
-    if (enabled)
-    {
-      Host::AddKeyedOSDMessage(OSDMessageType::Info, "SetRewindState",
-                               TRANSLATE_STR("OSDMessage", "Rewinding is not enabled."));
-    }
-
-    return;
-  }
-
-  if (Achievements::IsHardcoreModeActive() && enabled)
-  {
-    Achievements::ConfirmHardcoreModeDisableAsync("Rewinding", [](bool approved) {
-      if (approved)
-        SetRewindState(true);
-    });
-    return;
-  }
-
-  System::SetRewinding(enabled);
-  UpdateSpeedLimiterState();
-}
-
-void System::DoFrameStep()
+void System::FrameStep()
 {
   if (!IsValid())
     return;
@@ -4012,7 +3738,7 @@ void System::DoFrameStep()
   {
     Achievements::ConfirmHardcoreModeDisableAsync("Frame stepping", [](bool approved) {
       if (approved)
-        DoFrameStep();
+        FrameStep();
     });
     return;
   }
@@ -4226,7 +3952,7 @@ bool System::DumpVRAM(std::string path, Error* error)
     return false;
   }
 
-  return g_gpu.DumpVRAMToFile(path, error);
+  return GPU::DumpVRAMToFile(path, error);
 }
 
 bool System::DumpSPURAM(std::string path, Error* error)
@@ -4287,6 +4013,7 @@ void System::UpdateRunningGame(const std::string& path, CDImage* image, bool boo
   s_state.running_game_hash = 0;
   s_state.running_game_custom_title = false;
 
+  std::optional<Achievements::GameHash> achievements_hash;
   if (!path.empty())
   {
     s_state.running_game_path = path;
@@ -4305,7 +4032,7 @@ void System::UpdateRunningGame(const std::string& path, CDImage* image, bool boo
     if (IsExePath(path))
     {
       if (s_state.running_game_title.empty())
-        s_state.running_game_title = Path::GetFileTitle(FileSystem::GetDisplayNameFromPath(path));
+        s_state.running_game_title = Path::GetFileTitle(path);
 
       s_state.running_game_hash = GetGameHashFromFile(s_state.running_game_path.c_str());
       if (s_state.running_game_hash != 0 && s_state.running_game_serial.empty())
@@ -4346,7 +4073,7 @@ void System::UpdateRunningGame(const std::string& path, CDImage* image, bool boo
       if (image->GetTrack(1).mode != CDImage::TrackMode::Audio)
       {
         std::string id;
-        GetGameDetailsFromImage(image, &id, &s_state.running_game_hash);
+        GetGameDetailsFromImage(image, &id, &s_state.running_game_hash, &achievements_hash);
 
         // Custom serial?
         s_state.running_game_entry = s_state.running_game_serial.empty() ?
@@ -4370,14 +4097,14 @@ void System::UpdateRunningGame(const std::string& path, CDImage* image, bool boo
 
           // Don't display device names for unknown physical discs.
           if (s_state.running_game_title.empty() && !CDImage::IsDeviceName(path.c_str()))
-            s_state.running_game_title = Path::GetFileTitle(FileSystem::GetDisplayNameFromPath(path));
+            s_state.running_game_title = Path::GetFileTitle(path);
         }
       }
       else
       {
         // Audio CDs can get the path from the filename, assuming it's not a physical disc.
         if (!CDImage::IsDeviceName(path.c_str()))
-          s_state.running_game_title = Path::GetFileTitle(FileSystem::GetDisplayNameFromPath(path));
+          s_state.running_game_title = Path::GetFileTitle(path);
       }
     }
   }
@@ -4387,11 +4114,11 @@ void System::UpdateRunningGame(const std::string& path, CDImage* image, bool boo
 
   if (!IsReplayingGPUDump())
   {
+    Achievements::SetGameHash(achievements_hash);
+
     // Cheats are loaded later in Initialize().
     if (!booting)
     {
-      Achievements::GameChanged(image);
-
       const bool had_setting_overrides = Cheats::HasAnySettingOverrides();
       Cheats::ReloadCheats(true, true, false, true, true);
       if (had_setting_overrides)
@@ -4405,7 +4132,15 @@ void System::UpdateRunningGame(const std::string& path, CDImage* image, bool boo
   if (s_state.running_game_serial != prev_serial)
     UpdateSessionTime(prev_serial);
 
-  UpdateRichPresence(booting);
+#ifdef ENABLE_DISCORD_PRESENCE
+  DiscordPresence::Update(booting);
+#endif
+
+  if (!s_state.running_game_title.empty())
+  {
+    INFO_LOG("Game: {} | {} | HASH-{:016X}", s_state.running_game_title, s_state.running_game_serial,
+             s_state.running_game_hash);
+  }
 
   if (!booting)
   {
@@ -4446,6 +4181,8 @@ bool System::PopulateGameListEntryFromCurrentGame(GameList::Entry* entry, Error*
   }
 
   entry->achievements_game_id = Achievements::GetGameID();
+  if (const std::optional<Achievements::GameHash> achievements_hash = Achievements::GetGameHash())
+    entry->achievements_hash = achievements_hash.value();
   entry->is_runtime_populated = true;
 
   return true;
@@ -4517,7 +4254,7 @@ bool System::SwitchMediaSubImage(u32 index)
     const DiscRegion region =
       GameList::GetCustomRegionForPath(image->GetPath()).value_or(GetRegionForImage(image.get()));
     subimage_title = image->GetSubImageTitle(index);
-    title = FileSystem::GetDisplayNameFromPath(image->GetPath());
+    title = Path::GetFileName(image->GetPath());
     UpdateRunningGame(image->GetPath(), image.get(), false);
     okay = CDROM::InsertMedia(image, region, s_state.running_game_serial, s_state.running_game_title,
                               GetCurrentGameSaveTitle(), &error);
@@ -4526,8 +4263,7 @@ bool System::SwitchMediaSubImage(u32 index)
   {
     Host::AddIconOSDMessage(OSDMessageType::Error, "MediaSwitchSubImage", ICON_FA_COMPACT_DISC,
                             fmt::format(TRANSLATE_FS("System", "Failed to switch to subimage {} in '{}': {}."),
-                                        index + 1u, FileSystem::GetDisplayNameFromPath(image->GetPath()),
-                                        error.GetDescription()));
+                                        index + 1u, Path::GetFileName(image->GetPath()), error.GetDescription()));
 
     // restore old disc
     const DiscRegion region =
@@ -4728,13 +4464,15 @@ void System::CheckForSettingsChanges(const Settings& old_settings)
         g_settings.gpu_fifo_size != old_settings.gpu_fifo_size ||
         g_settings.gpu_max_run_ahead != old_settings.gpu_max_run_ahead ||
         g_settings.gpu_force_video_timing != old_settings.gpu_force_video_timing ||
+        g_settings.gpu_disable_textures != old_settings.gpu_disable_textures ||
+        g_settings.gpu_disable_vertex_lighting != old_settings.gpu_disable_vertex_lighting ||
         g_settings.display_crop_mode != old_settings.display_crop_mode ||
         g_settings.display_active_start_offset != old_settings.display_active_start_offset ||
         g_settings.display_active_end_offset != old_settings.display_active_end_offset ||
         g_settings.display_line_start_offset != old_settings.display_line_start_offset ||
         g_settings.display_line_end_offset != old_settings.display_line_end_offset)
     {
-      g_gpu.UpdateSettings(old_settings);
+      GPU::UpdateSettings(old_settings);
     }
 
     if (g_settings.gpu_renderer != old_settings.gpu_renderer)
@@ -4774,7 +4512,6 @@ void System::CheckForSettingsChanges(const Settings& old_settings)
              g_settings.display_fine_crop_amount != old_settings.display_fine_crop_amount ||
              g_settings.display_alignment != old_settings.display_alignment ||
              g_settings.display_rotation != old_settings.display_rotation ||
-             g_settings.display_deinterlacing_mode != old_settings.display_deinterlacing_mode ||
              g_settings.gpu_pgxp_enable != old_settings.gpu_pgxp_enable ||
              g_settings.gpu_pgxp_texture_correction != old_settings.gpu_pgxp_texture_correction ||
              g_settings.gpu_pgxp_color_correction != old_settings.gpu_pgxp_color_correction ||
@@ -4810,7 +4547,7 @@ void System::CheckForSettingsChanges(const Settings& old_settings)
       if (IsPaused())
       {
         // resolution change needs display updated
-        g_gpu.UpdateDisplay(false);
+        GPU::UpdateDisplay(false);
         VideoThread::PresentCurrentFrame();
       }
     }
@@ -4825,15 +4562,12 @@ void System::CheckForSettingsChanges(const Settings& old_settings)
              g_settings.display_show_latency_stats != old_settings.display_show_latency_stats ||
              g_settings.display_show_cpu_usage != old_settings.display_show_cpu_usage ||
              g_settings.display_show_gpu_usage != old_settings.display_show_gpu_usage ||
-             g_settings.display_show_latency_stats != old_settings.display_show_latency_stats ||
              g_settings.display_show_frame_times != old_settings.display_show_frame_times ||
              g_settings.display_show_status_indicators != old_settings.display_show_status_indicators ||
              g_settings.display_show_inputs != old_settings.display_show_inputs ||
              g_settings.display_show_enhancements != old_settings.display_show_enhancements ||
              g_settings.display_auto_resize_window != old_settings.display_auto_resize_window ||
              g_settings.display_screenshot_mode != old_settings.display_screenshot_mode ||
-             g_settings.display_screenshot_format != old_settings.display_screenshot_format ||
-             g_settings.display_screenshot_quality != old_settings.display_screenshot_quality ||
              g_settings.display_osd_scale != old_settings.display_osd_scale ||
              g_settings.display_osd_margin != old_settings.display_osd_margin ||
              g_settings.display_osd_message_duration != old_settings.display_osd_message_duration ||
@@ -4841,6 +4575,7 @@ void System::CheckForSettingsChanges(const Settings& old_settings)
              g_settings.achievements_notification_location != old_settings.achievements_notification_location ||
              g_settings.achievements_indicator_location != old_settings.achievements_indicator_location ||
              g_settings.achievements_challenge_indicator_mode != old_settings.achievements_challenge_indicator_mode ||
+             g_settings.achievements_progress_indicator_mode != old_settings.achievements_progress_indicator_mode ||
              g_settings.achievements_notification_scale != old_settings.achievements_notification_scale ||
              g_settings.achievements_indicator_scale != old_settings.achievements_indicator_scale)
     {
@@ -4863,7 +4598,7 @@ void System::CheckForSettingsChanges(const Settings& old_settings)
         if (IsPaused())
         {
           // and display the current frame on the new device
-          g_gpu.UpdateDisplay(false);
+          GPU::UpdateDisplay(false);
           VideoThread::PresentCurrentFrame();
         }
       }
@@ -5007,9 +4742,9 @@ void System::CheckForSettingsChanges(const Settings& old_settings)
   if (g_settings.enable_discord_presence != old_settings.enable_discord_presence)
   {
     if (g_settings.enable_discord_presence)
-      InitializeDiscordPresence();
+      DiscordPresence::Initialize();
     else
-      ShutdownDiscordPresence();
+      DiscordPresence::Shutdown();
   }
 #endif
 
@@ -5119,6 +4854,10 @@ void System::WarnAboutUnsafeSettings()
     }
     if (g_settings.gpu_wireframe_mode != GPUWireframeMode::Disabled)
       append(TRANSLATE_SV("System", "Wireframe rendering disabled."));
+    if (g_settings.gpu_disable_textures)
+      append(TRANSLATE_SV("System", "Textures enabled."));
+    if (g_settings.gpu_disable_vertex_lighting)
+      append(TRANSLATE_SV("System", "Vertex lighting enabled."));
     if (g_settings.gpu_downsample_mode != GPUDownsampleMode::Disabled)
       append(TRANSLATE_SV("System", "Downsampling disabled."));
     if (g_settings.display_deinterlacing_mode == DisplayDeinterlacingMode::Progressive)
@@ -5149,6 +4888,8 @@ void System::WarnAboutUnsafeSettings()
       append(TRANSLATE_SV("System", "PIO device removed."));
     if (g_settings.pcdrv_enable)
       append(TRANSLATE_SV("System", "PCDrv disabled."));
+    if (g_settings.pcsx_expansion_region_enable)
+      append(TRANSLATE_SV("System", "PCSX Expansion Region disabled."));
     if (g_settings.bios_patch_fast_boot)
       append(TRANSLATE_SV("System", "Fast boot disabled."));
 
@@ -5331,7 +5072,7 @@ bool System::LoadOneRewindState()
   LoadMemoryState((s_state.memory_save_state_count > 1) ? PopMemoryState() : GetFirstMemoryState(), true);
 
   // back in time, need to reset perf counters
-  VideoThread::RunOnThread(&PerformanceCounters::Reset);
+  PerformanceCounters::Reset();
 
   return true;
 }
@@ -5341,9 +5082,14 @@ bool System::IsRewinding()
   return (s_state.rewind_load_frequency >= 0);
 }
 
-void System::SetRewinding(bool enabled)
+void System::SetRewindState(bool enabled)
 {
+  if (!System::IsValid() || !g_settings.rewind_enable)
+    return;
+
   const bool was_enabled = IsRewinding();
+  if (enabled == was_enabled)
+    return;
 
   if (enabled)
   {
@@ -5369,12 +5115,14 @@ void System::SetRewinding(bool enabled)
     if (was_enabled)
     {
       // reset perf counters to avoid the spike
-      VideoThread::RunOnThread(&PerformanceCounters::Reset);
+      PerformanceCounters::Reset();
 
       // and wait the full frequency before filling a new rewind slot
       s_state.rewind_save_counter = s_state.rewind_save_frequency;
     }
   }
+
+  UpdateSpeedLimiterState();
 }
 
 void System::DoRewind()
@@ -5392,7 +5140,7 @@ void System::DoRewind()
   VideoThread::PresentCurrentFrame();
 
   Host::PumpMessagesOnCoreThread();
-  IdlePollUpdate();
+  Core::IdleUpdate();
 
   // get back into it straight away if we're no longer rewinding
   if (!IsRewinding())
@@ -5609,7 +5357,11 @@ bool System::IsFastForwardingBoot()
 
 u8 System::GetAudioOutputVolume()
 {
-  return g_settings.GetAudioOutputVolume(IsRunningAtNonStandardSpeed());
+  return g_settings.audio_output_muted ?
+           0 :
+           (((s_state.target_speed == 0.0 || s_state.target_speed > 1.0f) && !s_state.syncing_to_host) ?
+              g_settings.audio_fast_forward_volume :
+              g_settings.audio_output_volume);
 }
 
 void System::UpdateVolume()
@@ -5620,27 +5372,82 @@ void System::UpdateVolume()
   SPU::GetOutputStream().SetOutputVolume(GetAudioOutputVolume());
 }
 
-std::string System::GetScreenshotPath(const char* extension)
+std::string System::GetNewCapturePath(const std::string& directory, const std::string_view title,
+                                      CaptureFileNameFormat format, std::string_view extension)
 {
-  const std::string sanitized_name = Path::SanitizeFileName(System::GetGameTitle());
-  std::string basename;
-  if (sanitized_name.empty())
-    basename = fmt::format("{}", GetTimestampStringForFileName());
-  else
-    basename = fmt::format("{} {}", sanitized_name, GetTimestampStringForFileName());
+  // don't calculate if unnecessary
+  std::string sanitized_title;
+  if (!title.empty() &&
+      (format == CaptureFileNameFormat::TitleAndTimestamp || format >= CaptureFileNameFormat::TimestampInFolder))
+  {
+    sanitized_title = Path::SanitizeFileName(title);
+  }
 
-  std::string path = fmt::format("{}" FS_OSPATH_SEPARATOR_STR "{}.{}", EmuFolders::Screenshots, basename, extension);
+  std::string path;
+  if (format >= CaptureFileNameFormat::TimestampInFolder && !sanitized_title.empty())
+  {
+    path = Path::Combine(directory, sanitized_title);
+
+    if (Error error; !FileSystem::EnsureDirectoryExists(path.c_str(), false, &error)) [[unlikely]]
+    {
+      WARNING_LOG("Failed to create capture subdirectory '{}': {}", path, error.GetDescription());
+      path = directory;
+    }
+  }
+  else
+  {
+    path = directory;
+  }
+
+  path += FS_OSPATH_SEPARATOR_CHARACTER;
+
+  if ((format == CaptureFileNameFormat::TitleAndTimestamp ||
+       format == CaptureFileNameFormat::TitleAndTimestampInFolder) &&
+      !sanitized_title.empty())
+  {
+    path += sanitized_title;
+    path += ' ';
+  }
+
+  fmt::format_to(std::back_inserter(path), "{:%Y-%m-%d-%H-%M-%S}",
+                 Common::LocalTime(std::time(nullptr)).value_or(std::tm{}));
+
+  if (!extension.empty())
+  {
+    path += '.';
+    path += extension;
+  }
 
   // handle quick screenshots to the same filename
   u32 next_suffix = 1;
   while (FileSystem::FileExists(path.c_str()))
   {
-    path =
-      fmt::format("{}" FS_OSPATH_SEPARATOR_STR "{} ({}).{}", EmuFolders::Screenshots, basename, next_suffix, extension);
+    // remove and re-add the extension
+    if (!extension.empty())
+      path.erase(path.rfind('.'));
+
+    // and the suffix if this isn't the first
+    if (next_suffix > 1)
+      path.erase(path.rfind(' '));
+
+    if (!extension.empty())
+      fmt::format_to(std::back_inserter(path), " ({}).{}", next_suffix, extension);
+    else
+      fmt::format_to(std::back_inserter(path), " ({})", next_suffix);
+
     next_suffix++;
   }
 
   return path;
+}
+
+std::string System::GetNewMediaCapturePath(const std::string_view title, const std::string_view container)
+{
+  const CaptureFileNameFormat format =
+    Settings::ParseCaptureFileNameFormat(Core::GetBaseTinyStringSettingValue("MediaCapture", "FilenameFormat"))
+      .value_or(Settings::DEFAULT_MEDIA_CAPTURE_FILENAME_FORMAT);
+
+  return GetNewCapturePath(EmuFolders::Videos, title, format, container);
 }
 
 void System::SaveScreenshot(const char* path, DisplayScreenshotMode mode, DisplayScreenshotFormat format, u8 quality)
@@ -5650,7 +5457,12 @@ void System::SaveScreenshot(const char* path, DisplayScreenshotMode mode, Displa
 
   std::string auto_path;
   if (!path || path[0] == '\0')
-    path = (auto_path = GetScreenshotPath(Settings::GetDisplayScreenshotFormatExtension(format))).c_str();
+  {
+    path = (auto_path = GetNewCapturePath(EmuFolders::Screenshots, s_state.running_game_title,
+                                          g_settings.display_screenshot_filename_format,
+                                          Settings::GetDisplayScreenshotFormatExtension(format)))
+             .c_str();
+  }
 
   GPUBackend::RenderScreenshotToFile(path, mode, quality, true);
 }
@@ -5662,9 +5474,13 @@ bool System::StartRecordingGPUDump(const char* path /*= nullptr*/, u32 num_frame
 
   std::string auto_path;
   if (!path)
-    path = (auto_path = GetScreenshotPath("psxgpu")).c_str();
+  {
+    path = (auto_path = GetNewCapturePath(EmuFolders::Screenshots, s_state.running_game_title,
+                                          g_settings.display_screenshot_filename_format, "psxgpu"))
+             .c_str();
+  }
 
-  return g_gpu.StartRecordingGPUDump(path, num_frames);
+  return GPU::StartRecordingGPUDump(path, num_frames);
 }
 
 void System::StopRecordingGPUDump()
@@ -5672,7 +5488,7 @@ void System::StopRecordingGPUDump()
   if (!IsValid())
     return;
 
-  g_gpu.StopRecordingGPUDump();
+  GPU::StopRecordingGPUDump();
 }
 
 static std::string_view GetCaptureTypeForMessage(bool capture_video, bool capture_audio)
@@ -5687,23 +5503,6 @@ MediaCapture* System::GetMediaCapture()
   return s_state.media_capture.get();
 }
 
-std::string System::GetNewMediaCapturePath(const std::string_view title, const std::string_view container)
-{
-  const std::string sanitized_name = Path::SanitizeFileName(title);
-  std::string path;
-  if (sanitized_name.empty())
-  {
-    path = Path::Combine(EmuFolders::Videos, fmt::format("{}.{}", GetTimestampStringForFileName(), container));
-  }
-  else
-  {
-    path = Path::Combine(EmuFolders::Videos,
-                         fmt::format("{} {}.{}", sanitized_name, GetTimestampStringForFileName(), container));
-  }
-
-  return path;
-}
-
 bool System::StartMediaCapture(std::string path)
 {
   const bool capture_video = Core::GetBoolSettingValue("MediaCapture", "VideoCapture", true);
@@ -5713,9 +5512,10 @@ bool System::StartMediaCapture(std::string path)
   if (capture_video && Core::GetBoolSettingValue("MediaCapture", "VideoAutoSize", false))
   {
     // need to query this on the GPU thread
-    VideoThread::RunOnBackend(
-      [path = std::move(path), capture_audio, mode = g_settings.display_screenshot_mode](GPUBackend* backend) mutable {
-        if (!backend)
+    VideoThread::RunOnThread(
+      [path = std::move(path), capture_audio, mode = g_settings.display_screenshot_mode]() mutable {
+        GPUBackend* const backend = VideoThread::GetGPUBackend();
+        if (!backend) [[unlikely]]
           return;
 
         // Prefer aligning for non-window size.
@@ -5728,8 +5528,7 @@ bool System::StartMediaCapture(std::string path)
         Host::RunOnCoreThread([path = std::move(path), capture_audio, video_width, video_height]() mutable {
           StartMediaCapture(std::move(path), true, capture_audio, video_width, video_height);
         });
-      },
-      false, true);
+      });
     return true;
   }
 
@@ -5760,9 +5559,9 @@ bool System::StartMediaCapture(std::string path, bool capture_video, bool captur
 
   if (path.empty())
   {
-    path =
-      GetNewMediaCapturePath(GetGameTitle(), Core::GetStringSettingValue("MediaCapture", "Container",
-                                                                         Settings::DEFAULT_MEDIA_CAPTURE_CONTAINER));
+    path = GetNewMediaCapturePath(
+      s_state.running_game_title,
+      Core::GetTinyStringSettingValue("MediaCapture", "Container", Settings::DEFAULT_MEDIA_CAPTURE_CONTAINER));
   }
 
   const MediaCaptureBackend backend =
@@ -5777,7 +5576,7 @@ bool System::StartMediaCapture(std::string path, bool capture_video, bool captur
         capture_video, Core::GetSmallStringSettingValue("MediaCapture", "VideoCodec"),
         Core::GetUIntSettingValue("MediaCapture", "VideoBitrate", Settings::DEFAULT_MEDIA_CAPTURE_VIDEO_BITRATE),
         Core::GetBoolSettingValue("MediaCapture", "VideoCodecUseArgs", false) ?
-          Core::GetStringSettingValue("MediaCapture", "AudioCodecArgs") :
+          Core::GetStringSettingValue("MediaCapture", "VideoCodecArgs") :
           std::string(),
         capture_audio, Core::GetSmallStringSettingValue("MediaCapture", "AudioCodec"),
         Core::GetUIntSettingValue("MediaCapture", "AudioBitrate", Settings::DEFAULT_MEDIA_CAPTURE_AUDIO_BITRATE),
@@ -6034,8 +5833,7 @@ std::string System::GetGameMemoryCardPath(std::string_view custom_title, std::st
 
     case MemoryCardType::PerGameFileTitle:
     {
-      ret = g_settings.GetGameMemoryCardPath(
-        Path::SanitizeFileName(Path::GetFileTitle(FileSystem::GetDisplayNameFromPath(path))), slot);
+      ret = g_settings.GetGameMemoryCardPath(Path::SanitizeFileName(Path::GetFileTitle(path)), slot);
     }
     break;
     default:
@@ -6125,8 +5923,7 @@ std::string System::GetMemoryCardPathForSlot(u32 slot, MemoryCardType type)
 
     case MemoryCardType::PerGameFileTitle:
     {
-      const std::string display_name(FileSystem::GetDisplayNameFromPath(s_state.running_game_path));
-      const std::string_view file_title(Path::GetFileTitle(display_name));
+      const std::string_view file_title(Path::GetFileTitle(s_state.running_game_path));
       if (file_title.empty())
       {
         Host::AddIconOSDMessage(OSDMessageType::Info, std::move(message_key), ICON_PF_MEMORY_CARD,
@@ -6254,8 +6051,8 @@ void System::RequestDisplaySize(float scale /*= 0.0f*/)
   {
     const WindowInfo& wi = VideoThread::GetRenderWindowInfo();
     requested_size = GPU::CalculateRenderWindowSize(
-      g_settings.display_fine_crop_mode, g_settings.display_fine_crop_amount, g_gpu.ComputePixelAspectRatio(),
-      GSVector2(g_gpu.GetCRTCVideoSize()), GSVector2(g_gpu.GetCRTCVRAMSourceRect().rsize()) * scale,
+      g_settings.display_fine_crop_mode, g_settings.display_fine_crop_amount, GPU::ComputePixelAspectRatio(),
+      GSVector2(GPU::GetCRTCVideoSize()), GSVector2(GPU::GetCRTCVRAMSourceRect().rsize()) * scale,
       GSVector2(GSVector2i(wi.surface_width, wi.surface_height)));
   }
 
@@ -6303,7 +6100,7 @@ void System::UpdateGTEAspectRatio()
     {
       // Pre-apply the native aspect ratio correction to the window size.
       // MatchWindow does not correct the display aspect ratio, so we need to apply it here.
-      const float correction = g_gpu.ComputeAspectRatioCorrection();
+      const float correction = GPU::ComputeAspectRatioCorrection();
       custom_num =
         static_cast<u32>(std::max(std::round(static_cast<float>(main_window_info.surface_width) / correction), 1.0f));
       custom_denom = std::max<u32>(main_window_info.surface_height, 1u);
@@ -6324,7 +6121,7 @@ void System::UpdateAutomaticResolutionScale()
   if (!IsValidOrInitializing() || !g_settings.gpu_automatic_resolution_scale)
     return;
 
-  const u32 new_scale = g_gpu.CalculateAutomaticResolutionScale();
+  const u32 new_scale = GPU::CalculateAutomaticResolutionScale();
   if (g_settings.gpu_resolution_scale == new_scale)
     return;
 
@@ -6336,7 +6133,7 @@ void System::UpdateAutomaticResolutionScale()
   if (IsPaused())
   {
     // resolution change needs display updated
-    g_gpu.UpdateDisplay(false);
+    GPU::UpdateDisplay(false);
     VideoThread::PresentCurrentFrame();
   }
 }
@@ -6347,7 +6144,8 @@ bool System::ChangeGPUDump(std::string new_path)
   std::unique_ptr<GPUDump::Player> new_dump = GPUDump::Player::Open(std::move(new_path), &error);
   if (!new_dump)
   {
-    Host::ReportErrorAsync("Error", fmt::format(TRANSLATE_FS("Failed to change GPU dump: {}", error.GetDescription())));
+    Host::ReportErrorAsync(
+      "Error", fmt::format(TRANSLATE_FS("System", "Failed to change GPU dump: {}"), error.GetDescription()));
     return false;
   }
 
@@ -6374,7 +6172,7 @@ std::string System::GetImageForLoadingScreen(const std::string& game_path,
 
     if (fallback_to_achievement_game_icon && entry->achievements_game_id != 0)
     {
-      path = GameList::GetAchievementGameBadgePath(entry->achievements_game_id);
+      path = Achievements::GetGameBadgeURL(entry->achievements_game_id);
       if (!path.empty())
         return path;
     }
@@ -6403,184 +6201,3 @@ u64 System::GetSessionPlayedTime()
   const Timer::Value ctime = Timer::GetCurrentValue();
   return static_cast<u64>(std::round(Timer::ConvertValueToSeconds(ctime - s_state.session_start_time)));
 }
-
-SocketMultiplexer* System::GetSocketMultiplexer()
-{
-#ifdef ENABLE_SOCKET_MULTIPLEXER
-  if (s_state.socket_multiplexer)
-    return s_state.socket_multiplexer.get();
-
-  Error error;
-  s_state.socket_multiplexer = SocketMultiplexer::Create(&error);
-  if (s_state.socket_multiplexer)
-    INFO_LOG("Created socket multiplexer.");
-  else
-    ERROR_LOG("Failed to create socket multiplexer: {}", error.GetDescription());
-
-  return s_state.socket_multiplexer.get();
-#else
-  ERROR_LOG("This build does not support sockets.");
-  return nullptr;
-#endif
-}
-
-void System::ReleaseSocketMultiplexer()
-{
-#ifdef ENABLE_SOCKET_MULTIPLEXER
-  if (!s_state.socket_multiplexer || s_state.socket_multiplexer->HasAnyOpenSockets())
-    return;
-
-  INFO_LOG("Destroying socket multiplexer.");
-  s_state.socket_multiplexer.reset();
-#endif
-}
-
-#ifdef ENABLE_DISCORD_PRESENCE
-
-#include "discord_rpc.h"
-
-#define DISCORD_RPC_FUNCTIONS(X)                                                                                       \
-  X(Discord_Initialize)                                                                                                \
-  X(Discord_Shutdown)                                                                                                  \
-  X(Discord_RunCallbacks)                                                                                              \
-  X(Discord_UpdatePresence)                                                                                            \
-  X(Discord_ClearPresence)
-
-namespace dyn_libs {
-static bool OpenDiscordRPC(Error* error);
-static void CloseDiscordRPC();
-
-static DynamicLibrary s_discord_rpc_library;
-
-#define ADD_FUNC(F) static decltype(&::F) F;
-DISCORD_RPC_FUNCTIONS(ADD_FUNC)
-#undef ADD_FUNC
-} // namespace dyn_libs
-
-bool dyn_libs::OpenDiscordRPC(Error* error)
-{
-  if (s_discord_rpc_library.IsOpen())
-    return true;
-
-  const std::string libname = DynamicLibrary::GetVersionedFilename("discord-rpc");
-  if (!s_discord_rpc_library.Open(libname.c_str(), error))
-  {
-    Error::AddPrefix(error, "Failed to load discord-rpc: ");
-    return false;
-  }
-
-#define LOAD_FUNC(F)                                                                                                   \
-  if (!s_discord_rpc_library.GetSymbol(#F, &F))                                                                        \
-  {                                                                                                                    \
-    Error::SetStringFmt(error, "Failed to find function {}", #F);                                                      \
-    CloseDiscordRPC();                                                                                                 \
-    return false;                                                                                                      \
-  }
-  DISCORD_RPC_FUNCTIONS(LOAD_FUNC)
-#undef LOAD_FUNC
-
-  return true;
-}
-
-void dyn_libs::CloseDiscordRPC()
-{
-  if (!s_discord_rpc_library.IsOpen())
-    return;
-
-#define UNLOAD_FUNC(F) F = nullptr;
-  DISCORD_RPC_FUNCTIONS(UNLOAD_FUNC)
-#undef UNLOAD_FUNC
-
-  s_discord_rpc_library.Close();
-}
-
-void System::InitializeDiscordPresence()
-{
-  if (s_state.discord_presence_active)
-    return;
-
-  Error error;
-  if (!dyn_libs::OpenDiscordRPC(&error))
-  {
-    ERROR_LOG("Failed to open discord-rpc: {}", error.GetDescription());
-    return;
-  }
-
-  DiscordEventHandlers handlers = {};
-  dyn_libs::Discord_Initialize("705325712680288296", &handlers, 0, nullptr);
-  s_state.discord_presence_active = true;
-
-  UpdateRichPresence(true);
-}
-
-void System::ShutdownDiscordPresence()
-{
-  if (!s_state.discord_presence_active)
-    return;
-
-  dyn_libs::Discord_ClearPresence();
-  dyn_libs::Discord_Shutdown();
-  dyn_libs::CloseDiscordRPC();
-
-  s_state.discord_presence_active = false;
-}
-
-void System::UpdateRichPresence(bool update_session_time)
-{
-  if (!s_state.discord_presence_active)
-    return;
-
-  if (update_session_time)
-    s_state.discord_presence_time_epoch = std::time(nullptr);
-
-  // https://discord.com/developers/docs/rich-presence/how-to#updating-presence-update-presence-payload-fields
-  DiscordRichPresence rp = {};
-  rp.largeImageKey = "duckstation_logo";
-  rp.largeImageText = "DuckStation PS1/PSX Emulator";
-  rp.startTimestamp = s_state.discord_presence_time_epoch;
-
-  TinyString game_details("No Game Running");
-  if (IsValidOrInitializing())
-  {
-    // Use disc set name if it's not a custom title.
-    if (!s_state.running_game_custom_title && s_state.running_game_entry && s_state.running_game_entry->disc_set)
-    {
-      game_details = s_state.running_game_entry->disc_set->GetDisplayTitle(true);
-    }
-    else
-    {
-      if (s_state.running_game_title.empty())
-        game_details = "Unknown Game";
-      else
-        game_details = std::string_view(s_state.running_game_title);
-    }
-  }
-  rp.details = game_details.c_str();
-
-  const auto lock = Achievements::GetLock();
-
-  std::string state_string;
-  if (Achievements::HasRichPresence())
-    rp.state = (state_string = StringUtil::Ellipsise(Achievements::GetRichPresenceString(), 128)).c_str();
-
-  if (const std::string& icon_url = Achievements::GetGameIconURL(); !icon_url.empty())
-    rp.largeImageKey = icon_url.c_str();
-
-  dyn_libs::Discord_UpdatePresence(&rp);
-}
-
-void System::PollDiscordPresence()
-{
-  if (!s_state.discord_presence_active)
-    return;
-
-  dyn_libs::Discord_RunCallbacks();
-}
-
-#else
-
-void System::UpdateRichPresence(bool update_session_time)
-{
-}
-
-#endif

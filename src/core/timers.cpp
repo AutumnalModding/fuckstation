@@ -64,10 +64,10 @@ struct CounterState
 
 } // namespace
 
-static void UpdateCountingEnabled(CounterState& cs);
+static void UpdateCountingEnabled(u32 index, CounterState& cs);
 static void CheckForIRQ(u32 index, u32 old_counter);
 
-static void AddSysClkTicks(void*, TickCount sysclk_ticks, TickCount ticks_late);
+static void AddSysClkTicks(void*, TickCount sysclk_ticks);
 
 static TickCount GetTicksUntilNextInterrupt();
 static void UpdateSysClkEvent();
@@ -198,7 +198,7 @@ void Timers::SetGate(u32 timer, bool state)
       UnreachableCode();
   }
 
-  UpdateCountingEnabled(cs);
+  UpdateCountingEnabled(timer, cs);
   UpdateSysClkEvent();
 }
 
@@ -274,7 +274,7 @@ void Timers::CheckForIRQ(u32 timer, u32 old_counter)
   }
 }
 
-void Timers::AddSysClkTicks(void*, TickCount sysclk_ticks, TickCount ticks_late)
+void Timers::AddSysClkTicks(void*, TickCount sysclk_ticks)
 {
   sysclk_ticks = System::UnscaleTicksToOverclock(sysclk_ticks, &s_state.sysclk_ticks_carry);
 
@@ -315,8 +315,8 @@ u32 Timers::ReadRegister(u32 offset)
       if (timer_index < 2 && cs.external_counting_enabled)
       {
         // timers 0/1 depend on the GPU
-        if (timer_index == 0 || g_gpu.IsCRTCScanlinePending())
-          g_gpu.SynchronizeCRTC();
+        if (timer_index == 0 || GPU::IsCRTCScanlinePending())
+          GPU::SynchronizeCRTC();
       }
 
       s_state.sysclk_event.InvokeEarly();
@@ -329,8 +329,8 @@ u32 Timers::ReadRegister(u32 offset)
       if (timer_index < 2 && cs.external_counting_enabled)
       {
         // timers 0/1 depend on the GPU
-        if (timer_index == 0 || g_gpu.IsCRTCScanlinePending())
-          g_gpu.SynchronizeCRTC();
+        if (timer_index == 0 || GPU::IsCRTCScanlinePending())
+          GPU::SynchronizeCRTC();
       }
 
       s_state.sysclk_event.InvokeEarly();
@@ -365,8 +365,8 @@ void Timers::WriteRegister(u32 offset, u32 value)
   if (timer_index < 2 && cs.external_counting_enabled)
   {
     // timers 0/1 depend on the GPU
-    if (timer_index == 0 || g_gpu.IsCRTCScanlinePending())
-      g_gpu.SynchronizeCRTC();
+    if (timer_index == 0 || GPU::IsCRTCScanlinePending())
+      GPU::SynchronizeCRTC();
   }
 
   s_state.sysclk_event.InvokeEarly();
@@ -391,6 +391,9 @@ void Timers::WriteRegister(u32 offset, u32 value)
 
       DEBUG_LOG("Timer {} write mode register 0x{:04X}", timer_index, value);
       cs.mode.bits = (value & WRITE_MASK) | (cs.mode.bits & ~WRITE_MASK);
+
+      // Interrupt is cleared after any mode write.
+      cs.mode.interrupt_request_n = true;
 
       // Why is this extra assignment here? MSVC compiler bugs it seems.
       // Without the copy in the local variable, when compiling with LTCG, it generates:
@@ -429,7 +432,7 @@ void Timers::WriteRegister(u32 offset, u32 value)
       InterruptController::SetLineState(
         static_cast<InterruptController::IRQ>(static_cast<u32>(InterruptController::IRQ::TMR0) + timer_index), false);
 
-      UpdateCountingEnabled(cs);
+      UpdateCountingEnabled(timer_index, cs);
       CheckForIRQ(timer_index, cs.counter);
       UpdateSysClkEvent();
     }
@@ -451,32 +454,41 @@ void Timers::WriteRegister(u32 offset, u32 value)
   }
 }
 
-void Timers::UpdateCountingEnabled(CounterState& cs)
+void Timers::UpdateCountingEnabled(u32 index, CounterState& cs)
 {
-  if (cs.mode.sync_enable)
+  if (index != 2)
   {
-    switch (cs.mode.sync_mode)
+    if (cs.mode.sync_enable)
     {
-      case SyncMode::PauseWhileGateActive:
-        cs.counting_enabled = !cs.gate;
-        break;
+      switch (cs.mode.sync_mode)
+      {
+        case SyncMode::PauseWhileGateActive:
+          cs.counting_enabled = !cs.gate;
+          break;
 
-      case SyncMode::ResetOnGateEnd:
-        cs.counting_enabled = true;
-        break;
+        case SyncMode::ResetOnGateEnd:
+          cs.counting_enabled = true;
+          break;
 
-      case SyncMode::ResetAndRunOnGateStart:
-      case SyncMode::FreeRunOnGateEnd:
-        cs.counting_enabled = cs.gate;
-        break;
+        case SyncMode::ResetAndRunOnGateStart:
+        case SyncMode::FreeRunOnGateEnd:
+          cs.counting_enabled = cs.gate;
+          break;
 
-      default:
-        UnreachableCode();
+        default:
+          UnreachableCode();
+      }
+    }
+    else
+    {
+      cs.counting_enabled = true;
     }
   }
   else
   {
-    cs.counting_enabled = true;
+    // Timer 2 doesn't have a gate source. With sync enabled, modes 0/3 stop counting and 1/2 free-run.
+    cs.counting_enabled = (!cs.mode.sync_enable || cs.mode.sync_mode == SyncMode::ResetOnGateEnd ||
+                           cs.mode.sync_mode == SyncMode::ResetAndRunOnGateStart);
   }
 
   cs.external_counting_enabled = cs.use_external_clock && cs.counting_enabled;
@@ -489,7 +501,7 @@ TickCount Timers::GetTicksUntilNextInterrupt()
   {
     const CounterState& cs = s_state.counters[i];
     if (!cs.counting_enabled || (i < 2 && cs.external_counting_enabled) ||
-        (!cs.mode.irq_at_target && !cs.mode.irq_on_overflow && (cs.mode.irq_repeat || !cs.irq_done)))
+        (!cs.mode.irq_at_target && !cs.mode.irq_on_overflow) || (!cs.mode.irq_repeat && cs.irq_done))
     {
       continue;
     }

@@ -10,15 +10,19 @@
 #include "core/bus.h"
 #include "core/cpu_code_cache.h"
 #include "core/cpu_core_private.h"
+#include "core/cpu_disasm.h"
 
 #include "common/assert.h"
+#include "common/error.h"
 #include "common/log.h"
+#include "common/small_string.h"
 
 #include <QtCore/QSignalBlocker>
 #include <QtGui/QCursor>
 #include <QtGui/QFontDatabase>
 #include <QtWidgets/QAbstractScrollArea>
 #include <QtWidgets/QFileDialog>
+#include <QtWidgets/QInputDialog>
 
 #include "moc_debuggerwindow.cpp"
 
@@ -300,10 +304,10 @@ void DebuggerWindow::onCodeViewContextMenuRequested(const QPoint& pt)
   menu->addAction(QStringLiteral("0x%1").arg(static_cast<uint>(address), 8, 16, QChar('0')))->setEnabled(false);
   menu->addSeparator();
 
-  menu->addAction(QIcon::fromTheme("debug-toggle-breakpoint"_L1), tr("Toggle &Breakpoint"),
+  menu->addAction(QIcon(u":/icons/monochrome/svg/debug-toggle-breakpoint.svg"_s), tr("Toggle &Breakpoint"),
                   [this, address]() { toggleBreakpoint(address); });
 
-  menu->addAction(QIcon::fromTheme("debugger-go-to-cursor"_L1), tr("&Run To Cursor"), [address]() {
+  menu->addAction(QIcon(u":/icons/monochrome/svg/debugger-go-to-cursor.svg"_s), tr("&Run To Cursor"), [address]() {
     Host::RunOnCoreThread([address]() {
       CPU::AddBreakpoint(CPU::BreakpointType::Execute, address, true, true);
       g_core_thread->setSystemPaused(false);
@@ -311,13 +315,90 @@ void DebuggerWindow::onCodeViewContextMenuRequested(const QPoint& pt)
   });
 
   menu->addSeparator();
-  menu->addAction(QIcon::fromTheme("debugger-go-to-address"_L1), tr("View in &Dump"),
+
+  const bool can_patch = QtHost::IsSystemPaused();
+  QAction* const patch_action =
+    menu->addAction(QIcon(u":/icons/monochrome/svg/paint-brush-line.svg"_s), tr("&Patch Instruction"),
+                    [this, address]() { startPatchInstruction(address); });
+  patch_action->setEnabled(can_patch);
+
+  QAction* const nop_action = menu->addAction(QIcon(u":/icons/monochrome/svg/trash-fill.svg"_s), tr("&Nop Instruction"),
+                                              [this, address]() { patchInstruction(address, 0); });
+  nop_action->setEnabled(can_patch);
+
+  menu->addSeparator();
+  menu->addAction(QIcon(u":/icons/monochrome/svg/debugger-go-to-address.svg"_s), tr("View in &Dump"),
                   [this, address]() { scrollToMemoryAddress(address); });
 
-  menu->addAction(QIcon::fromTheme("debug-trace-line"_L1), tr("&Follow Load/Store"),
+  menu->addAction(QIcon(u":/icons/monochrome/svg/debug-trace-line.svg"_s), tr("&Follow Load/Store"),
                   [this, address]() { tryFollowLoadStore(address); });
 
   menu->popup(m_ui.codeView->mapToGlobal(pt));
+}
+
+void DebuggerWindow::startPatchInstruction(VirtualMemoryAddress address)
+{
+  u32 instruction_bits;
+  if (!CPU::SafeReadInstruction(address, &instruction_bits))
+  {
+    QtUtils::AsyncMessageBox(
+      this, QMessageBox::Critical, windowTitle(),
+      tr("Failed to read the instruction at 0x%1.").arg(static_cast<uint>(address), 8, 16, QChar('0')));
+    return;
+  }
+
+  SmallString disassembly;
+  CPU::DisassembleInstruction(&disassembly, address, instruction_bits);
+  QString text = QtUtils::StringViewToQString(disassembly);
+  for (;;)
+  {
+    bool accepted;
+    text = QInputDialog::getText(
+      this, tr("Patch Instruction"),
+      tr("Enter replacement instruction for 0x%1:").arg(static_cast<uint>(address), 8, 16, QChar('0')),
+      QLineEdit::Normal, text, &accepted);
+    if (!accepted)
+      return;
+
+    const QByteArray text_utf8 = text.toUtf8();
+    u32 replacement_bits;
+    Error error;
+    if (CPU::AssembleInstruction(&replacement_bits, address, std::string_view(text_utf8.constData(), text_utf8.size()),
+                                 &error))
+    {
+      patchInstruction(address, replacement_bits);
+      return;
+    }
+
+    QtUtils::MessageBoxCritical(this, tr("Invalid Instruction"), QtUtils::StringViewToQString(error.GetDescription()));
+  }
+}
+
+void DebuggerWindow::patchInstruction(VirtualMemoryAddress address, u32 bits)
+{
+  Host::RunOnCoreThread([address, bits]() {
+    const bool success = CPU::SafeWriteMemoryWord(address, bits);
+    if (success)
+      CPU::InvalidateICacheAt(address);
+
+    Host::RunOnUIThread([address, success]() {
+      DebuggerWindow* const win = g_main_window->getDebuggerWindow();
+      if (!win)
+        return;
+
+      if (!success)
+      {
+        QtUtils::AsyncMessageBox(
+          win, QMessageBox::Critical, win->windowTitle(),
+          tr("Failed to write patched instruction to 0x%1.").arg(static_cast<uint>(address), 8, 16, QChar('0')));
+        return;
+      }
+
+      win->m_ui.codeView->refreshView();
+      win->m_ui.memoryView->forceRefresh();
+      win->reportMessage(tr("Patched instruction at 0x%1.").arg(static_cast<uint>(address), 8, 16, QChar('0')));
+    });
+  });
 }
 
 void DebuggerWindow::onMemorySearchTriggered()
@@ -459,6 +540,10 @@ void DebuggerWindow::setupAdditionalUi()
 
   setCentralWidget(nullptr);
   delete m_ui.centralwidget;
+
+#ifdef __APPLE__
+  QtUtils::SetIsMaskForMonochromeMenuBarActionIcons(menuBar());
+#endif
 }
 
 void DebuggerWindow::connectSignals()
@@ -495,6 +580,9 @@ void DebuggerWindow::connectSignals()
   connect(m_ui.memoryRegionScratchpad, &QRadioButton::clicked,
           [this]() { setMemoryViewRegion(Bus::MemoryRegion::Scratchpad); });
   connect(m_ui.memoryRegionBIOS, &QRadioButton::clicked, [this]() { setMemoryViewRegion(Bus::MemoryRegion::BIOS); });
+  connect(m_ui.memoryRegionVRAM, &QRadioButton::clicked, [this]() { setMemoryViewRegion(Bus::MemoryRegion::VRAM); });
+  connect(m_ui.memoryRegionSPURAM, &QRadioButton::clicked,
+          [this]() { setMemoryViewRegion(Bus::MemoryRegion::SPURAM); });
 
   connect(m_ui.memorySearch, &QPushButton::clicked, this, &DebuggerWindow::onMemorySearchTriggered);
   connect(m_ui.memorySearchString, &QLineEdit::textChanged, this, &DebuggerWindow::onMemorySearchStringChanged);
@@ -569,7 +657,7 @@ void DebuggerWindow::setMemoryViewRegion(Bus::MemoryRegion region)
 
   static constexpr auto edit_ram_callback = [](size_t offset, size_t count) {
     // shouldn't happen
-    if (offset > Bus::g_ram_size)
+    if (offset >= Bus::g_ram_size)
       return;
 
     const u32 start_page = static_cast<u32>(offset) >> HOST_PAGE_SHIFT;
@@ -595,6 +683,8 @@ void DebuggerWindow::setMemoryViewRegion(Bus::MemoryRegion region)
   m_ui.memoryRegionEXP1->setChecked(region == Bus::MemoryRegion::EXP1);
   m_ui.memoryRegionScratchpad->setChecked(region == Bus::MemoryRegion::Scratchpad);
   m_ui.memoryRegionBIOS->setChecked(region == Bus::MemoryRegion::BIOS);
+  m_ui.memoryRegionVRAM->setChecked(region == Bus::MemoryRegion::VRAM);
+  m_ui.memoryRegionSPURAM->setChecked(region == Bus::MemoryRegion::SPURAM);
 
   m_ui.memoryView->repaint();
 }
@@ -646,6 +736,16 @@ bool DebuggerWindow::tryFollowLoadStore(VirtualMemoryAddress address)
 
 bool DebuggerWindow::scrollToMemoryAddress(VirtualMemoryAddress address)
 {
+  // Keep the existing region if we're viewing VRAM/SPU RAM.
+  if (m_ui.memoryRegionVRAM->isChecked() || m_ui.memoryRegionSPURAM->isChecked())
+  {
+    if (address >= m_ui.memoryView->dataSize())
+      return false;
+
+    m_ui.memoryView->scrollToOffset(address);
+    return true;
+  }
+
   const PhysicalMemoryAddress phys_address = CPU::VirtualAddressToPhysical(address);
   std::optional<Bus::MemoryRegion> region = Bus::GetMemoryRegionForAddress(phys_address);
   if (!region.has_value())
@@ -753,7 +853,7 @@ void Host::ReportDebuggerEvent(CPU::DebuggerEvent event, std::string_view messag
 {
   if (event == CPU::DebuggerEvent::Message)
   {
-    if (!message.empty())
+    if (message.empty())
       return;
 
     INFO_LOG("Debugger message: {}", message);

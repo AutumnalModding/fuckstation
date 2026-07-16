@@ -11,11 +11,12 @@
 #include "qtwindowinfo.h"
 #include "settingswindow.h"
 #include "setupwizarddialog.h"
+#include "svgwidget.h"
 
 #include "core/achievements.h"
 #include "core/bus.h"
+#include "core/cdrom.h"
 #include "core/cheats.h"
-#include "core/controller.h"
 #include "core/core.h"
 #include "core/core_private.h"
 #include "core/fullscreenui.h"
@@ -27,29 +28,24 @@
 #include "core/gpu_backend.h"
 #include "core/gpu_hw_texture_cache.h"
 #include "core/host.h"
-#include "core/imgui_overlays.h"
-#include "core/memory_card.h"
 #include "core/performance_counters.h"
-#include "core/spu.h"
 #include "core/system.h"
 #include "core/system_private.h"
 #include "core/video_presenter.h"
 #include "core/video_thread.h"
+#include "core/video_thread_private.h"
 
 #include "common/assert.h"
 #include "common/crash_handler.h"
 #include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
-#include "common/minizip_helpers.h"
 #include "common/path.h"
 #include "common/scoped_guard.h"
 #include "common/string_util.h"
-#include "common/task_queue.h"
 #include "common/threading.h"
 
-#include "util/audio_stream.h"
-#include "util/cd_image.h"
+#include "util/http_cache.h"
 #include "util/http_downloader.h"
 #include "util/imgui_manager.h"
 #include "util/ini_settings_interface.h"
@@ -68,11 +64,9 @@
 #include <QtCore/QFile>
 #include <QtCore/QTimer>
 #include <QtCore/QTranslator>
-#include <QtCore/QtLogging>
+#include <QtCore/QtPlugin>
 #include <QtGui/QClipboard>
 #include <QtGui/QKeyEvent>
-#include <QtWidgets/QFileDialog>
-#include <QtWidgets/QMessageBox>
 #include <algorithm>
 #include <cmath>
 #include <csignal>
@@ -80,9 +74,11 @@
 #include <cstdlib>
 #include <memory>
 
-#ifdef _WIN32
+#if defined(_WIN32)
 #include "common/windows_headers.h"
 #include <objbase.h> // CoInitializeEx
+#elif defined(__APPLE__)
+#include <unistd.h>
 #endif
 
 #include "moc_qthost.cpp"
@@ -102,10 +98,10 @@ QT_TRANSLATE_NOOP("MAC_APPLICATION_MENU", "Quit %1")
 QT_TRANSLATE_NOOP("MAC_APPLICATION_MENU", "About %1")
 #endif
 
-static constexpr u32 SETTINGS_SAVE_DELAY = 1000;
+Q_IMPORT_PLUGIN(SVGIconEnginePlugin);
+Q_IMPORT_PLUGIN(SVGImageHandlerPlugin);
 
-/// Use two async worker threads, should be enough for most tasks.
-static constexpr u32 NUM_ASYNC_WORKER_THREADS = 2;
+static constexpr u32 SETTINGS_SAVE_DELAY = 1000;
 
 /// Interval at which the controllers are polled when the system is not active.
 static constexpr int BACKGROUND_CONTROLLER_POLLING_INTERVAL_WITH_DEVICES = 100;
@@ -113,6 +109,9 @@ static constexpr int BACKGROUND_CONTROLLER_POLLING_INTERVAL_WITHOUT_DEVICES = 10
 
 /// Poll at half the vsync rate for FSUI to reduce the chance of getting a press+release in the same frame.
 static constexpr int FULLSCREEN_UI_CONTROLLER_POLLING_INTERVAL = 8;
+
+/// Poll at 10ms when downloads are active to ensure the speed is not impacted.
+static constexpr int DOWNLOAD_CONTROLLER_POLLING_INTERVAL = 10;
 
 /// Poll at 1ms when running GDB server. We can get rid of this once we move networking to its own thread.
 static constexpr int GDB_SERVER_POLLING_INTERVAL = 1;
@@ -132,6 +131,7 @@ static QString GetAppIconPath();
 static bool LoadResources(Error* error);
 static void SaveSettings();
 static bool RunSetupWizard();
+static void ApplyMigrations();
 static void UpdateFontOrder(std::string_view language);
 static void UpdateApplicationLocale(std::string_view language);
 static std::string_view GetSystemLanguage();
@@ -177,7 +177,6 @@ struct State
 } // namespace
 
 ALIGN_TO_CACHE_LINE static State s_state;
-ALIGN_TO_CACHE_LINE static TaskQueue s_async_task_queue;
 
 } // namespace QtHost
 
@@ -213,7 +212,7 @@ void QtHost::RegisterTypes()
 bool QtHost::PerformEarlyHardwareChecks()
 {
   Error error;
-  const bool okay = System::PerformEarlyHardwareChecks(&error);
+  const bool okay = Core::PerformEarlyHardwareChecks(&error);
   if (okay && !error.IsValid()) [[likely]]
     return true;
 
@@ -259,14 +258,14 @@ bool QtHost::EarlyProcessStartup()
   // Set application details.
   // This is critical for Linux to show the correct application name in the task switcher, since it appears
   // to uses the application name to search for desktop files with the corresponding StartupWMClass.
-  QApplication::setApplicationName("duckstation-qt"_L1);
+  QApplication::setApplicationName(u"duckstation-qt"_s);
   QApplication::setApplicationVersion(QString::fromUtf8(g_scm_version_str));
-  QApplication::setOrganizationName("Stenzek"_L1);
-  QApplication::setOrganizationDomain("duckstation.org"_L1);
-  QApplication::setDesktopFileName("org.duckstation.DuckStation"_L1);
+  QApplication::setOrganizationName(u"Stenzek"_s);
+  QApplication::setOrganizationDomain(u"duckstation.org"_s);
+  QApplication::setDesktopFileName(u"org.duckstation.DuckStation"_s);
 
   Error error;
-  if (!System::ProcessStartup(&error)) [[unlikely]]
+  if (!Core::ProcessStartup(&error)) [[unlikely]]
   {
     QMessageBox::critical(nullptr, QStringLiteral("Process Startup Failed"),
                           QString::fromStdString(error.GetDescription()));
@@ -275,16 +274,17 @@ bool QtHost::EarlyProcessStartup()
 
   // allow us to override standard qt icons as well
   QStringList icon_theme_search_paths = QIcon::themeSearchPaths();
-  if (!icon_theme_search_paths.contains(":/icons"_L1))
-    icon_theme_search_paths.emplace_back(":/icons"_L1);
-  icon_theme_search_paths.emplace_back(":/standard-icons"_L1);
+  if (!icon_theme_search_paths.contains(u":/icons"_s))
+    icon_theme_search_paths.emplace_back(u":/icons"_s);
+  icon_theme_search_paths.emplace_back(u":/standard-icons"_s);
   QIcon::setThemeSearchPaths(icon_theme_search_paths);
+  QIcon::setThemeName("monochrome");
   return true;
 }
 
 void QtHost::ProcessShutdown()
 {
-  System::ProcessShutdown();
+  Core::ProcessShutdown();
 
   // Ensure log is flushed.
   Log::SetFileOutputParams(false, nullptr);
@@ -345,13 +345,21 @@ bool QtHost::IsDisplayWidgetContainerNeeded()
 
 void QtHost::AdjustQtEnvironmentVariables()
 {
-  const char* desktop = std::getenv("XDG_SESSION_DESKTOP");
+  // Disable screensaver inhibit if running on gamescope.
+  const char* desktop = std::getenv("XDG_CURRENT_DESKTOP");
   if (!desktop)
-    return;
+    desktop = std::getenv("XDG_SESSION_DESKTOP");
 
-  std::fprintf(stderr, "XDG_SESSION_DESKTOP=%s\n", desktop);
+  std::fprintf(stderr, "XDG_SESSION_DESKTOP=%s\n", desktop ? desktop : "null");
 
-  if (std::strcmp(desktop, "KDE") == 0 || std::strcmp(desktop, "GNOME") == 0)
+  if (!desktop || std::strstr(desktop, "gamescope"))
+  {
+    INFO_LOG("Missing XDG_CURRENT_DESKTOP ({}) or running under gamescope, disabling screensaver inhibit.",
+             desktop ? desktop : "null");
+    QtHost::DisableScreensaverInhibit();
+  }
+
+  if (desktop && (std::strstr(desktop, "KDE") == 0 || std::strstr(desktop, "GNOME") == 0))
   {
     const char* platform_theme = std::getenv("QT_QPA_PLATFORMTHEME");
     if (platform_theme)
@@ -530,7 +538,7 @@ void QtHost::CheckDesktopFile()
     desktop_file_path = fmt::format("{}/.local/share/{}", home, DESKTOP_FILE_NAME);
   }
 
-  const auto msgbox_title = "DuckStation"_L1;
+  const auto msgbox_title = u"DuckStation"_s;
 
   if (!FileSystem::FileExists(desktop_file_path.c_str()))
   {
@@ -543,14 +551,14 @@ void QtHost::CheckDesktopFile()
     {
       const std::unique_ptr<QMessageBox> msgbox(QtUtils::NewMessageBox(
         nullptr, QMessageBox::Question, msgbox_title,
-        qApp
-          ->translate("QtHost",
-                      "Would you like to create a launcher shortcut for DuckStation?\n\n"
-                      "This will add DuckStation to your application menu, allowing you to launch it more easily.\n\n"
-                      "The shortcut will be created at:\n%1")
+        QCoreApplication::translate(
+          "QtHost", "Would you like to create a launcher shortcut for DuckStation?\n\n"
+                    "This will add DuckStation to your application menu, allowing you to launch it more easily.\n\n"
+                    "The shortcut will be created at:\n%1")
           .arg(QString::fromStdString(desktop_file_path)),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::NoButton, false));
-      QCheckBox* const ignore_cb = new QCheckBox(qApp->translate("QtHost", "Don't ask again"), msgbox.get());
+      QCheckBox* const ignore_cb =
+        new QCheckBox(QCoreApplication::translate("QtHost", "Don't ask again"), msgbox.get());
       msgbox->setCheckBox(ignore_cb);
       msgbox->setWindowIcon(GetAppIcon());
 
@@ -573,14 +581,15 @@ void QtHost::CheckDesktopFile()
     if (!CreateDesktopFile(application_path, desktop_file_path, &error))
     {
       QMessageBox::critical(g_main_window, msgbox_title,
-                            qApp->translate("QtHost", "Failed to create launcher shortcut shortcut:\n%1")
+                            QCoreApplication::translate("QtHost", "Failed to create launcher shortcut shortcut:\n%1")
                               .arg(QString::fromStdString(error.GetDescription())));
     }
     else
     {
       QMessageBox::information(g_main_window, msgbox_title,
-                               qApp->translate("QtHost", "Launcher shortcut created successfully.\n\n"
-                                                         "You can find DuckStation in your application menu."));
+                               QCoreApplication::translate("QtHost",
+                                                           "Launcher shortcut created successfully.\n\n"
+                                                           "You can find DuckStation in your application menu."));
     }
   }
   else
@@ -601,12 +610,11 @@ void QtHost::CheckDesktopFile()
     INFO_LOG("Desktop file path mismatch: current='{}', existing='{}'", application_path, normalized_existing);
 
     const QMessageBox::StandardButton result = QMessageBox::question(
-      g_main_window, "DuckStation"_L1,
-      qApp
-        ->translate("QtHost", "The existing launcher shortcut points to a different location:\n\n"
-                              "Current: %1\n"
-                              "Shortcut: %2\n\n"
-                              "Would you like to update the shortcut to point to the current location?")
+      g_main_window, u"DuckStation"_s,
+      QCoreApplication::translate("QtHost", "The existing launcher shortcut points to a different location:\n\n"
+                                            "Current: %1\n"
+                                            "Shortcut: %2\n\n"
+                                            "Would you like to update the shortcut to point to the current location?")
         .arg(QString::fromStdString(application_path))
         .arg(QString::fromStdString(existing_exec_path)),
       QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
@@ -619,7 +627,7 @@ void QtHost::CheckDesktopFile()
       if (!FileSystem::DeleteFile(desktop_file_path.c_str(), &error))
       {
         QMessageBox::critical(g_main_window, msgbox_title,
-                              qApp->translate("QtHost", "Failed to remove old launcher shortcut:\n%1")
+                              QCoreApplication::translate("QtHost", "Failed to remove old launcher shortcut:\n%1")
                                 .arg(QString::fromStdString(error.GetDescription())));
         return;
       }
@@ -628,13 +636,13 @@ void QtHost::CheckDesktopFile()
       if (!CreateDesktopFile(application_path, desktop_file_path, &error))
       {
         QMessageBox::critical(g_main_window, msgbox_title,
-                              qApp->translate("QtHost", "Failed to create updated launcher shortcut:\n%1")
+                              QCoreApplication::translate("QtHost", "Failed to create updated launcher shortcut:\n%1")
                                 .arg(QString::fromStdString(error.GetDescription())));
       }
       else
       {
         QMessageBox::information(g_main_window, msgbox_title,
-                                 qApp->translate("QtHost", "Launcher shortcut updated successfully."));
+                                 QCoreApplication::translate("QtHost", "Launcher shortcut updated successfully."));
       }
     }
   }
@@ -675,6 +683,9 @@ bool QtHost::SaveGameSettings(SettingsInterface* sif, bool delete_if_empty)
   {
     INFO_LOG("Removing empty gamesettings ini {}", Path::GetFileName(ini->GetPath()));
 
+    // prevent empty ini from being saved if it was modified and transitioned back to empty
+    ini->SetDirty(false);
+
     // grab the settings lock while we're writing the file, that way the CPU thread doesn't try
     // to read it at the same time.
     const auto lock = Core::GetSettingsLock();
@@ -697,7 +708,7 @@ bool QtHost::SaveGameSettings(SettingsInterface* sif, bool delete_if_empty)
   // see above
   const auto lock = Core::GetSettingsLock();
 
-  if (!ini->Save(&error))
+  if (!ini->Save(&error, Settings::GetSectionSaveOrder()))
   {
     Host::ReportErrorAsync(
       TRANSLATE_SV("QtHost", "Error"),
@@ -737,35 +748,30 @@ void QtHost::DownloadFile(QWidget* parent, std::string url, std::string path,
 
   QtAsyncTaskWithProgressDialog::create(
     parent, TRANSLATE_SV("QtHost", "File Download"), status_text, false, true, 0, 0, 0.0f, true,
-    [url = std::move(url), path = std::move(path),
+    [parent, url = std::move(url), path = std::move(path),
      completion_callback = std::move(completion_callback)](ProgressCallback* const progress) mutable {
       Error error;
-      std::unique_ptr<HTTPDownloader> http = HTTPDownloader::Create(Core::GetHTTPUserAgent(), &error);
-      bool result;
-      if ((result = static_cast<bool>(http)))
-      {
-        http->CreateRequest(
-          std::move(url),
-          [&result, &error, &path](s32 status_code, const Error& http_error, const std::string&,
-                                   std::vector<u8> hdata) {
-            if (status_code != HTTPDownloader::HTTP_STATUS_OK)
-            {
-              error.SetString(http_error.GetDescription());
-              return;
-            }
-            else if (hdata.empty())
-            {
-              error.SetStringView(TRANSLATE_SV("QtHost", "Download failed: Data is empty."));
-              return;
-            }
+      bool result = false;
+      HTTPDownloader::CreateRequest(
+        std::move(url), parent,
+        [&result, &error, &path](s32 status_code, Error& http_error, std::string&, std::vector<u8>& hdata) {
+          if (status_code != HTTPDownloader::HTTP_STATUS_OK)
+          {
+            error.SetString(http_error.GetDescription());
+            return;
+          }
+          else if (hdata.empty())
+          {
+            error.SetStringView(TRANSLATE_SV("QtHost", "Download failed: Data is empty."));
+            return;
+          }
 
-            result = FileSystem::WriteBinaryFile(path.c_str(), hdata, &error);
-          },
-          progress);
+          result = FileSystem::WriteBinaryFile(path.c_str(), hdata, &error);
+        },
+        progress);
 
-        // Block until completion.
-        http->WaitForAllRequests();
-      }
+      // Block until completion.
+      HTTPDownloader::WaitForAllRequestsFromOwner(parent);
 
       QtAsyncTaskWithProgressDialog::CompletionCallback ret;
       if (completion_callback)
@@ -800,9 +806,9 @@ bool QtHost::InitializeFoldersAndConfig(Error* error)
   if (!Core::InitializeBaseSettingsLayer(Core::GetBaseSettingsPath(), &config_error))
   {
     if (QMessageBox::question(
-          nullptr, "DuckStation"_L1,
-          "Failed to load configuration. The error was:\n\n%1\n\nThe settings file may be corrupted. Do you want to "
-          "delete the settings file and try again? Note that any currently-configured settings will be lost."_L1.arg(
+          nullptr, u"DuckStation"_s,
+          u"Failed to load configuration. The error was:\n\n%1\n\nThe settings file may be corrupted. Do you want to "
+          "delete the settings file and try again? Note that any currently-configured settings will be lost."_s.arg(
             QString::fromStdString(config_error.GetDescription()))) == QMessageBox::Yes)
     {
       if (!FileSystem::DeleteFile(Core::GetBaseSettingsPath().c_str(), &config_error))
@@ -859,15 +865,9 @@ bool QtHost::LoadResources(Error* error)
   return true;
 }
 
-void Host::LoadSettings(const SettingsInterface& si, std::unique_lock<std::mutex>& lock)
+void Host::OnSettingsReloaded()
 {
-}
-
-void Host::CheckForSettingsChanges(const Settings& old_settings)
-{
-  // NOTE: emu thread, push to UI thread
-  if (g_main_window)
-    QMetaObject::invokeMethod(g_main_window, &MainWindow::checkForSettingChanges, Qt::QueuedConnection);
+  emit g_core_thread->settingsReloaded();
 }
 
 void CoreThread::setDefaultSettings(bool host, bool system, bool controller)
@@ -878,7 +878,7 @@ void CoreThread::setDefaultSettings(bool host, bool system, bool controller)
     return;
   }
 
-  Core::SetDefaultSettings(host, system, controller);
+  Core::SetDefaultSettings(host, system, controller, true);
 }
 
 void Host::SetDefaultSettings(SettingsInterface& si)
@@ -908,6 +908,37 @@ void Host::OnSettingsResetToDefault(bool host, bool system, bool controller)
 void Host::RequestResizeHostDisplay(s32 new_window_width, s32 new_window_height)
 {
   emit g_core_thread->onResizeRenderWindowRequested(new_window_width, new_window_height);
+}
+
+void QtHost::ApplyMigrations()
+{
+  const std::string achievement_icons_directory = Path::Combine(EmuFolders::Cache, "achievement_images");
+  if (FileSystem::DirectoryExists(achievement_icons_directory.c_str()))
+  {
+    // If it's empty, just delete it.
+    if (!FileSystem::IsDirectoryEmpty(achievement_icons_directory.c_str()))
+    {
+      QMessageBox mb(
+        QMessageBox::Question, u"DuckStation"_s,
+        u"DuckStation has migrated to using an archive for caching achievement icons, which is significantly more "
+        "efficient and does not create thousands of files.\n\n"
+        "The old directory of achievement icons is no longer needed and can be deleted.\n\n"
+        "Do you want to delete the old achievement icons cache now?"
+        "\n\nNo save data or achievement progress will be lost."_s,
+        QMessageBox::Yes | QMessageBox::No);
+      mb.setWindowIcon(GetAppIcon());
+      if (mb.exec() == QMessageBox::Yes)
+      {
+        Error error;
+        if (!FileSystem::RecursiveDeleteDirectory(achievement_icons_directory.c_str(), &error))
+        {
+          QMessageBox::critical(nullptr, u"Error"_s,
+                                QString::fromStdString(fmt::format(
+                                  "Failed to delete old achievement icons directory: {}", error.GetDescription())));
+        }
+      }
+    }
+  }
 }
 
 void CoreThread::applySettings(bool display_osd_messages /* = false */)
@@ -978,10 +1009,6 @@ void CoreThread::startFullscreenUI()
 
   if (System::IsValid() || VideoThread::IsFullscreenUIRequested())
     return;
-
-  // we want settings loaded so we choose the correct renderer
-  // this also sorts out input sources.
-  System::LoadSettings(false);
 
   // borrow the game start fullscreen flag
   const bool start_fullscreen =
@@ -1499,6 +1526,20 @@ void CoreThread::changeDiscFromPlaylist(quint32 index)
     errorReported(tr("Error"), tr("Failed to switch to subimage %1").arg(index));
 }
 
+void CoreThread::setLidState(bool manual_control, bool manual_state)
+{
+  if (!isCurrentThread())
+  {
+    QMetaObject::invokeMethod(this, &CoreThread::setLidState, Qt::QueuedConnection, manual_control, manual_state);
+    return;
+  }
+
+  if (!System::IsValid())
+    return;
+
+  CDROM::SetLidState(manual_control, manual_state);
+}
+
 void CoreThread::reloadCheats(bool reload_files, bool reload_enabled_list, bool verbose, bool verbose_if_changed)
 {
   if (!isCurrentThread())
@@ -1668,16 +1709,6 @@ void Host::RunOnUIThread(std::function<void()> function, bool block /* = false*/
   // main window always exists, so it's fine to attach it to that.
   QMetaObject::invokeMethod(g_main_window, &MainWindow::runOnUIThread,
                             block ? Qt::BlockingQueuedConnection : Qt::QueuedConnection, std::move(function));
-}
-
-void Host::QueueAsyncTask(std::function<void()> function)
-{
-  QtHost::s_async_task_queue.SubmitTask(std::move(function));
-}
-
-void Host::WaitForAllAsyncTasks()
-{
-  QtHost::s_async_task_queue.WaitForAll();
 }
 
 QtAsyncTask::QtAsyncTask(WorkCallback callback)
@@ -2035,18 +2066,13 @@ void CoreThread::processAuxiliaryRenderWindowInputEvent(void* userdata, quint32 
   });
 }
 
-void CoreThread::doBackgroundControllerPoll()
-{
-  System::IdlePollUpdate();
-}
-
 void CoreThread::createBackgroundControllerPollTimer()
 {
   DebugAssert(!m_background_controller_polling_timer);
   m_background_controller_polling_timer = new QTimer(this);
   m_background_controller_polling_timer->setSingleShot(false);
   m_background_controller_polling_timer->setTimerType(Qt::CoarseTimer);
-  connect(m_background_controller_polling_timer, &QTimer::timeout, this, &CoreThread::doBackgroundControllerPoll);
+  connect(m_background_controller_polling_timer, &QTimer::timeout, &Core::IdleUpdate);
 }
 
 void CoreThread::destroyBackgroundControllerPollTimer()
@@ -2099,14 +2125,32 @@ void CoreThread::updateBackgroundControllerPollInterval()
 
 int CoreThread::getBackgroundControllerPollInterval() const
 {
+#ifdef ENABLE_GDB_SERVER
   if (GDBServer::HasAnyClients())
     return GDB_SERVER_POLLING_INTERVAL;
-  else if (m_video_thread_run_idle)
+#endif
+
+  if (m_video_thread_run_idle)
     return FULLSCREEN_UI_CONTROLLER_POLLING_INTERVAL;
+  else if (m_http_downloader_active)
+    return DOWNLOAD_CONTROLLER_POLLING_INTERVAL;
   else if (InputManager::GetPollableDeviceCount() > 0)
     return BACKGROUND_CONTROLLER_POLLING_INTERVAL_WITH_DEVICES;
   else
     return BACKGROUND_CONTROLLER_POLLING_INTERVAL_WITHOUT_DEVICES;
+}
+
+void CoreThread::setHTTPDownloaderActive(bool active)
+{
+  if (!isCurrentThread())
+  {
+    QMetaObject::invokeMethod(this, &CoreThread::setHTTPDownloaderActive, Qt::QueuedConnection, active);
+    return;
+  }
+
+  DEV_LOG("HTTP Downloader now {}", active ? "active" : "inactive");
+  m_http_downloader_active = active;
+  updateBackgroundControllerPollInterval();
 }
 
 void CoreThread::setVideoThreadRunIdle(bool active)
@@ -2143,21 +2187,17 @@ void CoreThread::updateFullscreenUITheme()
     VideoThread::RunOnThread(&FullscreenUI::UpdateTheme);
 }
 
-void CoreThread::start()
+void Host::OnHTTPDownloaderActiveChanged(bool active)
 {
-  AssertMsg(!g_core_thread->isRunning(), "Emu thread is not started");
-
-  g_core_thread->QThread::start();
-  g_core_thread->m_started_semaphore.acquire();
+  g_core_thread->setHTTPDownloaderActive(active);
 }
 
 void CoreThread::stop()
 {
-  AssertMsg(g_core_thread, "Emu thread exists");
-  AssertMsg(!g_core_thread->isCurrentThread(), "Not called on the emu thread");
+  Assert(isRunning() && !isCurrentThread() && g_core_thread == this);
 
-  QMetaObject::invokeMethod(g_core_thread, &CoreThread::stopInThread, Qt::QueuedConnection);
-  QtUtils::ProcessEventsWithSleep(QEventLoop::ExcludeUserInputEvents, []() { return (g_core_thread->isRunning()); });
+  QMetaObject::invokeMethod(this, &CoreThread::stopInThread, Qt::QueuedConnection);
+  QtUtils::ProcessEventsWithSleep(QEventLoop::ExcludeUserInputEvents, [this]() { return isRunning(); });
 
   // Ensure settings are saved.
   if (QtHost::s_state.settings_save_timer)
@@ -2178,22 +2218,17 @@ void CoreThread::stopInThread()
 void CoreThread::run()
 {
   m_event_loop = new QEventLoop();
-  m_started_semaphore.release();
 
   // input source setup must happen on emu thread
   {
     Error startup_error;
-    if (!System::CoreThreadInitialize(&startup_error))
+    if (!Core::CoreThreadInitialize(false, &startup_error))
     {
       moveToThread(m_ui_thread);
       Host::ReportFatalError("Fatal Startup Error", startup_error.GetDescription());
       return;
     }
   }
-
-  // start up worker threads
-  // TODO: Replace this with QThreads
-  QtHost::s_async_task_queue.SetWorkerCount(NUM_ASYNC_WORKER_THREADS);
 
   // connections
   connect(qApp, &QGuiApplication::applicationStateChanged, this, &CoreThread::applicationStateChanged);
@@ -2204,9 +2239,6 @@ void CoreThread::run()
   // start background input polling
   createBackgroundControllerPollTimer();
   startBackgroundControllerPollTimer();
-
-  // kick off GPU thread
-  Threading::Thread video_thread(&CoreThread::videoThreadEntryPoint);
 
   // main loop
   while (!m_shutdown_flag)
@@ -2221,7 +2253,7 @@ void CoreThread::run()
 
       // have to double-check the condition after processing events, because the events could shut us down
       if (!VideoThread::IsUsingThread() && VideoThread::IsRunningIdle())
-        VideoThread::Internal::DoRunIdle();
+        VideoThread::DoRunIdle();
     }
     else
     {
@@ -2234,26 +2266,13 @@ void CoreThread::run()
 
   destroyBackgroundControllerPollTimer();
 
-  // tell GPU thread to exit
-  VideoThread::Internal::RequestShutdown();
-  video_thread.Join();
-
-  // join worker threads
-  QtHost::s_async_task_queue.SetWorkerCount(0);
-
   // and tidy up everything left
-  System::CoreThreadShutdown();
+  Core::CoreThreadShutdown();
 
   // move back to UI thread
   moveToThread(m_ui_thread);
   delete m_event_loop;
   m_event_loop = nullptr;
-}
-
-void CoreThread::videoThreadEntryPoint()
-{
-  Threading::SetNameOfCurrentThread("Video Thread");
-  VideoThread::Internal::VideoThreadEntryPoint();
 }
 
 void Host::FrameDoneOnVideoThread(GPUBackend* gpu_backend, u32 frame_number)
@@ -2323,8 +2342,9 @@ void Host::ReportStatusMessage(std::string_view message)
   emit g_core_thread->statusMessage(QtUtils::StringViewToQString(message));
 }
 
-void Host::ConfirmMessageAsync(std::string_view title, std::string_view message, ConfirmMessageAsyncCallback callback,
-                               std::string_view yes_text, std::string_view no_text)
+void Host::ConfirmMessageAsync(std::string_view icon, std::string_view title, std::string_view message,
+                               ConfirmMessageAsyncCallback callback, std::string_view yes_text,
+                               std::string_view no_text)
 {
   INFO_LOG("ConfirmMessageAsync({}, {})", title, message);
 
@@ -2337,9 +2357,10 @@ void Host::ConfirmMessageAsync(std::string_view title, std::string_view message,
   // Ensure it always comes from the CPU thread.
   if (!g_core_thread->isCurrentThread())
   {
-    Host::RunOnCoreThread([title = std::string(title), message = std::string(message), callback = std::move(callback),
-                           yes_text = std::string(yes_text), no_text = std::string(no_text)]() mutable {
-      ConfirmMessageAsync(title, message, std::move(callback));
+    Host::RunOnCoreThread([title = std::string(title), icon = std::string(icon), message = std::string(message),
+                           callback = std::move(callback), yes_text = std::string(yes_text),
+                           no_text = std::string(no_text)]() mutable {
+      ConfirmMessageAsync(icon, title, message, std::move(callback), yes_text, no_text);
     });
     return;
   }
@@ -2352,7 +2373,7 @@ void Host::ConfirmMessageAsync(std::string_view title, std::string_view message,
   // Use FSUI if we're ingame.
   if (System::IsValid() || g_core_thread->isFullscreenUIStarted())
   {
-    VideoThread::RunOnThread([title = std::string(title), message = std::string(message),
+    VideoThread::RunOnThread([title = std::string(title), icon = std::string(icon), message = std::string(message),
                               callback = std::move(callback), yes_text = std::string(yes_text),
                               no_text = std::string(no_text), needs_pause]() mutable {
       // Need to reset run idle state _again_ after displaying.
@@ -2368,8 +2389,13 @@ void Host::ConfirmMessageAsync(std::string_view title, std::string_view message,
         callback(result);
       };
 
+      if (icon.empty())
+        icon = ICON_EMOJI_QUESTION_MARK;
+      else if (StringUtil::GetUTF8CharacterCount(icon) > 1 && !Path::IsAbsolute(icon))
+        icon = QtHost::GetResourcePath(icon, true);
+
       FullscreenUI::Initialize();
-      FullscreenUI::OpenConfirmMessageDialog(ICON_EMOJI_QUESTION_MARK, std::move(title), std::move(message),
+      FullscreenUI::OpenConfirmMessageDialog(std::move(icon), std::move(title), std::move(message),
                                              std::move(final_callback), fmt::format(ICON_FA_CHECK " {}", yes_text),
                                              fmt::format(ICON_FA_XMARK " {}", no_text));
       FullscreenUI::UpdateRunIdleState();
@@ -2377,15 +2403,22 @@ void Host::ConfirmMessageAsync(std::string_view title, std::string_view message,
   }
   else
   {
+    QString qicon;
+    if (!icon.empty())
+      qicon = Path::IsAbsolute(icon) ? QtUtils::StringViewToQString(icon) : QtHost::GetResourceQPath(icon, true);
+
     // Otherwise, use the desktop UI.
-    Host::RunOnUIThread([title = QtUtils::StringViewToQString(title), message = QtUtils::StringViewToQString(message),
-                         callback = std::move(callback), yes_text = QtUtils::StringViewToQString(yes_text),
+    Host::RunOnUIThread([qicon = std::move(qicon), title = QtUtils::StringViewToQString(title),
+                         message = QtUtils::StringViewToQString(message), callback = std::move(callback),
+                         yes_text = QtUtils::StringViewToQString(yes_text),
                          no_text = QtUtils::StringViewToQString(no_text), needs_pause]() mutable {
       auto lock = g_main_window->pauseAndLockSystem();
 
       QWidget* const dialog_parent = lock.getDialogParent();
       QMessageBox* const msgbox =
         QtUtils::NewMessageBox(dialog_parent, QMessageBox::Question, title, message, QMessageBox::NoButton);
+      if (!qicon.isEmpty())
+        msgbox->setIconPixmap(SVGWidget::renderSVGToPixmap(qicon, QSize(64, 64), msgbox->devicePixelRatio(), QColor()));
 
       QPushButton* const yes_button = msgbox->addButton(yes_text, QMessageBox::AcceptRole);
       msgbox->addButton(no_text, QMessageBox::RejectRole);
@@ -2599,8 +2632,8 @@ s32 Host::Internal::GetTranslatedStringImpl(std::string_view context, std::strin
   const std::string temp_context(context);
   const std::string temp_msg(msg);
   const std::string temp_disambiguation(disambiguation);
-  const QString translated_msg = qApp->translate(temp_context.c_str(), temp_msg.c_str(),
-                                                 disambiguation.empty() ? nullptr : temp_disambiguation.c_str());
+  const QString translated_msg = QCoreApplication::translate(
+    temp_context.c_str(), temp_msg.c_str(), disambiguation.empty() ? nullptr : temp_disambiguation.c_str());
   const QByteArray translated_utf8 = translated_msg.toUtf8();
   const size_t translated_size = translated_utf8.size();
   if (translated_size > tbuf_space)
@@ -2613,13 +2646,13 @@ s32 Host::Internal::GetTranslatedStringImpl(std::string_view context, std::strin
 
 std::string Host::TranslatePluralToString(const char* context, const char* msg, const char* disambiguation, int count)
 {
-  return qApp->translate(context, msg, disambiguation, count).toStdString();
+  return QCoreApplication::translate(context, msg, disambiguation, count).toStdString();
 }
 
 SmallString Host::TranslatePluralToSmallString(const char* context, const char* msg, const char* disambiguation,
                                                int count)
 {
-  const QString qstr = qApp->translate(context, msg, disambiguation, count);
+  const QString qstr = QCoreApplication::translate(context, msg, disambiguation, count);
   SmallString ret;
 
 #ifdef _WIN32
@@ -2709,8 +2742,8 @@ void QtHost::UpdateFontOrder(std::string_view language)
   // Why is this a thing? Because we want all glyphs to be available, but don't want to conflict
   // between codepoints shared between Chinese and Japanese. Therefore we prioritize the language
   // that the user has selected.
-  ImGuiManager::TextFontOrder font_order;
-#define TF(name) ImGuiManager::TextFont::name
+  ImGuiManager::LanguageFontOrder font_order;
+#define TF(name) ImGuiManager::LanguageFont::name
   if (language == "ja")
     font_order = {TF(Default), TF(Japanese), TF(Chinese), TF(Korean)};
   else if (language == "ko")
@@ -2718,20 +2751,20 @@ void QtHost::UpdateFontOrder(std::string_view language)
   else if (language == "zh-CN")
     font_order = {TF(Default), TF(Chinese), TF(Japanese), TF(Korean)};
   else
-    font_order = ImGuiManager::GetDefaultTextFontOrder();
+    font_order = ImGuiManager::GetLanguageTextFontOrder();
 #undef TF
 
   if (g_core_thread)
   {
     Host::RunOnCoreThread([font_order]() mutable {
-      VideoThread::RunOnThread([font_order]() mutable { ImGuiManager::SetTextFontOrder(font_order); });
+      VideoThread::RunOnThread([font_order]() mutable { ImGuiManager::SetLanguageFontOrder(font_order); });
       Host::ClearTranslationCache();
     });
   }
   else
   {
     // Startup, safe to set directly.
-    ImGuiManager::SetTextFontOrder(font_order);
+    ImGuiManager::SetLanguageFontOrder(font_order);
     Host::ClearTranslationCache();
   }
 }
@@ -2778,11 +2811,11 @@ InputDeviceListModel::~InputDeviceListModel() = default;
 QIcon InputDeviceListModel::getIconForKey(const InputBindingKey& key)
 {
   if (key.source_type == InputSourceType::Keyboard)
-    return QIcon::fromTheme("keyboard-line"_L1);
+    return QIcon(u":/icons/monochrome/svg/keyboard-line.svg"_s);
   else if (key.source_type == InputSourceType::Pointer)
-    return QIcon::fromTheme("mouse-line"_L1);
+    return QIcon(u":/icons/monochrome/svg/mouse-line.svg"_s);
   else
-    return QIcon::fromTheme("controller-line"_L1);
+    return QIcon(u":/icons/monochrome/svg/controller-line.svg"_s);
 }
 
 QString InputDeviceListModel::getDeviceName(const InputBindingKey& key)
@@ -2802,7 +2835,7 @@ QString InputDeviceListModel::getDeviceName(const InputBindingKey& key)
 
 bool InputDeviceListModel::hasEffectsOfType(InputBindingInfo::Type type)
 {
-  return std::ranges::any_of(m_effects, [type](const auto& eff) { return eff.first == type; });
+  return std::ranges::any_of(m_effects, [type](const auto& eff) { return (eff.type == type); });
 }
 
 int InputDeviceListModel::rowCount(const QModelIndex& parent /*= QModelIndex()*/) const
@@ -2858,7 +2891,12 @@ void InputDeviceListModel::enumerateDevices()
   EffectList new_effects;
   new_effects.reserve(effects.size());
   for (const auto& [type, key] : effects)
-    new_effects.emplace_back(type, key);
+  {
+    TinyString name = InputManager::ConvertInputBindingKeyToString(type, key);
+    SmallString pretty_name(name);
+    InputManager::PrettifyInputBinding(pretty_name, false);
+    new_effects.emplace_back(type, key, std::string(name), std::string(pretty_name));
+  }
 
   QMetaObject::invokeMethod(this, &InputDeviceListModel::resetLists, Qt::QueuedConnection, new_devices, new_effects);
 }
@@ -2905,7 +2943,7 @@ void InputDeviceListModel::onDeviceDisconnected(const InputBindingKey& key, cons
       const QString effect_prefix = QStringLiteral("%1/").arg(identifier);
       for (qsizetype j = 0; j < m_effects.size();)
       {
-        if (m_effects[j].second.source_type == key.source_type && m_effects[j].second.source_index == key.source_index)
+        if (m_effects[j].key.source_type == key.source_type && m_effects[j].key.source_index == key.source_index)
           m_effects.remove(j);
         else
           j++;
@@ -2925,7 +2963,12 @@ void Host::OnInputDeviceConnected(InputBindingKey key, std::string_view identifi
   {
     qeffect_list.reserve(effect_list.size());
     for (const auto& [eff_type, eff_key] : effect_list)
-      qeffect_list.emplace_back(eff_type, eff_key);
+    {
+      TinyString name = InputManager::ConvertInputBindingKeyToString(eff_type, eff_key);
+      SmallString pretty_name(name);
+      InputManager::PrettifyInputBinding(pretty_name, false);
+      qeffect_list.emplace_back(eff_type, eff_key, std::string(name), std::string(pretty_name));
+    }
   }
 
   QMetaObject::invokeMethod(g_core_thread->getInputDeviceListModel(), &InputDeviceListModel::onDeviceConnected,
@@ -3116,15 +3159,16 @@ void CoreThread::updatePerformanceCounters(const GPUBackend* gpu_backend)
   if (gpu_backend)
   {
     const u32 render_scale = gpu_backend->GetResolutionScale();
-    std::tie(render_width, render_height) = g_gpu.GetFullDisplayResolution();
+    std::tie(render_width, render_height) = GPU::GetFullDisplayResolution();
     render_width *= render_scale;
     render_height *= render_scale;
   }
 
   if (render_api != m_last_render_api || hardware_renderer != m_last_hardware_renderer)
   {
-    const QString renderer_str = hardware_renderer ? QString::fromUtf8(GPUDevice::RenderAPIToString(render_api)) :
-                                                     qApp->translate("GPURenderer", "Software");
+    const QString renderer_str =
+      QString::fromUtf8(hardware_renderer ? GPUDevice::RenderAPIToString(render_api) :
+                                            Settings::GetRendererDisplayName(GPURenderer::Software));
     QMetaObject::invokeMethod(g_main_window->getStatusRendererWidget(), &QLabel::setText, Qt::QueuedConnection,
                               renderer_str);
     m_last_render_api = render_api;
@@ -3204,7 +3248,9 @@ void Host::OnMediaCaptureStopped()
 
 void Host::SetMouseMode(bool relative, bool hide_cursor)
 {
-  emit g_core_thread->mouseModeRequested(relative, hide_cursor);
+  // Disable double-click handling when mouse is bound.
+  const bool ignore_double_click = InputManager::HasAnyBindingsForKey(InputManager::MakePointerButtonKey(0, 0));
+  emit g_core_thread->mouseModeRequested(relative, hide_cursor, ignore_double_click);
 }
 
 void Host::PumpMessagesOnCoreThread()
@@ -3505,7 +3551,7 @@ bool QtHost::ParseCommandLineParametersAndInitializeConfig(QApplication& app,
       }
       else if (args[i][0] == QChar('-'))
       {
-        QMessageBox::critical(nullptr, "DuckStation"_L1, QString("Unknown parameter: %1"_L1).arg(args[i]));
+        QMessageBox::critical(nullptr, u"DuckStation"_s, u"Unknown parameter: %1"_s.arg(args[i]));
         return false;
       }
 
@@ -3523,7 +3569,7 @@ bool QtHost::ParseCommandLineParametersAndInitializeConfig(QApplication& app,
   if (!InitializeFoldersAndConfig(&error) || !LoadResources(&error))
   {
     // NOTE: No point translating this, because no config means the language won't be loaded anyway.
-    QMessageBox::critical(nullptr, "DuckStation"_L1, QString::fromStdString(error.GetDescription()));
+    QMessageBox::critical(nullptr, u"DuckStation"_s, QString::fromStdString(error.GetDescription()));
     return false;
   }
 
@@ -3535,8 +3581,8 @@ bool QtHost::ParseCommandLineParametersAndInitializeConfig(QApplication& app,
     if (!FileSystem::FileExists(autoboot->path.c_str()))
     {
       QMessageBox::critical(
-        nullptr, qApp->translate("QtHost", "Error"),
-        qApp->translate("QtHost", "File '%1' does not exist.").arg(QString::fromStdString(autoboot->path)));
+        nullptr, QCoreApplication::translate("QtHost", "Error"),
+        QCoreApplication::translate("QtHost", "File '%1' does not exist.").arg(QString::fromStdString(autoboot->path)));
       return false;
     }
   }
@@ -3562,8 +3608,8 @@ bool QtHost::ParseCommandLineParametersAndInitializeConfig(QApplication& app,
 
     if (autoboot->save_state.empty() || !FileSystem::FileExists(autoboot->save_state.c_str()))
     {
-      QMessageBox::critical(nullptr, qApp->translate("QtHost", "Error"),
-                            qApp->translate("QtHost", "The specified save state does not exist."));
+      QMessageBox::critical(nullptr, QCoreApplication::translate("QtHost", "Error"),
+                            QCoreApplication::translate("QtHost", "The specified save state does not exist."));
       return false;
     }
   }
@@ -3581,10 +3627,10 @@ bool QtHost::ParseCommandLineParametersAndInitializeConfig(QApplication& app,
   if (s_state.batch_mode && !autoboot && !s_state.start_fullscreen_ui)
   {
     QMessageBox::critical(
-      nullptr, qApp->translate("QtHost", "Error"),
+      nullptr, QCoreApplication::translate("QtHost", "Error"),
       s_state.nogui_mode ?
-        qApp->translate("QtHost", "Cannot use no-gui mode, because no boot filename was specified.") :
-        qApp->translate("QtHost", "Cannot use batch mode, because no boot filename was specified."));
+        QCoreApplication::translate("QtHost", "Cannot use no-gui mode, because no boot filename was specified.") :
+        QCoreApplication::translate("QtHost", "Cannot use batch mode, because no boot filename was specified."));
     return false;
   }
 
@@ -3605,39 +3651,44 @@ bool QtHost::RunSetupWizard()
 
 int main(int argc, char* argv[])
 {
-  if (!QtHost::VeryEarlyProcessStartup())
+  using namespace QtHost;
+
+  if (!VeryEarlyProcessStartup())
     return EXIT_FAILURE;
 
   QApplication app(argc, argv);
-  if (!QtHost::PerformEarlyHardwareChecks())
+  if (!PerformEarlyHardwareChecks())
     return EXIT_FAILURE;
 
 #ifdef __linux__
   // Normally we'd have this shitfuckery in VeryEarlyProcessStartup(), but QApplication needs to be
   // created before the platform plugin is loaded. This is only here because GNOME plus Wankland
   // and their implementation of it is fucking terrible.
-  QtHost::ApplyWaylandWorkarounds();
+  ApplyWaylandWorkarounds();
 #endif
 
   // Type registration has to happen after hardware checks, clang emits ptest instructions otherwise.
-  QtHost::RegisterTypes();
+  RegisterTypes();
 
   std::shared_ptr<SystemBootParameters> autoboot;
-  if (!QtHost::ParseCommandLineParametersAndInitializeConfig(app, autoboot))
+  if (!ParseCommandLineParametersAndInitializeConfig(app, autoboot))
     return EXIT_FAILURE;
 
-  if (!QtHost::EarlyProcessStartup())
+  if (!EarlyProcessStartup())
     return EXIT_FAILURE;
 
   // Remove any previous-version remnants.
-  if (QtHost::s_state.cleanup_after_update)
+  if (s_state.cleanup_after_update)
     AutoUpdaterDialog::cleanupAfterUpdate();
 
   // Set theme before creating any windows.
-  QtHost::UpdateApplicationTheme();
+  UpdateApplicationTheme();
 
   // Build warning.
   AutoUpdaterDialog::warnAboutUnofficialBuild();
+
+  // Setting/folder migrations.
+  ApplyMigrations();
 
   // Create core thread object, but don't start it yet. That way the main window can connect to it,
   // and ensures that no signals are lost. Then we create and connect the main window.
@@ -3652,12 +3703,12 @@ int main(int argc, char* argv[])
   LogWindow::updateSettings(true);
 
   // Now we can actually start the CPU thread.
-  QtHost::HookSignals();
+  HookSignals();
   g_core_thread->start();
 
   // Optionally run setup wizard.
   int result;
-  if (QtHost::s_state.run_setup_wizard && !QtHost::RunSetupWizard())
+  if (s_state.run_setup_wizard && !RunSetupWizard())
   {
     result = EXIT_FAILURE;
     goto shutdown_and_exit;
@@ -3665,13 +3716,13 @@ int main(int argc, char* argv[])
 
 #ifdef __linux__
   // Create desktop file if it does not exist.
-  QtHost::CheckDesktopFile();
+  CheckDesktopFile();
 
   // I hate this so much. Turns out not only is window raising non-functional on GNOME for what I'm guessing
   // is purely political reasons, it's also very unreliable on KDE too. Sometimes raising works, other times
   // it doesn't. Deferring the request doesn't seem to help either. Can't be arsed to debug, just force all
   // Wayland down the reverse path of showing the log window first.
-  if (QtHost::IsRunningOnWayland())
+  if (IsRunningOnWayland())
   {
     LogWindow::deferredShow();
     QApplication::sync();
@@ -3680,18 +3731,18 @@ int main(int argc, char* argv[])
 #endif
 
   // When running in batch mode, ensure game list is loaded, but don't scan for any new files.
-  if (!QtHost::s_state.batch_mode)
+  if (!s_state.batch_mode)
     g_main_window->refreshGameList(false);
 
   // Don't bother showing the window in no-gui mode.
-  if (!QtHost::s_state.nogui_mode)
+  if (!s_state.nogui_mode)
     QtUtils::ShowOrRaiseWindow(g_main_window, nullptr, true);
 
   // Initialize big picture mode if requested.
-  if (QtHost::s_state.start_fullscreen_ui)
+  if (s_state.start_fullscreen_ui || Core::GetBaseBoolSettingValue("Main", "StartFullscreenUI", false))
     g_core_thread->startFullscreenUI();
   else
-    QtHost::s_state.start_fullscreen_ui_fullscreen = false;
+    s_state.start_fullscreen_ui_fullscreen = false;
 
   // Always kick off update check. It'll take over if the user is booting a game fullscreen.
   g_main_window->startupUpdateCheck();
@@ -3722,7 +3773,7 @@ shutdown_and_exit:
   delete g_main_window;
   Assert(!g_main_window);
 
-  QtHost::ProcessShutdown();
+  ProcessShutdown();
 
   return result;
 }

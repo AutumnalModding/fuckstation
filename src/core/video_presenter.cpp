@@ -14,6 +14,7 @@
 #include "save_state_version.h"
 #include "settings.h"
 #include "system.h"
+#include "system_private.h"
 #include "video_shadergen.h"
 #include "video_thread.h"
 #include "video_thread_commands.h"
@@ -52,8 +53,6 @@ static bool HasBorderOverlay();
 
 static bool CompileDisplayPipelines(bool display, bool deinterlace, bool chroma_smoothing, Error* error);
 
-static GPUPresentResult RenderDisplay(GPUTexture* target, const GSVector2i target_size, bool postfx,
-                                      bool apply_aspect_ratio);
 static void DrawOverlayBorders(const GSVector2i target_size, const GSVector2i final_target_size,
                                const GSVector4i overlay_display_rect, const GSVector4i draw_rect,
                                const WindowInfoPrerotation prerotation);
@@ -1009,10 +1008,10 @@ void VideoPresenter::DrawScreenQuad(const GSVector4i rect, const GSVector4 uv_re
       break;
 
     case DisplayRotation::Rotate180:
-      vertices[0].Set(xy.xy(), uv_rect.xwzw().xy());
-      vertices[1].Set(xy.zyzw().xy(), uv_rect.zw());
-      vertices[2].Set(xy.xwzw().xy(), uv_rect.xy());
-      vertices[3].Set(xy.zw(), uv_rect.zyzw().xy());
+      vertices[0].Set(xy.xy(), uv_rect.zw());
+      vertices[1].Set(xy.zyzw().xy(), uv_rect.xwzw().xy());
+      vertices[2].Set(xy.xwzw().xy(), uv_rect.zyzw().xy());
+      vertices[3].Set(xy.zw(), uv_rect.xy());
       break;
 
     case DisplayRotation::Rotate270:
@@ -1517,24 +1516,31 @@ bool VideoPresenter::PresentFrame(GPUBackend* backend, u64 present_time)
     FullscreenUI::RenderBlur(blur_target);
   }
 
-  GPUTexture* const transition_target = FullscreenUI::IsTransitionActive() ?
-                                          FullscreenUI::GetTransitionRenderTexture(g_gpu_device->GetMainSwapChain()) :
-                                          nullptr;
   GPUPresentResult pres;
-  if (transition_target)
+  if (GPUTexture* transition_target = FullscreenUI::IsTransitionActive() ?
+                                        FullscreenUI::GetTransitionRenderTexture(g_gpu_device->GetMainSwapChain()) :
+                                        nullptr)
   {
     if (blur_target)
-      DrawDisplayCopy(blur_target, transition_target, swap_chain);
-    else if (backend)
-      RenderDisplay(transition_target, transition_target->GetSizeVec(), true, true);
+    {
+      // Avoid a copy by drawing on top of the blur source, since it's already been consumed.
+      GL_INS("Using blur target as transition target");
+      transition_target = blur_target;
+    }
     else
-      g_gpu_device->ClearRenderTarget(transition_target, GPUDevice::DEFAULT_CLEAR_COLOR);
+    {
+      // Display still needs rendering.
+      if (backend)
+        RenderDisplay(transition_target, transition_target->GetSizeVec(), true, true);
+      else
+        g_gpu_device->ClearRenderTarget(transition_target, GPUDevice::DEFAULT_CLEAR_COLOR);
+    }
 
     g_gpu_device->SetRenderTarget(transition_target);
     ImGuiManager::RenderDrawLists(transition_target);
 
     if ((pres = g_gpu_device->BeginPresent(swap_chain)) == GPUPresentResult::OK)
-      FullscreenUI::RenderTransitionBlend(swap_chain);
+      FullscreenUI::RenderTransitionBlend(swap_chain, transition_target);
   }
   else
   {
@@ -1544,6 +1550,8 @@ bool VideoPresenter::PresentFrame(GPUBackend* backend, u64 present_time)
       ImGuiManager::RenderDrawLists(swap_chain);
     }
   }
+
+  FullscreenUI::RecycleQueuedTextures();
 
   if (pres == GPUPresentResult::OK)
   {
@@ -1748,64 +1756,62 @@ SettingsInterface& VideoPresenter::GetPostProcessingSettingsInterface(const char
 
 void VideoPresenter::TogglePostProcessing()
 {
-  DebugAssert(!VideoThread::IsOnThread());
+  DebugAssert(Host::IsOnCoreThread());
 
-  VideoThread::RunOnBackend(
-    [](GPUBackend* backend) {
-      if (!backend)
-        return;
+  VideoThread::RunOnThread([]() {
+    GPUBackend* const backend = VideoThread::GetGPUBackend();
+    if (!backend) [[unlikely]]
+      return;
 
-      // if it is being lazy loaded, we have to load it here
-      if (!s_locals.display_postfx)
-        UpdatePostProcessingSettings(true);
+    // if it is being lazy loaded, we have to load it here
+    if (!s_locals.display_postfx)
+      UpdatePostProcessingSettings(true);
 
-      if (s_locals.display_postfx)
-        s_locals.display_postfx->Toggle();
-    },
-    false, true);
+    if (s_locals.display_postfx)
+      s_locals.display_postfx->Toggle();
+  });
 }
 
 void VideoPresenter::ReloadPostProcessingSettings(bool display, bool internal, bool reload_shaders)
 {
-  DebugAssert(!VideoThread::IsOnThread());
+  DebugAssert(Host::IsOnCoreThread());
 
-  VideoThread::RunOnBackend(
-    [display, internal, reload_shaders](GPUBackend* backend) {
-      if (!backend)
-        return;
+  VideoThread::RunOnThread([display, internal, reload_shaders]() {
+    GPUBackend* const backend = VideoThread::GetGPUBackend();
+    if (!backend) [[unlikely]]
+      return;
 
-      // OSD message first in case any errors occur.
-      if (reload_shaders)
+    // OSD message first in case any errors occur.
+    if (reload_shaders)
+    {
+      Host::AddIconOSDMessage(OSDMessageType::Quick, "PostProcessing", ICON_FA_PAINT_ROLLER,
+                              TRANSLATE_STR("OSDMessage", "Post-processing shaders reloaded."));
+    }
+
+    if (display)
+    {
+      Error error;
+      if (LoadOverlaySettings())
       {
-        Host::AddIconOSDMessage(OSDMessageType::Quick, "PostProcessing", ICON_FA_PAINT_ROLLER,
-                                TRANSLATE_STR("OSDMessage", "Post-processing shaders reloaded."));
-      }
-
-      if (display)
-      {
-        Error error;
-        if (LoadOverlaySettings())
+        // something changed, need to recompile pipelines, the needed pipelines are based on alpha blend
+        LoadOverlayTexture();
+        if (!CompileDisplayPipelines(true, false, false, &error))
         {
-          // something changed, need to recompile pipelines, the needed pipelines are based on alpha blend
-          LoadOverlayTexture();
-          if (!CompileDisplayPipelines(true, false, false, &error))
-          {
-            VideoThread::ReportFatalErrorAndShutdown(
-              fmt::format("Failed to update settings: {}", error.GetDescription()));
-            return;
-          }
+          VideoThread::ReportFatalErrorAndShutdown(
+            fmt::format("Failed to update settings: {}", error.GetDescription()));
+          return;
         }
-
-        UpdatePostProcessingSettings(false);
       }
-      if (internal)
-        backend->UpdatePostProcessingSettings(reload_shaders);
 
-      // trigger represent of frame
-      if (VideoThread::IsSystemPaused())
-        VideoThread::Internal::PresentFrameAndRestoreContext();
-    },
-    false, true);
+      UpdatePostProcessingSettings(false);
+    }
+    if (internal)
+      backend->UpdatePostProcessingSettings(reload_shaders);
+
+    // trigger represent of frame
+    if (VideoThread::IsSystemPaused())
+      VideoThread::PresentFrameAndRestoreContext();
+  });
 }
 
 bool VideoPresenter::LoadOverlaySettings()
@@ -1855,8 +1861,8 @@ bool VideoPresenter::LoadOverlaySettings()
   const bool image_changed = (s_locals.border_overlay_image_path != image_path);
   const bool changed =
     (image_changed ||
-     (!image_path.empty() && (alpha_blend == s_locals.border_overlay_alpha_blend ||
-                              destination_alpha_blend == s_locals.border_overlay_destination_alpha_blend)));
+     (!image_path.empty() && (alpha_blend != s_locals.border_overlay_alpha_blend ||
+                              destination_alpha_blend != s_locals.border_overlay_destination_alpha_blend)));
   if (image_changed)
     s_locals.border_overlay_image_path = std::move(image_path);
 

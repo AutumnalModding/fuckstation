@@ -214,10 +214,20 @@ QLineEdit {
   selection-color: $text-active;
   color: $text-color;
 }
+QPlainTextEdit {
+  border: none;
+  border-radius: 8px;
+  padding: 3px 6px;
+  background-color: $bg-control;
+  selection-background-color: $bg-active;
+  selection-color: $text-active;
+  color: $text-color;
+}
 QLineEdit::hover {
   background-color: $bg-hover;
 }
-QLineEdit:disabled {
+QLineEdit:disabled,
+QPlainTextEdit:disabled {
   background-color: $bg-disabled;
   color: $text-disabled;
 }
@@ -428,6 +438,12 @@ QSlider::handle:hover {
 QSlider::handle:pressed {
   background-color: $slider-handle-pressed;
 }
+QSlider::groove:disabled {
+  background-color: $bg-disabled;
+}
+QSlider::handle:disabled {
+  background-color: $text-disabled;
+}
 
 QTextBrowser {
   border: none;
@@ -481,6 +497,15 @@ QTextBrowser {
   border: none;
   padding: 2px 4px;
 }
+.settings-window QTreeView::item:first {
+  border-top-left-radius: 8px;
+  border-bottom-left-radius: 8px;
+}
+.settings-window QTreeView::item:last {
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+
 .settings-window QTreeView::item:hover {
   background-color: $bg-hover;
 }
@@ -499,4 +524,8 @@ QTextBrowser {
   border: none;
   border-bottom: 1px solid $bg-active;
   margin: 0px 8px;
+}
+.settings-window GameCheatSettingsWidget QTreeView::item:first,
+.settings-window GameCheatSettingsWidget QTreeView::item:last {
+  border-radius: 0;
 }

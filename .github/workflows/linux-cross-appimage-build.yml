@@ -29,8 +29,9 @@ jobs:
       run: |
         DEPS_VERSION=$(cat dep/PREBUILT-VERSION)
         cd dep/prebuilt
-        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/dependencies/releases/download/$DEPS_VERSION/deps-linux-x64.tar.xz"
-        curl --retry 5 --retry-all-errors -LO "https://github.com/duckstation/dependencies/releases/download/$DEPS_VERSION/deps-linux-cross-${{matrix.arch}}.tar.xz"
+        curl --fail --retry 5 --retry-all-errors -LO "https://github.com/duckstation/dependencies/releases/download/$DEPS_VERSION/deps-linux-x64.tar.xz"
+        curl --fail --retry 5 --retry-all-errors -LO "https://github.com/duckstation/dependencies/releases/download/$DEPS_VERSION/deps-linux-cross-${{matrix.arch}}.tar.xz"
+        sha256sum --check --ignore-missing ../PREBUILT-SHA256SUMS
         tar -xf "deps-linux-x64.tar.xz"
         tar -xf "deps-linux-cross-${{matrix.arch}}.tar.xz"
         rm "deps-linux-x64.tar.xz" "deps-linux-cross-${{matrix.arch}}.tar.xz"
@@ -49,7 +50,7 @@ jobs:
 
     - name: Create Binary Aliases
       run: |
-        ln -s llvm-strip-19 /usr/bin/llvm-strip
+        ln -s llvm-strip-22 /usr/bin/llvm-strip
 
     - name: Set Up Toolchain File
       run: |
@@ -57,12 +58,12 @@ jobs:
         echo "set(CMAKE_FIND_ROOT_PATH \"$PWD/dep/prebuilt/linux-cross-${{matrix.arch}};/${{matrix.arch}}-chroot\")" >> "$HOME/toolchain.cmake"
         echo "set(QT_HOST_PATH \"$PWD/dep/prebuilt/linux-x64\")" >> "$HOME/toolchain.cmake"
         echo "set(LCONVERT_EXE \"$PWD/dep/prebuilt/linux-x64/bin/lconvert\")" >> "$HOME/toolchain.cmake"
-        echo "set(CMAKE_C_COMPILER clang-19)" >> "$HOME/toolchain.cmake"
-        echo "set(CMAKE_C_COMPILER_AR llvm-ar-19)" >> "$HOME/toolchain.cmake"
-        echo "set(CMAKE_C_COMPILER_RANLIB llvm-ranlib-19)" >> "$HOME/toolchain.cmake"
-        echo "set(CMAKE_CXX_COMPILER clang++-19)" >> "$HOME/toolchain.cmake"
-        echo "set(CMAKE_CXX_COMPILER_AR llvm-ar-19)" >> "$HOME/toolchain.cmake"
-        echo "set(CMAKE_CXX_COMPILER_RANLIB llvm-ranlib-19)" >> "$HOME/toolchain.cmake"
+        echo "set(CMAKE_C_COMPILER clang-22)" >> "$HOME/toolchain.cmake"
+        echo "set(CMAKE_C_COMPILER_AR llvm-ar-22)" >> "$HOME/toolchain.cmake"
+        echo "set(CMAKE_C_COMPILER_RANLIB llvm-ranlib-22)" >> "$HOME/toolchain.cmake"
+        echo "set(CMAKE_CXX_COMPILER clang++-22)" >> "$HOME/toolchain.cmake"
+        echo "set(CMAKE_CXX_COMPILER_AR llvm-ar-22)" >> "$HOME/toolchain.cmake"
+        echo "set(CMAKE_CXX_COMPILER_RANLIB llvm-ranlib-22)" >> "$HOME/toolchain.cmake"
         echo "set(CMAKE_EXE_LINKER_FLAGS_INIT "-fuse-ld=lld")" >> "$HOME/toolchain.cmake"
         echo "set(CMAKE_MODULE_LINKER_FLAGS_INIT "-fuse-ld=lld")" >> "$HOME/toolchain.cmake"
         echo "set(CMAKE_SHARED_LINKER_FLAGS_INIT "-fuse-ld=lld")" >> "$HOME/toolchain.cmake"
@@ -84,19 +85,17 @@ jobs:
     - name: Generate CMake
       shell: bash
       run: |
-        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_TOOLCHAIN_FILE="$HOME/toolchain.cmake" -DHOST_MIN_PAGE_SIZE=4096 -DHOST_MAX_PAGE_SIZE=16384 -DHOST_CACHE_LINE_SIZE=64 -DBUILD_QT_FRONTEND=ON -DBUILD_MINI_FRONTEND=ON
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_TOOLCHAIN_FILE="$HOME/toolchain.cmake" -DHOST_MIN_PAGE_SIZE=4096 -DHOST_MAX_PAGE_SIZE=16384 -DHOST_CACHE_LINE_SIZE=64
 
     - name: Compile Build
       shell: bash
       run: |
         cmake --build build --parallel
-        scripts/appimage/make-cross-appimage.sh duckstation-qt ${{ matrix.arch }} "$(realpath build)" "/${{ matrix.arch }}-chroot"
-        scripts/appimage/make-cross-appimage.sh -inject-libc duckstation-mini ${{ matrix.arch }} "$(realpath build)" "/${{ matrix.arch }}-chroot"
+        scripts/appimage/make-cross-appimage.sh "${{ matrix.arch }}" "$(realpath build)" "/${{ matrix.arch }}-chroot"
 
-    - name: Upload AppImages
-      uses: actions/upload-artifact@v6
+    - name: Upload AppImage
+      uses: actions/upload-artifact@v7
       with:
-        name: "linux-${{ matrix.arch }}-appimage"
-        path: "DuckStation-*.AppImage"
-        compression-level: 0
+        path: "DuckStation-${{ matrix.arch }}.AppImage"
+        archive: false
         if-no-files-found: error

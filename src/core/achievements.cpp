@@ -5,11 +5,11 @@
 
 #include "achievements.h"
 #include "achievements_private.h"
-#include "bios.h"
 #include "bus.h"
 #include "cheats.h"
 #include "core.h"
 #include "cpu_core.h"
+#include "discord_presence.h"
 #include "fullscreenui.h"
 #include "fullscreenui_private.h"
 #include "game_list.h"
@@ -28,32 +28,34 @@
 #include "common/file_system.h"
 #include "common/heap_array.h"
 #include "common/log.h"
-#include "common/md5_digest.h"
 #include "common/path.h"
 #include "common/progress_callback.h"
 #include "common/ryml_helpers.h"
 #include "common/scoped_guard.h"
 #include "common/sha256_digest.h"
 #include "common/small_string.h"
+#include "common/string_pool.h"
 #include "common/string_util.h"
 #include "common/timer.h"
 
 #include "util/cd_image.h"
+#include "util/http_cache.h"
 #include "util/http_downloader.h"
 #include "util/imgui_manager.h"
 #include "util/ini_settings_interface.h"
+#include "util/sqlite_helpers.h"
 #include "util/state_wrapper.h"
 
-#include "IconsEmoji.h"
-#include "IconsFontAwesome.h"
-#include "IconsPromptFont.h"
-#include "fmt/format.h"
-#include "imgui.h"
-#include "imgui_internal.h"
-#include "rc_api_info.h"
-#include "rc_api_runtime.h"
-#include "rc_client.h"
-#include "rc_consoles.h"
+#include <IconsEmoji.h>
+#include <IconsFontAwesome.h>
+#include <IconsPromptFont.h>
+#include <fmt/format.h>
+#include <imgui.h>
+#include <imgui_internal.h>
+#include <rc_api_info.h>
+#include <rc_api_runtime.h>
+#include <rc_client.h>
+#include <rc_consoles.h>
 
 #include <algorithm>
 #include <atomic>
@@ -72,8 +74,9 @@ namespace Achievements {
 static constexpr const char* INFO_SOUND_NAME = "sounds/achievements/message.wav";
 static constexpr const char* UNLOCK_SOUND_NAME = "sounds/achievements/unlock.wav";
 static constexpr const char* LBSUBMIT_SOUND_NAME = "sounds/achievements/lbsubmit.wav";
-static constexpr const char* CACHE_SUBDIRECTORY_NAME = "achievement_images";
 constexpr const char* const RA_LOGO_ICON_NAME = "images/ra-icon.webp";
+constexpr const char* const RA_LOGO_SVG_ICON_NAME = "images/ra-icon.svg";
+constexpr const char* const RA_REGISTER_URL = "https://retroachievements.org/createaccount.php";
 
 static constexpr float LOGIN_NOTIFICATION_TIME = 5.0f;
 static constexpr float ACHIEVEMENT_SUMMARY_NOTIFICATION_TIME = 5.0f;
@@ -86,10 +89,11 @@ static constexpr float LEADERBOARD_FAILED_NOTIFICATION_TIME = 3.0f;
 static constexpr u16 LEADERBOARD_NOTIFICATION_MIN_WIDTH = 380;
 
 // Some API calls are really slow. Set a longer timeout.
-static constexpr float SERVER_CALL_TIMEOUT = 60.0f;
+static constexpr u16 SERVER_CALL_TIMEOUT = 60;
 
-// Chrome uses 10 server calls per domain, seems reasonable.
-static constexpr u32 MAX_CONCURRENT_SERVER_CALLS = 10;
+// Update game list if it is more than a year old when logging in.
+static constexpr s64 GAME_LIST_MAX_AGE_SECONDS = 365 * 24 * 60 * 60;
+static constexpr const char* GAME_LIST_LAST_UPDATED_METADATA_KEY = "game_list_last_updated";
 
 namespace {
 
@@ -98,15 +102,8 @@ struct LoginWithPasswordParameters
   const char* username;
   Error* error;
   rc_client_async_handle_t* request;
+  bool is_temporary_client;
   bool result;
-};
-
-struct FetchGameTitlesParameters
-{
-  Error* error;
-  rc_client_async_handle_t* request;
-  rc_client_game_title_list_t* list;
-  bool success;
 };
 
 } // namespace
@@ -117,43 +114,35 @@ static void ReportFmtError(fmt::format_string<T...> fmt, T&&... args);
 template<typename... T>
 static void ReportRCError(int err, fmt::format_string<T...> fmt, T&&... args);
 static void ClearGameInfo();
-static void ClearGameHash();
-static bool HasSavedCredentials();
 static bool TryLoggingInWithToken();
 static void EnableHardcoreMode(bool display_message, bool display_game_summary);
 static void OnHardcoreModeChanged(bool enabled, bool display_message, bool display_game_summary);
 static bool IsRAIntegrationInitializing();
 static void FinishInitialize();
 static void FinishLogin();
-static bool IdentifyGame(CDImage* image);
-static bool IdentifyCurrentGame();
 static void BeginLoadGame();
-static void UpdateGameSummary(bool update_progress_database);
+static void UpdateGameSummary();
 static void UpdateModeSettings(const Settings& old_config);
 static DynamicHeapArray<u8> SaveStateToBuffer();
 static void LoadStateFromBuffer(std::span<const u8> data, std::unique_lock<std::recursive_mutex>& lock);
 static bool SaveStateToBuffer(std::span<u8> data);
-static std::string GetAchievementBadgeURL(const rc_client_achievement_t* achievement, u32 image_type);
 static std::string GetImageURL(const char* image_name, u32 type);
-static std::string GetLocalImagePath(const std::string_view image_name, u32 type);
-static void DownloadImage(std::string url, std::string cache_path);
 static void PrefetchNextAchievementBadge();
 static void PrefetchNextAchievementBadge(const rc_client_achievement_t* const last_cheevo);
 static void PrefetchAllAchievementBadges();
-static void SendNextPrefetchBadgeRequest();
-static void ClearPrefetchBadgeRequests();
+static void UpdatePrefetchAchievementBadgesOSDMessage();
 
 static TinyString DecryptLoginToken(std::string_view encrypted_token, std::string_view username);
 static TinyString EncryptLoginToken(std::string_view token, std::string_view username);
 
-static bool CreateClient(rc_client_t** client, std::unique_ptr<HTTPDownloader>* http);
-static void DestroyClient(rc_client_t** client, std::unique_ptr<HTTPDownloader>* http);
+static bool CreateClient(std::unique_lock<std::recursive_mutex>& lock, bool is_temporary_client);
+static void DestroyClient(std::unique_lock<std::recursive_mutex>& lock);
 static void ClientMessageCallback(const char* message, const rc_client_t* client);
 static uint32_t ClientReadMemory(uint32_t address, uint8_t* buffer, uint32_t num_bytes, rc_client_t* client);
 static void ClientServerCall(const rc_api_request_t* request, rc_client_server_callback_t callback, void* callback_data,
                              rc_client_t* client);
 static rc_api_server_response_t MakeRCAPIServerResponse(s32 status_code, const std::vector<u8>& data);
-static void WaitForHTTPRequestsWithYield(std::unique_lock<std::recursive_mutex>& lock);
+static void WaitForServerCallsWithYield(std::unique_lock<std::recursive_mutex>& lock);
 
 static void ClientEventHandler(const rc_client_event_t* event, rc_client_t* client);
 static void HandleResetEvent(const rc_client_event_t* event);
@@ -178,46 +167,43 @@ static void HandleServerReconnectedEvent(const rc_client_event_t* event);
 
 static void ClientLoginWithTokenCallback(int result, const char* error_message, rc_client_t* client, void* userdata);
 static void ClientLoginWithPasswordCallback(int result, const char* error_message, rc_client_t* client, void* userdata);
-static void FetchGameTitlesCallback(int result, const char* error_message, rc_client_game_title_list_t* list,
-                                    rc_client_t* client, void* userdata);
 static void ClientLoadGameCallback(int result, const char* error_message, rc_client_t* client, void* userdata);
 
 static void DisplayHardcoreDeferredMessage();
 static void DisplayAchievementSummary();
 static void UpdateRichPresence(std::unique_lock<std::recursive_mutex>& lock);
 
-static std::string GetHashDatabasePath();
-static std::string GetProgressDatabasePath();
-static void PreloadHashDatabase();
-static bool LoadHashDatabase(const std::string& path, Error* error);
-static bool CreateHashDatabaseFromSeedDatabase(const std::string& path, Error* error);
-static void BeginRefreshHashDatabase();
-static void FinishRefreshHashDatabase();
-static void CancelHashDatabaseRequests();
+static bool EnsureAchievementsDatabaseOpen(Error* error = nullptr);
+static void CloseAchievementsDatabase();
+static std::string GetAchievementsDatabaseMetadata(std::string_view key);
+static bool SetAchievementsDatabaseMetadata(std::string_view key, std::string_view value, Error* error);
+static bool CreateGameDatabaseFromSeedDatabase(Error* error);
+static void UpdateGameDatabaseFromCurrentGame();
 
-static void FetchHashLibraryCallback(int result, const char* error_message, rc_client_hash_library_t* list,
-                                     rc_client_t* client, void* callback_userdata);
+static void FetchGameListIfOutdated();
+static bool BeginFetchGameListRequest(Error* error);
+static void CancelFetchGameListRequest();
+static void FetchGameListCallback(int result, const char* error_message, rc_client_game_list_t* game_list,
+                                  rc_client_t* client, void* callback_userdata);
+static bool WriteGameListToDatabase(const rc_client_game_list_t* game_list, Error* error);
+
+static void FetchAllProgressIfMissing();
+static bool BeginFetchAllProgressRequest(Error* error);
+static void CancelFetchAllProgressRequest();
 static void FetchAllProgressCallback(int result, const char* error_message, rc_client_all_user_progress_t* list,
                                      rc_client_t* client, void* callback_userdata);
-static void RefreshAllProgressCallback(int result, const char* error_message, rc_client_all_user_progress_t* list,
-                                       rc_client_t* client, void* callback_userdata);
 
-static void BuildHashDatabase(const rc_client_hash_library_t* hashlib, const rc_client_all_user_progress_t* allprog);
-static bool SortAndSaveHashDatabase(Error* error);
-
-static FileSystem::ManagedCFilePtr OpenProgressDatabase(bool for_write, bool truncate, Error* error);
-static void BuildProgressDatabase(const rc_client_all_user_progress_t* allprog);
-static void UpdateProgressDatabase();
+static bool WriteAllProgressToDatabase(const rc_client_all_user_progress_t* allprog, Error* error);
+static void UpdateProgressDatabaseFromCurrentGame();
 static void ClearProgressDatabase();
 
-static std::string GetPinnedAchievementsPath(u32 game_id);
 static void LoadPinnedAchievements();
-static void SavePinnedAchievements();
+static void SetAchievementPinnedInDatabase(u32 achievement_id, bool pinned);
 
 #ifdef RC_CLIENT_SUPPORTS_RAINTEGRATION
 
 static void BeginLoadRAIntegration();
-static void UnloadRAIntegration();
+static void UnloadRAIntegration(std::unique_lock<std::recursive_mutex>& lock);
 
 #endif
 
@@ -226,47 +212,47 @@ namespace {
 struct State
 {
   rc_client_t* client = nullptr;
-  bool has_achievements = false;
-  bool has_leaderboards = false;
-  bool has_rich_presence = false;
-  bool reload_game_on_reset = false;
-  bool hashdb_loaded = false;
+  u16 pending_badge_downloads = 0;
+  bool has_achievements : 1 = false;
+  bool has_leaderboards : 1 = false;
+  bool has_rich_presence : 1 = false;
+  bool has_saved_credentials : 1 = false;
+  bool reload_game_on_reset : 1 = false;
 
   std::recursive_mutex mutex; // large
-
-  std::string user_badge_path;
-
-  std::string rich_presence_string;
-  Timer::Value rich_presence_poll_time = 0;
 
   std::vector<LeaderboardTrackerIndicator> active_leaderboard_trackers;
   std::vector<ActiveChallengeIndicator> active_challenge_indicators;
   std::optional<AchievementProgressIndicator> active_progress_indicator;
   std::vector<PinnedAchievementIndicator> pinned_achievement_indicators;
 
-  rc_client_user_game_summary_t game_summary = {};
+  std::string http_user_agent_header;
+
+  std::string logged_in_username;
+  std::string logged_in_user_icon_url;
+
+  std::string rich_presence_string;
+  Timer::Value rich_presence_poll_time = 0;
+
+  std::optional<GameHash> game_hash;
   u32 game_id = 0;
 
-  std::unique_ptr<HTTPDownloader> http_downloader;
-
-  std::string game_path;
   std::string game_title;
-  std::string game_icon;
-  std::string game_icon_url;
-  std::optional<GameHash> game_hash;
+  std::string game_badge_url;
+  rc_client_user_game_summary_t game_summary = {};
 
   rc_client_async_handle_t* login_request = nullptr;
   rc_client_async_handle_t* load_game_request = nullptr;
 
-  std::vector<HashDatabaseEntry> hashdb_entries;
+  sqlite3* achievements_db = nullptr;
+  SQLitePreparedStatement badge_lookup_stmt;
+  SQLitePreparedStatement update_progress_stmt;
 
-  rc_client_async_handle_t* fetch_hash_library_request = nullptr;
-  rc_client_hash_library_t* fetch_hash_library_result = nullptr;
+  rc_client_async_handle_t* fetch_game_list_request = nullptr;
   rc_client_async_handle_t* fetch_all_progress_request = nullptr;
-  rc_client_all_user_progress_t* fetch_all_progress_result = nullptr;
-  rc_client_async_handle_t* refresh_all_progress_request = nullptr;
 
-  std::vector<std::pair<std::string, std::string>> prefetch_badge_requests; // (path, url)
+  // used for GetAchievementBadgeURL() when the url fields aren't populated
+  std::string temporary_url;
 
 #ifdef RC_CLIENT_SUPPORTS_RAINTEGRATION
   rc_client_async_handle_t* load_raintegration_request = nullptr;
@@ -359,47 +345,6 @@ void Achievements::ReportRCError(int err, fmt::format_string<T...> fmt, T&&... a
   ReportError(str);
 }
 
-std::optional<Achievements::GameHash> Achievements::GetGameHash(CDImage* image)
-{
-  std::optional<GameHash> ret;
-
-  std::string executable_name;
-  std::vector<u8> executable_data;
-  if (!System::ReadExecutableFromImage(image, &executable_name, &executable_data))
-    return ret;
-
-  return GetGameHash(executable_name, executable_data);
-}
-
-std::optional<Achievements::GameHash> Achievements::GetGameHash(const std::string_view executable_name,
-                                                                std::span<const u8> executable_data)
-{
-  std::optional<GameHash> ret;
-
-  // NOTE: Assumes executable_data is aligned to 4 bytes at least.. it should be.
-  const BIOS::PSEXEHeader* header = reinterpret_cast<const BIOS::PSEXEHeader*>(executable_data.data());
-  if (executable_data.size() < sizeof(BIOS::PSEXEHeader) || !BIOS::IsValidPSExeHeader(*header, executable_data.size()))
-  {
-    ERROR_LOG("PS-EXE header is invalid in '{}' ({} bytes)", executable_name, executable_data.size());
-    return ret;
-  }
-
-  const u32 hash_size = std::min(header->file_size + 2048, static_cast<u32>(executable_data.size()));
-
-  MD5Digest digest;
-  digest.Update(executable_name.data(), static_cast<u32>(executable_name.size()));
-  if (hash_size > 0)
-    digest.Update(executable_data.data(), hash_size);
-
-  ret.emplace();
-  digest.Final(ret.value());
-
-  INFO_COLOR_LOG(StrongOrange, "RA Hash for '{}': {} ({} bytes hashed)", executable_name, GameHashToString(ret),
-                 hash_size);
-
-  return ret;
-}
-
 std::string Achievements::GetImageURL(const char* image_name, u32 type)
 {
   std::string ret;
@@ -412,69 +357,6 @@ std::string Achievements::GetImageURL(const char* image_name, u32 type)
 
   rc_api_destroy_request(&request);
   return ret;
-}
-
-std::string Achievements::GetLocalImagePath(const std::string_view image_name, u32 type)
-{
-  std::string_view prefix;
-  std::string_view suffix;
-  switch (type)
-  {
-    case RC_IMAGE_TYPE_GAME:
-      prefix = "image"; // https://media.retroachievements.org/Images/{}.png
-      break;
-
-    case RC_IMAGE_TYPE_USER:
-      prefix = "user"; // https://media.retroachievements.org/UserPic/{}.png
-      break;
-
-    case RC_IMAGE_TYPE_ACHIEVEMENT: // https://media.retroachievements.org/Badge/{}.png
-      prefix = "badge";
-      break;
-
-    case RC_IMAGE_TYPE_ACHIEVEMENT_LOCKED:
-      prefix = "badge";
-      suffix = "_lock";
-      break;
-
-    default:
-      prefix = "badge";
-      break;
-  }
-
-  std::string ret;
-  if (!image_name.empty())
-  {
-    ret = fmt::format("{}" FS_OSPATH_SEPARATOR_STR "{}" FS_OSPATH_SEPARATOR_STR "{}_{}{}.png", EmuFolders::Cache,
-                      CACHE_SUBDIRECTORY_NAME, prefix, Path::SanitizeFileName(image_name), suffix);
-  }
-
-  return ret;
-}
-
-void Achievements::DownloadImage(std::string url, std::string cache_path)
-{
-  auto callback = [cache_path = std::move(cache_path)](s32 status_code, const Error& error,
-                                                       const std::string& content_type,
-                                                       HTTPDownloader::Request::Data data) mutable {
-    if (status_code != HTTPDownloader::HTTP_STATUS_OK)
-    {
-      ERROR_LOG("Failed to download badge '{}': {}", Path::GetFileName(cache_path), error.GetDescription());
-      return;
-    }
-
-    Error write_error;
-    if (!FileSystem::WriteBinaryFile(cache_path.c_str(), data, &write_error))
-    {
-      ERROR_LOG("Failed to write badge image to '{}': {}", cache_path, write_error.GetDescription());
-      return;
-    }
-
-    VideoThread::RunOnThread(
-      [cache_path = std::move(cache_path)]() { FullscreenUI::InvalidateCachedTexture(cache_path); });
-  };
-
-  s_state.http_downloader->CreateRequest(std::move(url), std::move(callback));
 }
 
 void Achievements::PrefetchNextAchievementBadge()
@@ -518,13 +400,14 @@ void Achievements::PrefetchNextAchievementBadge(const rc_client_achievement_t* c
     return;
 
   VERBOSE_LOG("Prefetching badge for likely next achievement '{}' ({})", next_cheevo->title, next_cheevo->badge_url);
-  GetAchievementBadgePath(next_cheevo, false);
+
+  const std::string_view url = GetAchievementBadgeURL(next_cheevo, false);
+  if (!url.empty())
+    HTTPCache::Prefetch(url);
 }
 
 void Achievements::PrefetchAllAchievementBadges()
 {
-  static constexpr u32 PREFETCH_IMAGE_TYPE = RC_IMAGE_TYPE_ACHIEVEMENT;
-
   // This is here so that we can hopefully avoid the delay in downloading the badge image on unlock.
   if (!HasAchievements())
     return;
@@ -545,67 +428,41 @@ void Achievements::PrefetchAllAchievementBadges()
     for (u32 j = 0; j < bucket.num_achievements; j++)
     {
       const rc_client_achievement_t* const cheevo = bucket.achievements[j];
-      std::string path = GetLocalImagePath(cheevo->badge_name, PREFETCH_IMAGE_TYPE);
-      if (path.empty() || FileSystem::FileExists(path.c_str()))
-        continue;
+      const std::string_view url = GetAchievementBadgeURL(cheevo, false);
+      if (!url.empty() && !HTTPCache::Contains(url))
+      {
+        s_state.pending_badge_downloads++;
 
-      std::string url = GetAchievementBadgeURL(cheevo, PREFETCH_IMAGE_TYPE);
-      VERBOSE_LOG("Prefetching badge for locked achievement '{}' ({})", cheevo->title, cheevo->badge_url);
-      s_state.prefetch_badge_requests.emplace_back(std::move(path), std::move(url));
+        HTTPCache::Prefetch(url, [](bool) {
+          const auto lock = GetLock();
+          if (s_state.pending_badge_downloads > 0)
+          {
+            s_state.pending_badge_downloads--;
+            UpdatePrefetchAchievementBadgesOSDMessage();
+          }
+        });
+      }
     }
   }
   rc_client_destroy_achievement_list(achievements);
-  if (s_state.prefetch_badge_requests.empty())
-    return;
 
-  // reverse the list, fetch the first achievement first since it's the most likely to be unlocked next
-  std::ranges::reverse(s_state.prefetch_badge_requests);
-  SendNextPrefetchBadgeRequest();
+  if (s_state.pending_badge_downloads > 0)
+    UpdatePrefetchAchievementBadgesOSDMessage();
 }
 
-void Achievements::SendNextPrefetchBadgeRequest()
+void Achievements::UpdatePrefetchAchievementBadgesOSDMessage()
 {
-  if (s_state.prefetch_badge_requests.empty())
-    return;
-
-  std::string cache_path = std::move(s_state.prefetch_badge_requests.back().first);
-  std::string url = std::move(s_state.prefetch_badge_requests.back().second);
-  s_state.prefetch_badge_requests.pop_back();
-
-  // free memory when done
-  if (s_state.prefetch_badge_requests.empty())
-    s_state.prefetch_badge_requests = {};
-
-  auto callback = [cache_path = std::move(cache_path)](s32 status_code, const Error& error,
-                                                       const std::string& content_type,
-                                                       HTTPDownloader::Request::Data data) mutable {
-    if (status_code != HTTPDownloader::HTTP_STATUS_OK)
-    {
-      ERROR_LOG("Failed to download badge '{}': {}", Path::GetFileName(cache_path), error.GetDescription());
-      return;
-    }
-
-    Error write_error;
-    if (!FileSystem::WriteBinaryFile(cache_path.c_str(), data, &write_error))
-    {
-      ERROR_LOG("Failed to write badge image to '{}': {}", cache_path, write_error.GetDescription());
-      return;
-    }
-
-    VideoThread::RunOnThread(
-      [cache_path = std::move(cache_path)]() { FullscreenUI::InvalidateCachedTexture(cache_path); });
-
-    SendNextPrefetchBadgeRequest();
-  };
-
-  s_state.http_downloader->CreateRequest(std::move(url), std::move(callback));
-  if (!s_state.prefetch_badge_requests.empty())
-    VERBOSE_LOG("{} badge requests remaining", s_state.prefetch_badge_requests.size());
-}
-
-void Achievements::ClearPrefetchBadgeRequests()
-{
-  s_state.prefetch_badge_requests = {};
+  if (s_state.pending_badge_downloads > 0)
+  {
+    Host::AddIconOSDMessage(OSDMessageType::Persistent, "AchievementsBadgePrefetch", OSDMessageIconType::Spinner, {},
+                            {},
+                            TRANSLATE_PLURAL_STR("Achievements", "Prefetching achievement badges (%n remaining)...",
+                                                 "Achievement badge prefetch count", s_state.pending_badge_downloads));
+  }
+  else
+  {
+    Host::RemoveKeyedOSDMessage("AchievementsBadgePrefetch");
+  }
 }
 
 bool Achievements::IsActive()
@@ -652,24 +509,14 @@ bool Achievements::HasRichPresence()
   return s_state.has_rich_presence;
 }
 
-const std::string& Achievements::GetGameTitle()
+const std::string& Achievements::GetCurrentGameTitle()
 {
   return s_state.game_title;
 }
 
-const std::string& Achievements::GetGamePath()
+const std::string& Achievements::GetCurrentGameBadgeURL()
 {
-  return s_state.game_path;
-}
-
-const std::string& Achievements::GetGameIconPath()
-{
-  return s_state.game_icon;
-}
-
-const std::string& Achievements::GetGameIconURL()
-{
-  return s_state.game_icon_url;
+  return s_state.game_badge_url;
 }
 
 const std::string& Achievements::GetRichPresenceString()
@@ -677,82 +524,52 @@ const std::string& Achievements::GetRichPresenceString()
   return s_state.rich_presence_string;
 }
 
-bool Achievements::Initialize()
+void Achievements::ProcessStartup()
 {
-  auto lock = GetLock();
-  AssertMsg(g_settings.achievements_enabled, "Achievements are enabled");
-  Assert(!s_state.client && !s_state.http_downloader);
-
-  if (!CreateClient(&s_state.client, &s_state.http_downloader))
-    return false;
-
-  rc_client_set_event_handler(s_state.client, ClientEventHandler);
-  rc_client_set_allow_background_memory_reads(s_state.client, true);
-
-#ifdef RC_CLIENT_SUPPORTS_RAINTEGRATION
-  if (g_settings.achievements_use_raintegration)
-    BeginLoadRAIntegration();
-#endif
-
-  // Hardcore starts off. We enable it on first boot.
-  rc_client_set_hardcore_enabled(s_state.client, false);
-  rc_client_set_encore_mode_enabled(s_state.client, g_settings.achievements_encore_mode);
-  rc_client_set_unofficial_enabled(s_state.client, g_settings.achievements_unofficial_test_mode);
-  rc_client_set_spectator_mode_enabled(s_state.client, g_settings.achievements_spectator_mode);
-
-  // We can't do an internal client login while using RAIntegration, since the two will conflict.
-  if (!IsRAIntegrationInitializing())
-    FinishInitialize();
-
-  return true;
-}
-
-void Achievements::FinishInitialize()
-{
-  // Start logging in. This can take a while.
-  TryLoggingInWithToken();
-
-  // Are we running a game?
-  if (System::IsValid())
+  // Called on startup, no need to grab lock just to populate has saved credentials.
   {
-    IdentifyCurrentGame();
-    BeginLoadGame();
-
-    // Hardcore mode isn't enabled when achievements first starts, if a game is already running.
-    if (IsLoggedInOrLoggingIn() && g_settings.achievements_hardcore_mode)
-      DisplayHardcoreDeferredMessage();
+    const auto lock = Core::GetSettingsLock();
+    const SettingsInterface* si = Core::GetBaseSettingsLayer();
+    std::string_view username, token;
+    s_state.has_saved_credentials = (si->LookupValue("Cheevos", "Username", &username) && !username.empty() &&
+                                     si->LookupValue("Cheevos", "Token", &token) && !token.empty());
   }
-
-  Host::OnAchievementsActiveChanged(true);
 }
 
-bool Achievements::CreateClient(rc_client_t** client, std::unique_ptr<HTTPDownloader>* http)
+void Achievements::Initialize()
 {
-  rc_client_t* new_client = rc_client_create(ClientReadMemory, ClientServerCall);
-  if (!new_client)
+  // No need to do anything else if we're not enabled.
+  if (!g_settings.achievements_enabled)
+    return;
+
+  auto lock = GetLock();
+  Assert(!s_state.client);
+  CreateClient(lock, false);
+}
+
+bool Achievements::CreateClient(std::unique_lock<std::recursive_mutex>& lock, bool is_temporary_client)
+{
+  Assert(!s_state.client);
+
+  s_state.client = rc_client_create(ClientReadMemory, ClientServerCall);
+  if (!s_state.client)
   {
     Host::ReportErrorAsync("Achievements Error", "rc_client_create() failed, cannot use achievements");
     return false;
   }
 
-  rc_client_enable_logging(
-    new_client, (Log::GetLogLevel() >= Log::Level::Verbose) ? RC_CLIENT_LOG_LEVEL_VERBOSE : RC_CLIENT_LOG_LEVEL_INFO,
-    ClientMessageCallback);
+  rc_client_set_event_handler(s_state.client, ClientEventHandler);
+  rc_client_set_allow_background_memory_reads(s_state.client, true);
+  rc_client_enable_logging(s_state.client,
+                           (Log::GetLogLevel() >= Log::Level::Verbose) ? RC_CLIENT_LOG_LEVEL_VERBOSE :
+                                                                         RC_CLIENT_LOG_LEVEL_INFO,
+                           ClientMessageCallback);
 
+  // Populate user-agent.
   char rc_client_user_agent[128];
-  rc_client_get_user_agent_clause(new_client, rc_client_user_agent, std::size(rc_client_user_agent));
-  *http = HTTPDownloader::Create(fmt::format("{} {}", Core::GetHTTPUserAgent(), rc_client_user_agent));
-  if (!*http)
-  {
-    Host::ReportErrorAsync("Achievements Error", "Failed to create HTTPDownloader, cannot use achievements");
-    rc_client_destroy(new_client);
-    return false;
-  }
-
-  (*http)->SetTimeout(SERVER_CALL_TIMEOUT);
-  (*http)->SetMaxActiveRequests(MAX_CONCURRENT_SERVER_CALLS);
-
-  rc_client_set_userdata(new_client, http->get());
+  rc_client_get_user_agent_clause(s_state.client, rc_client_user_agent, std::size(rc_client_user_agent));
+  s_state.http_user_agent_header = fmt::format("User-Agent: {} {}", Host::GetHTTPUserAgent(), rc_client_user_agent);
+  VERBOSE_LOG(s_state.http_user_agent_header);
 
   // Allow custom host to be overridden through config.
   if (std::string host = Core::GetBaseStringSettingValue("Cheevos", "Host"); !host.empty())
@@ -763,29 +580,86 @@ bool Achievements::CreateClient(rc_client_t** client, std::unique_ptr<HTTPDownlo
     if (!host.empty())
     {
       INFO_COLOR_LOG(StrongOrange, "Using alternative host for achievements: {}", host);
-      rc_client_set_host(new_client, host.c_str());
+      rc_client_set_host(s_state.client, host.c_str());
     }
   }
 
-  *client = new_client;
+#ifdef RC_CLIENT_SUPPORTS_RAINTEGRATION
+  if (g_settings.achievements_use_raintegration && !is_temporary_client)
+    BeginLoadRAIntegration();
+#endif
+
+  // Hardcore starts off. We enable it on first boot.
+  rc_client_set_hardcore_enabled(s_state.client, false);
+  rc_client_set_unofficial_enabled(s_state.client, g_settings.achievements_unofficial_test_mode);
+  rc_client_set_spectator_mode_enabled(s_state.client, g_settings.achievements_spectator_mode);
+  rc_client_set_encore_mode_enabled(s_state.client,
+                                    !g_settings.achievements_spectator_mode && g_settings.achievements_encore_mode);
+
+  // We can't do an internal client login while using RAIntegration, since the two will conflict.
+  // Temporary clients also don't fully login, since they themselves are used for login.
+  if (!IsRAIntegrationInitializing() && !is_temporary_client)
+    FinishInitialize();
+
   return true;
 }
 
-void Achievements::DestroyClient(rc_client_t** client, std::unique_ptr<HTTPDownloader>* http)
+void Achievements::FinishInitialize()
 {
-  (*http)->WaitForAllRequests();
+  // Start logging in. This can take a while.
+  if (!IsLoggedInOrLoggingIn())
+  {
+    TryLoggingInWithToken();
+  }
+  // Are we running a game?
+  else if (System::IsValid())
+  {
+    BeginLoadGame();
 
-  rc_client_destroy(*client);
-  *client = nullptr;
+    // Hardcore mode isn't enabled when achievements first starts, if a game is already running.
+    if (IsLoggedInOrLoggingIn() && g_settings.achievements_hardcore_mode)
+      DisplayHardcoreDeferredMessage();
+  }
 
-  http->reset();
+  Host::OnAchievementsActiveChanged(true);
+}
+
+void Achievements::DestroyClient(std::unique_lock<std::recursive_mutex>& lock)
+{
+  DebugAssert(IsActive());
+  WaitForServerCallsWithYield(lock);
+
+  ClearGameInfo();
+  DisableHardcoreMode(false, false);
+  CancelFetchGameListRequest();
+  CancelFetchAllProgressRequest();
+
+  if (s_state.login_request)
+  {
+    rc_client_abort_async(s_state.client, s_state.login_request);
+    s_state.login_request = nullptr;
+  }
+
+#ifdef RC_CLIENT_SUPPORTS_RAINTEGRATION
+  if (s_state.using_raintegration)
+  {
+    UnloadRAIntegration(lock);
+    return;
+  }
+  else
+#endif
+  {
+    rc_client_destroy(s_state.client);
+    s_state.client = nullptr;
+  }
+
+  Host::OnAchievementsActiveChanged(false);
 }
 
 bool Achievements::HasSavedCredentials()
 {
-  const TinyString username = Core::GetTinyStringSettingValue("Cheevos", "Username");
-  const TinyString api_token = Core::GetTinyStringSettingValue("Cheevos", "Token");
-  return (!username.empty() && !api_token.empty());
+  const auto lock = GetLock();
+  return s_state.has_saved_credentials;
 }
 
 bool Achievements::TryLoggingInWithToken()
@@ -820,17 +694,22 @@ bool Achievements::TryLoggingInWithToken()
 
 void Achievements::UpdateSettings(const Settings& old_config)
 {
-  if (!g_settings.achievements_enabled)
+  auto lock = GetLock();
+
+  if (g_settings.achievements_enabled != old_config.achievements_enabled)
   {
     // we're done here
-    Shutdown();
-    return;
-  }
+    if (g_settings.achievements_enabled)
+    {
+      if (!IsActive())
+        CreateClient(lock, false);
+    }
+    else
+    {
+      if (IsActive())
+        DestroyClient(lock);
+    }
 
-  if (!IsActive())
-  {
-    // we just got enabled
-    Initialize();
     return;
   }
 
@@ -838,8 +717,9 @@ void Achievements::UpdateSettings(const Settings& old_config)
   if (g_settings.achievements_use_raintegration != old_config.achievements_use_raintegration)
   {
     // RAIntegration requires a full client reload?
-    Shutdown();
-    Initialize();
+    if (IsActive())
+      DestroyClient(lock);
+    CreateClient(lock, false);
     return;
   }
 #endif
@@ -850,8 +730,6 @@ void Achievements::UpdateSettings(const Settings& old_config)
     if (!g_settings.achievements_hardcore_mode)
       DisableHardcoreMode(true, true);
   }
-
-  auto lock = GetLock();
 
   // If a game is active and these settings changed, reload the game to apply them.
   // Just unload and reload without destroying the client to preserve hardcore mode.
@@ -876,49 +754,31 @@ void Achievements::UpdateSettings(const Settings& old_config)
   if (!g_settings.achievements_leaderboard_trackers)
     s_state.active_leaderboard_trackers.clear();
 
-  if (!g_settings.achievements_progress_indicators)
+  // remove progress indicator because it won't remove normally
+  if (g_settings.achievements_progress_indicator_mode == AchievementProgressIndicatorMode::Disabled)
     s_state.active_progress_indicator.reset();
 }
 
 void Achievements::UpdateModeSettings(const Settings& old_config)
 {
-  if (g_settings.achievements_encore_mode != old_config.achievements_encore_mode)
-    rc_client_set_encore_mode_enabled(s_state.client, g_settings.achievements_encore_mode);
-  if (g_settings.achievements_spectator_mode != old_config.achievements_spectator_mode)
+  if (g_settings.achievements_encore_mode != old_config.achievements_encore_mode ||
+      g_settings.achievements_spectator_mode != old_config.achievements_spectator_mode)
+  {
+    rc_client_set_encore_mode_enabled(s_state.client,
+                                      !g_settings.achievements_spectator_mode && g_settings.achievements_encore_mode);
     rc_client_set_spectator_mode_enabled(s_state.client, g_settings.achievements_spectator_mode);
+  }
   if (g_settings.achievements_unofficial_test_mode != old_config.achievements_unofficial_test_mode)
     rc_client_set_unofficial_enabled(s_state.client, g_settings.achievements_unofficial_test_mode);
 }
 
 void Achievements::Shutdown()
 {
-  if (!IsActive())
-    return;
-
   auto lock = GetLock();
-  Assert(s_state.client && s_state.http_downloader);
+  if (IsActive())
+    DestroyClient(lock);
 
-  ClearGameInfo();
-  ClearGameHash();
-  DisableHardcoreMode(false, false);
-  CancelHashDatabaseRequests();
-
-  if (s_state.login_request)
-  {
-    rc_client_abort_async(s_state.client, s_state.login_request);
-    s_state.login_request = nullptr;
-  }
-
-#ifdef RC_CLIENT_SUPPORTS_RAINTEGRATION
-  if (s_state.using_raintegration)
-  {
-    UnloadRAIntegration();
-    return;
-  }
-#endif
-
-  DestroyClient(&s_state.client, &s_state.http_downloader);
-  Host::OnAchievementsActiveChanged(false);
+  CloseAchievementsDatabase();
 }
 
 void Achievements::ClientMessageCallback(const char* message, const rc_client_t* client)
@@ -956,47 +816,70 @@ uint32_t Achievements::ClientReadMemory(uint32_t address, uint8_t* buffer, uint3
 void Achievements::ClientServerCall(const rc_api_request_t* request, rc_client_server_callback_t callback,
                                     void* callback_data, rc_client_t* client)
 {
-  HTTPDownloader::Request::Callback hd_callback = [callback, callback_data](s32 status_code, const Error& error,
-                                                                            const std::string& content_type,
-                                                                            HTTPDownloader::Request::Data data) {
+  HTTPDownloader::RequestCallback hd_callback = [callback, callback_data](s32 status_code, Error& error,
+                                                                          std::string& content_type,
+                                                                          HTTPDownloader::RequestData& data) {
     if (status_code != HTTPDownloader::HTTP_STATUS_OK)
       ERROR_LOG("Server call failed: {}", error.GetDescription());
 
     const rc_api_server_response_t rr = MakeRCAPIServerResponse(status_code, data);
+    const auto lock = GetLock();
     callback(&rr, callback_data);
   };
 
-  HTTPDownloader* http = static_cast<HTTPDownloader*>(rc_client_get_userdata(client));
-
-  // TODO: Content-type for post
+  const std::array<const char* const, 1> headers = {s_state.http_user_agent_header.c_str()};
   if (request->post_data)
   {
     // const auto pd = std::string_view(request->post_data);
     // Log_DevFmt("Server POST: {}", pd.substr(0, std::min<size_t>(pd.length(), 10)));
-    http->CreatePostRequest(request->url, request->post_data, std::move(hd_callback));
+    HTTPDownloader::CreatePostRequest(request->url, request->post_data, &s_state, std::move(hd_callback), nullptr,
+                                      headers, SERVER_CALL_TIMEOUT);
   }
   else
   {
-    http->CreateRequest(request->url, std::move(hd_callback));
+    HTTPDownloader::CreateRequest(request->url, &s_state, std::move(hd_callback), nullptr, headers,
+                                  SERVER_CALL_TIMEOUT);
   }
 }
 
 rc_api_server_response_t Achievements::MakeRCAPIServerResponse(s32 status_code, const std::vector<u8>& data)
 {
-  return rc_api_server_response_t{
-    .body = data.empty() ? nullptr : reinterpret_cast<const char*>(data.data()),
-    .body_length = data.size(),
-    .http_status_code = (status_code <= 0) ? (status_code == HTTPDownloader::HTTP_STATUS_CANCELLED ?
-                                                RC_API_SERVER_RESPONSE_CLIENT_ERROR :
-                                                RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR) :
-                                             status_code,
-  };
+  if (status_code < 0)
+  {
+    // assume all errors are retryable, except when it's cancelled
+    const int rc_http_status_code = (status_code == HTTPDownloader::HTTP_STATUS_CANCELLED) ?
+                                      RC_API_SERVER_RESPONSE_CLIENT_ERROR :
+                                      RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR;
+
+    // rc_client assumes client provides the error message as replacement to the body when the request is cancelled
+    // see rc_json_parse_server_response() around RC_API_SERVER_RESPONSE_CLIENT_ERROR.
+    const char* error_message;
+    if (status_code == HTTPDownloader::HTTP_STATUS_CANCELLED)
+      error_message = "Request cancelled";
+    else if (status_code == HTTPDownloader::HTTP_STATUS_TIMEOUT)
+      error_message = "Request timed out";
+    else
+      error_message = "Request failed";
+    return rc_api_server_response_t{
+      .body = error_message,
+      .body_length = std::strlen(error_message),
+      .http_status_code = rc_http_status_code,
+    };
+  }
+  else
+  {
+    return rc_api_server_response_t{
+      .body = data.empty() ? nullptr : reinterpret_cast<const char*>(data.data()),
+      .body_length = data.size(),
+      .http_status_code = status_code,
+    };
+  }
 }
 
-void Achievements::WaitForHTTPRequestsWithYield(std::unique_lock<std::recursive_mutex>& lock)
+void Achievements::WaitForServerCallsWithYield(std::unique_lock<std::recursive_mutex>& lock)
 {
-  DebugAssert(s_state.http_downloader);
-  s_state.http_downloader->WaitForAllRequestsWithYield([&lock]() { lock.unlock(); }, [&lock]() { lock.lock(); });
+  HTTPDownloader::WaitForAllRequestsFromOwnerWithYield(
+    &s_state, [&lock]() { lock.unlock(); }, [&lock]() { lock.lock(); });
 }
 
 void Achievements::IdleUpdate()
@@ -1005,18 +888,7 @@ void Achievements::IdleUpdate()
     return;
 
   const auto lock = GetLock();
-
-  s_state.http_downloader->PollRequests();
   rc_client_idle(s_state.client);
-}
-
-bool Achievements::NeedsIdleUpdate()
-{
-  if (!IsActive())
-    return false;
-
-  const auto lock = GetLock();
-  return (s_state.http_downloader && s_state.http_downloader->HasAnyRequests());
 }
 
 void Achievements::FrameUpdate()
@@ -1025,8 +897,6 @@ void Achievements::FrameUpdate()
     return;
 
   auto lock = GetLock();
-
-  s_state.http_downloader->PollRequests();
   rc_client_do_frame(s_state.client);
 
   UpdateRichPresence(lock);
@@ -1118,12 +988,9 @@ void Achievements::ClientEventHandler(const rc_client_event_t* event, rc_client_
   }
 }
 
-void Achievements::UpdateGameSummary(bool update_progress_database)
+void Achievements::UpdateGameSummary()
 {
   rc_client_get_user_game_summary(s_state.client, &s_state.game_summary);
-
-  if (update_progress_database)
-    UpdateProgressDatabase();
 }
 
 void Achievements::UpdateRichPresence(std::unique_lock<std::recursive_mutex>& lock)
@@ -1148,12 +1015,12 @@ void Achievements::UpdateRichPresence(std::unique_lock<std::recursive_mutex>& lo
 
   INFO_LOG("Rich presence updated: {}", s_state.rich_presence_string);
 
-  lock.unlock();
-  System::UpdateRichPresence(false);
-  lock.lock();
+#ifdef ENABLE_DISCORD_PRESENCE
+  DiscordPresence::UpdateDetails(GetCurrentGameBadgeURL(), s_state.rich_presence_string);
+#endif
 }
 
-void Achievements::OnSystemStarting(CDImage* image, bool disable_hardcore_mode)
+void Achievements::OnSystemStarting(bool disable_hardcore_mode)
 {
   std::unique_lock lock(s_state.mutex);
 
@@ -1178,21 +1045,33 @@ void Achievements::OnSystemStarting(CDImage* image, bool disable_hardcore_mode)
   else
   {
     // only enable hardcore mode if we're logged in, or waiting for a login response
-    if (image && !disable_hardcore_mode && g_settings.achievements_hardcore_mode && IsLoggedInOrLoggingIn())
+    if (!disable_hardcore_mode && g_settings.achievements_hardcore_mode && IsLoggedInOrLoggingIn())
       EnableHardcoreMode(false, false);
   }
+}
+
+void Achievements::OnSystemStarted()
+{
+  const auto lock = GetLock();
+  if (!IsActive() || IsRAIntegrationInitializing())
+    return;
 
   // now we can finally identify the game
-  IdentifyGame(image);
-  BeginLoadGame();
+  if (!s_state.load_game_request)
+    BeginLoadGame();
 }
 
 void Achievements::OnSystemDestroyed()
 {
   const auto lock = GetLock();
-  ClearGameInfo();
-  ClearGameHash();
-  DisableHardcoreMode(false, false);
+
+  s_state.game_hash.reset();
+
+  if (IsActive())
+  {
+    ClearGameInfo();
+    DisableHardcoreMode(false, false);
+  }
 }
 
 void Achievements::OnSystemReset()
@@ -1223,18 +1102,27 @@ void Achievements::OnSystemReset()
   }
 }
 
-void Achievements::GameChanged(CDImage* image)
+void Achievements::SetGameHash(const std::optional<GameHash>& hash)
 {
-  std::unique_lock lock(s_state.mutex);
-
-  if (!IsActive() || IsRAIntegrationInitializing())
-    return;
+  const auto lock = GetLock();
 
   // disc changed?
-  if (!IdentifyGame(image))
+  if (s_state.game_hash == hash)
     return;
 
-  ClearPrefetchBadgeRequests();
+  s_state.game_hash = hash;
+  INFO_COLOR_LOG(StrongOrange, "RA Hash: {}", GameHashToString(s_state.game_hash));
+
+  // just set the hash if inactive
+  if (!IsActive() || IsRAIntegrationInitializing())
+  {
+    DisableHardcoreMode(false, false);
+    return;
+  }
+
+  // if session hasn't started yet, don't treat this as a change
+  if (!System::IsValid())
+    return;
 
   // cancel previous requests
   if (s_state.load_game_request)
@@ -1251,50 +1139,10 @@ void Achievements::GameChanged(CDImage* image)
   s_state.reload_game_on_reset = true;
 }
 
-bool Achievements::IdentifyGame(CDImage* image)
+std::optional<Achievements::GameHash> Achievements::GetGameHash()
 {
-  std::optional<GameHash> game_hash;
-  if (image)
-  {
-    game_hash = GetGameHash(image);
-
-    if (!game_hash.has_value() && !rc_client_is_game_loaded(s_state.client))
-    {
-      // If we are starting with this game and it's bad, notify the user that this is why.
-      Host::AddIconOSDMessage(OSDMessageType::Error, "AchievementsHashFailed", ICON_EMOJI_WARNING,
-                              TRANSLATE_STR("Achievements", "Failed to read executable from disc."),
-                              TRANSLATE_STR("Achievements", "Achievements have been disabled."));
-    }
-  }
-
-  s_state.game_path = image ? image->GetPath() : std::string();
-
-  if (s_state.game_hash == game_hash)
-  {
-    // only the path has changed - different format/save state/etc.
-    INFO_LOG("Detected path change to '{}'", s_state.game_path);
-    return false;
-  }
-
-  s_state.game_hash = game_hash;
-  return true;
-}
-
-bool Achievements::IdentifyCurrentGame()
-{
-  DebugAssert(System::IsValid());
-
-  // this crap is only needed because we can't grab the image from the reader...
-  std::unique_ptr<CDImage> temp_image;
-  if (const std::string& disc_path = System::GetGamePath(); !disc_path.empty())
-  {
-    Error error;
-    temp_image = CDImage::Open(disc_path.c_str(), g_settings.cdrom_load_image_patches, &error);
-    if (!temp_image)
-      ERROR_LOG("Failed to open disc for late game identification: {}", error.GetDescription());
-  }
-
-  return IdentifyGame(temp_image.get());
+  const auto lock = GetLock();
+  return s_state.game_hash;
 }
 
 void Achievements::BeginLoadGame()
@@ -1305,9 +1153,6 @@ void Achievements::BeginLoadGame()
     DisableHardcoreMode(false, false);
     return;
   }
-
-  // Clear prefetch requests, since if we're loading state we'll get blocked until they all download otherwise.
-  ClearPrefetchBadgeRequests();
 
   s_state.load_game_request = rc_client_begin_load_game(s_state.client, GameHashToString(s_state.game_hash).c_str(),
                                                         ClientLoadGameCallback, nullptr);
@@ -1333,12 +1178,6 @@ void Achievements::ClientLoadGameCallback(int result, const char* error_message,
   {
     // We would've asked to re-authenticate, so leave HC on for now.
     // Once we've done so, we'll reload the game.
-    if (!HasSavedCredentials())
-    {
-      DisableHardcoreMode(false, false);
-      return;
-    }
-
     return;
   }
   else if (result == RC_HARDCORE_DISABLED)
@@ -1390,23 +1229,30 @@ void Achievements::ClientLoadGameCallback(int result, const char* error_message,
   s_state.has_achievements = has_achievements;
   s_state.has_leaderboards = has_leaderboards;
   s_state.has_rich_presence = rc_client_has_rich_presence(client);
-  s_state.game_icon_url =
+  s_state.game_badge_url =
     info->badge_url ? std::string(info->badge_url) : GetImageURL(info->badge_name, RC_IMAGE_TYPE_GAME);
-  s_state.game_icon = GetLocalImagePath(info->badge_name, RC_IMAGE_TYPE_GAME);
-  if (!s_state.game_icon.empty() && !s_state.game_icon_url.empty())
-  {
-    if (!FileSystem::FileExists(s_state.game_icon.c_str()))
-      DownloadImage(s_state.game_icon_url, s_state.game_icon);
 
-    GameList::UpdateAchievementBadgeName(info->id, info->badge_name);
-  }
+  // prefetch the game badge before any of the achievement badges, because the popup for the game summary
+  // is going to display, and we don't want a placeholder stuck there until after the badges finish
+  if (!s_state.game_badge_url.empty())
+    HTTPCache::Prefetch(s_state.game_badge_url);
 
   // update progress database on first load, in case it was played on another PC
-  UpdateGameSummary(true);
+  UpdateGameSummary();
 
-  // Defer starting the prefetch, because otherwise when loading state we'll block until it's all downloaded.
+  // don't update the game database on disc change, because switching to unknown media will associate those hashes
+  if (was_disc_change)
+    UpdateGameDatabaseFromCurrentGame();
+
+  // but the progress is fine since that's just game IDs
+  UpdateProgressDatabaseFromCurrentGame();
+
+#ifdef ENABLE_DISCORD_PRESENCE
+  DiscordPresence::UpdateDetails(s_state.game_badge_url, s_state.rich_presence_string);
+#endif
+
   if (g_settings.achievements_prefetch_badges)
-    Host::RunOnCoreThread(&Achievements::PrefetchAllAchievementBadges);
+    Achievements::PrefetchAllAchievementBadges();
   else
     PrefetchNextAchievementBadge();
 
@@ -1421,9 +1267,16 @@ void Achievements::ClientLoadGameCallback(int result, const char* error_message,
 
 void Achievements::ClearGameInfo()
 {
+#ifdef ENABLE_DISCORD_PRESENCE
+  DiscordPresence::UpdateDetails({}, {});
+#endif
+
   FullscreenUI::ClearAchievementsState();
 
-  ClearPrefetchBadgeRequests();
+  s_state.active_leaderboard_trackers = {};
+  s_state.active_challenge_indicators = {};
+  s_state.active_progress_indicator.reset();
+  s_state.pinned_achievement_indicators = {};
 
   if (s_state.load_game_request)
   {
@@ -1432,26 +1285,15 @@ void Achievements::ClearGameInfo()
   }
   rc_client_unload_game(s_state.client);
 
-  s_state.active_leaderboard_trackers = {};
-  s_state.active_challenge_indicators = {};
-  s_state.active_progress_indicator.reset();
-  s_state.pinned_achievement_indicators = {};
   s_state.game_id = 0;
   s_state.game_title = {};
-  s_state.game_icon = {};
-  s_state.game_icon_url = {};
+  s_state.game_badge_url = {};
   s_state.reload_game_on_reset = false;
   s_state.has_achievements = false;
   s_state.has_leaderboards = false;
   s_state.has_rich_presence = false;
   s_state.rich_presence_string = {};
   s_state.game_summary = {};
-}
-
-void Achievements::ClearGameHash()
-{
-  s_state.game_path = {};
-  s_state.game_hash.reset();
 }
 
 void Achievements::DisplayAchievementSummary()
@@ -1489,7 +1331,7 @@ void Achievements::DisplayAchievementSummary()
     FullscreenUI::AddAchievementNotification("AchievementsSummary",
                                              IsHardcoreModeActive() ? ACHIEVEMENT_SUMMARY_NOTIFICATION_TIME_HC :
                                                                       ACHIEVEMENT_SUMMARY_NOTIFICATION_TIME,
-                                             s_state.game_icon, s_state.game_title, std::string(summary),
+                                             s_state.game_badge_url, s_state.game_title, std::string(summary),
                                              RA_LOGO_ICON_NAME, FullscreenUI::AchievementNotificationNoteType::Image);
 
     if (s_state.game_summary.num_unsupported_achievements > 0)
@@ -1505,6 +1347,23 @@ void Achievements::DisplayAchievementSummary()
   // Technically not going through the resource API, but since we're passing this to something else, we can't.
   if (g_settings.achievements_sound_effects)
     SoundEffectManager::EnqueueSoundEffect(INFO_SOUND_NAME);
+
+  // Warn when spectator mode is enabled.
+  if (rc_client_get_spectator_mode_enabled(s_state.client))
+  {
+    Host::AddIconOSDMessage(
+      OSDMessageType::Warning, "SpectatorOrEncoreMode", RA_LOGO_SVG_ICON_NAME,
+      TRANSLATE_STR("Achievements", "Spectator mode enabled."),
+      TRANSLATE_STR("Achievements", "All achievements are locked, and unlocks will not be recorded in your account."));
+  }
+  else if (rc_client_get_encore_mode_enabled(s_state.client))
+  {
+    Host::AddIconOSDMessage(
+      OSDMessageType::Warning, "SpectatorOrEncoreMode", RA_LOGO_SVG_ICON_NAME,
+      TRANSLATE_STR("Achievements", "Encore mode enabled."),
+      TRANSLATE_STR("Achievements",
+                    "All achievements are locked, but unlocks will still be recorded in your account."));
+  }
 }
 
 void Achievements::DisplayHardcoreDeferredMessage()
@@ -1537,7 +1396,8 @@ void Achievements::HandleUnlockEvent(const rc_client_event_t* event)
   DebugAssert(cheevo);
 
   INFO_LOG("Achievement {} ({}) for game {} unlocked", cheevo->id, cheevo->title, s_state.game_id);
-  UpdateGameSummary(true);
+  UpdateGameSummary();
+  UpdateProgressDatabaseFromCurrentGame();
   SetAchievementPinned(cheevo->id, false);
 
   if (g_settings.achievements_notifications)
@@ -1552,12 +1412,13 @@ void Achievements::HandleUnlockEvent(const rc_client_event_t* event)
     if (cheevo->points > 0)
       note = fmt::format(ICON_EMOJI_TROPHY " {}", cheevo->points);
 
-    FullscreenUI::AddAchievementNotification(
-      fmt::format("achievement_unlock_{}", cheevo->id),
-      static_cast<float>(g_settings.achievements_notification_duration), GetAchievementBadgePath(cheevo, false),
-      std::move(title), std::string(cheevo->description), std::move(note),
-      (cheevo->points > 0) ? FullscreenUI::AchievementNotificationNoteType::Text :
-                             FullscreenUI::AchievementNotificationNoteType::None);
+    FullscreenUI::AddAchievementNotification(fmt::format("achievement_unlock_{}", cheevo->id),
+                                             static_cast<float>(g_settings.achievements_notification_duration),
+                                             std::string(GetAchievementBadgeURL(cheevo, false)), std::move(title),
+                                             std::string(cheevo->description), std::move(note),
+                                             (cheevo->points > 0) ?
+                                               FullscreenUI::AchievementNotificationNoteType::Text :
+                                               FullscreenUI::AchievementNotificationNoteType::None);
 
     PrefetchNextAchievementBadge(cheevo);
   }
@@ -1569,7 +1430,7 @@ void Achievements::HandleUnlockEvent(const rc_client_event_t* event)
 void Achievements::HandleGameCompleteEvent(const rc_client_event_t* event)
 {
   INFO_LOG("Game {} ({}) complete", s_state.game_id, s_state.game_title);
-  UpdateGameSummary(false);
+  UpdateGameSummary();
 
   if (g_settings.achievements_notifications)
   {
@@ -1579,21 +1440,21 @@ void Achievements::HandleGameCompleteEvent(const rc_client_event_t* event)
                            s_state.game_summary.num_unlocked_achievements),
       TRANSLATE_PLURAL_STR("Achievements", "%n points", "Achievement points", s_state.game_summary.points_unlocked));
 
-    FullscreenUI::AddAchievementNotification("achievement_mastery", GAME_COMPLETE_NOTIFICATION_TIME, s_state.game_icon,
-                                             s_state.game_title, std::move(message), ICON_EMOJI_TROPHY,
-                                             FullscreenUI::AchievementNotificationNoteType::IconText);
+    FullscreenUI::AddAchievementNotification(
+      "achievement_mastery", GAME_COMPLETE_NOTIFICATION_TIME, s_state.game_badge_url, s_state.game_title,
+      std::move(message), ICON_EMOJI_TROPHY, FullscreenUI::AchievementNotificationNoteType::IconText);
   }
 }
 
 void Achievements::HandleSubsetCompleteEvent(const rc_client_event_t* event)
 {
   INFO_LOG("Subset {} ({}) complete", event->subset->id, event->subset->title);
-  UpdateGameSummary(false);
+  UpdateGameSummary();
 
   if (g_settings.achievements_notifications && event->subset->badge_name[0] != '\0')
   {
     // Need to grab the icon for the subset.
-    std::string badge_path = GetSubsetBadgePath(event->subset);
+    std::string badge_path = GetSubsetBadgeURL(event->subset);
 
     std::string message = fmt::format(
       TRANSLATE_FS("Achievements", "Subset complete.\n{0} and {1}."),
@@ -1614,9 +1475,10 @@ void Achievements::HandleLeaderboardStartedEvent(const rc_client_event_t* event)
   if (g_settings.achievements_leaderboard_notifications)
   {
     FullscreenUI::AddAchievementNotification(
-      fmt::format("leaderboard_{}", event->leaderboard->id), LEADERBOARD_STARTED_NOTIFICATION_TIME, s_state.game_icon,
-      std::string(event->leaderboard->title), TRANSLATE_STR("Achievements", "Leaderboard attempt started."),
-      ICON_EMOJI_RED_FLAG, FullscreenUI::AchievementNotificationNoteType::IconText);
+      fmt::format("leaderboard_{}", event->leaderboard->id), LEADERBOARD_STARTED_NOTIFICATION_TIME,
+      s_state.game_badge_url, std::string(event->leaderboard->title),
+      TRANSLATE_STR("Achievements", "Leaderboard attempt started."), ICON_EMOJI_RED_FLAG,
+      FullscreenUI::AchievementNotificationNoteType::IconText);
   }
 }
 
@@ -1627,9 +1489,10 @@ void Achievements::HandleLeaderboardFailedEvent(const rc_client_event_t* event)
   if (g_settings.achievements_leaderboard_notifications)
   {
     FullscreenUI::AddAchievementNotification(
-      fmt::format("leaderboard_{}", event->leaderboard->id), LEADERBOARD_FAILED_NOTIFICATION_TIME, s_state.game_icon,
-      std::string(event->leaderboard->title), TRANSLATE_STR("Achievements", "Leaderboard attempt failed."),
-      ICON_EMOJI_CROSS_MARK_BUTTON, FullscreenUI::AchievementNotificationNoteType::IconText);
+      fmt::format("leaderboard_{}", event->leaderboard->id), LEADERBOARD_FAILED_NOTIFICATION_TIME,
+      s_state.game_badge_url, std::string(event->leaderboard->title),
+      TRANSLATE_STR("Achievements", "Leaderboard attempt failed."), ICON_EMOJI_CROSS_MARK_BUTTON,
+      FullscreenUI::AchievementNotificationNoteType::IconText);
   }
 }
 
@@ -1666,7 +1529,7 @@ void Achievements::HandleLeaderboardSubmittedEvent(const rc_client_event_t* even
 
     FullscreenUI::AddAchievementNotification(
       fmt::format("leaderboard_{}", event->leaderboard->id),
-      static_cast<float>(g_settings.achievements_leaderboard_duration), s_state.game_icon,
+      static_cast<float>(g_settings.achievements_leaderboard_duration), s_state.game_badge_url,
       std::string(event->leaderboard->title), std::move(message),
       g_settings.achievements_spectator_mode ? std::string(ICON_EMOJI_CHART_UPWARDS_TREND) : std::string(),
       g_settings.achievements_spectator_mode ? FullscreenUI::AchievementNotificationNoteType::IconText :
@@ -1703,7 +1566,7 @@ void Achievements::HandleLeaderboardScoreboardEvent(const rc_client_event_t* eve
 
     FullscreenUI::AddAchievementNotification(
       fmt::format("leaderboard_{}", event->leaderboard->id),
-      static_cast<float>(g_settings.achievements_leaderboard_duration), s_state.game_icon,
+      static_cast<float>(g_settings.achievements_leaderboard_duration), s_state.game_badge_url,
       std::string(event->leaderboard->title), std::move(message), ICON_EMOJI_CHECKMARK_BUTTON,
       FullscreenUI::AchievementNotificationNoteType::IconText, LEADERBOARD_NOTIFICATION_MIN_WIDTH);
   }
@@ -1774,13 +1637,14 @@ void Achievements::HandleAchievementChallengeIndicatorShowEvent(const rc_client_
     return;
   }
 
-  std::string badge_path = GetAchievementBadgePath(event->achievement, false);
+  const std::string_view badge_url = GetAchievementBadgeURL(event->achievement, false);
 
   // we still track these even if the option is disabled, so that they can be displayed in the pause menu
   if (g_settings.achievements_challenge_indicator_mode == AchievementChallengeIndicatorMode::Notification)
   {
     FullscreenUI::AddAchievementNotification(
-      fmt::format("AchievementChallenge{}", event->achievement->id), CHALLENGE_STARTED_NOTIFICATION_TIME, badge_path,
+      fmt::format("AchievementChallenge{}", event->achievement->id), CHALLENGE_STARTED_NOTIFICATION_TIME,
+      std::string(badge_url),
       fmt::format(TRANSLATE_FS("Achievements", "Challenge Started: {}"),
                   event->achievement->title ? event->achievement->title : ""),
       fmt::format(ICON_EMOJI_DIRECT_HIT " {}", event->achievement->description ? event->achievement->description : ""),
@@ -1789,7 +1653,7 @@ void Achievements::HandleAchievementChallengeIndicatorShowEvent(const rc_client_
 
   s_state.active_challenge_indicators.push_back(
     ActiveChallengeIndicator{.achievement = event->achievement,
-                             .badge_path = std::move(badge_path),
+                             .badge_url = std::string(badge_url),
                              .time_remaining = LEADERBOARD_STARTED_NOTIFICATION_TIME,
                              .opacity = 0.0f,
                              .active = true});
@@ -1810,7 +1674,7 @@ void Achievements::HandleAchievementChallengeIndicatorHideEvent(const rc_client_
       event->achievement->state == RC_CLIENT_ACHIEVEMENT_STATE_ACTIVE)
   {
     FullscreenUI::AddAchievementNotification(
-      fmt::format("AchievementChallenge{}", event->achievement->id), CHALLENGE_FAILED_NOTIFICATION_TIME, it->badge_path,
+      fmt::format("AchievementChallenge{}", event->achievement->id), CHALLENGE_FAILED_NOTIFICATION_TIME, it->badge_url,
       fmt::format(TRANSLATE_FS("Achievements", "Challenge Failed: {}"),
                   event->achievement->title ? event->achievement->title : ""),
       fmt::format(ICON_EMOJI_CROSS_MARK_BUTTON " {}",
@@ -1833,9 +1697,6 @@ void Achievements::HandleAchievementProgressIndicatorShowEvent(const rc_client_e
   DEV_LOG("Showing progress indicator: {} ({}): {}", event->achievement->id, event->achievement->title,
           event->achievement->measured_progress);
 
-  if (!g_settings.achievements_progress_indicators)
-    return;
-
   // Don't show pinned achievements.
   if (IsAchievementPinned(event->achievement->id))
   {
@@ -1847,7 +1708,7 @@ void Achievements::HandleAchievementProgressIndicatorShowEvent(const rc_client_e
     s_state.active_progress_indicator.emplace();
 
   s_state.active_progress_indicator->achievement = event->achievement;
-  s_state.active_progress_indicator->badge_path = GetAchievementBadgePath(event->achievement, false);
+  s_state.active_progress_indicator->badge_url = GetAchievementBadgeURL(event->achievement, false);
   s_state.active_progress_indicator->time = 0.0f;
   s_state.active_progress_indicator->active = true;
   FullscreenUI::UpdateAchievementsLastProgressUpdate(event->achievement);
@@ -1859,12 +1720,6 @@ void Achievements::HandleAchievementProgressIndicatorHideEvent(const rc_client_e
     return;
 
   DEV_LOG("Hiding progress indicator");
-
-  if (!g_settings.achievements_progress_indicators)
-  {
-    s_state.active_progress_indicator.reset();
-    return;
-  }
 
   s_state.active_progress_indicator->active = false;
   s_state.active_progress_indicator->time = std::min(s_state.active_progress_indicator->time, INDICATOR_FADE_OUT_TIME);
@@ -1907,7 +1762,7 @@ void Achievements::HandleServerReconnectedEvent(const rc_client_event_t* event)
 {
   WARNING_LOG("Server reconnected.");
 
-  Host::AddIconOSDMessage(OSDMessageType::Warning, "AchievementsDisconnected", RA_LOGO_ICON_NAME,
+  Host::AddIconOSDMessage(OSDMessageType::Warning, "AchievementsDisconnected", RA_LOGO_SVG_ICON_NAME,
                           TRANSLATE_STR("Achievements", "Achievements Reconnected"),
                           TRANSLATE_STR("Achievements", "All pending unlock requests have completed."));
 }
@@ -1941,17 +1796,11 @@ void Achievements::OnHardcoreModeChanged(bool enabled, bool display_message, boo
 
   if (System::IsValid() && display_message)
   {
-    Host::AddIconOSDMessage(OSDMessageType::Info, "AchievementsHardcoreModeChanged", RA_LOGO_ICON_NAME,
+    Host::AddIconOSDMessage(OSDMessageType::Info, "AchievementsHardcoreModeChanged", RA_LOGO_SVG_ICON_NAME,
                             enabled ? TRANSLATE_STR("Achievements", "Hardcore mode enabled.") :
                                       TRANSLATE_STR("Achievements", "Hardcore mode disabled."),
                             enabled ? TRANSLATE_STR("Achievements", "Restrictions are now active.") :
                                       TRANSLATE_STR("Achievements", "Restrictions are no longer active."));
-  }
-
-  if (HasActiveGame() && display_game_summary)
-  {
-    UpdateGameSummary(true);
-    DisplayAchievementSummary();
   }
 
   DebugAssert((rc_client_get_hardcore_enabled(s_state.client) != 0) == enabled);
@@ -1974,6 +1823,12 @@ void Achievements::OnHardcoreModeChanged(bool enabled, bool display_message, boo
   // Toss away UI state, because it's invalid now
   FullscreenUI::ClearAchievementsState();
 
+  if (HasActiveGame() && display_game_summary)
+  {
+    UpdateGameSummary();
+    DisplayAchievementSummary();
+  }
+
   Host::OnAchievementsHardcoreModeChanged(enabled);
 }
 
@@ -1985,10 +1840,10 @@ void Achievements::LoadStateFromBuffer(std::span<const u8> data, std::unique_loc
   {
     // Fallback to game icon if we don't have a cover.
     std::string image = System::GetImageForLoadingScreen(System::GetGamePath());
-    FullscreenUI::OpenOrUpdateLoadingScreen(image.empty() ? GetGameIconPath() : image,
+    FullscreenUI::OpenOrUpdateLoadingScreen(image.empty() ? s_state.game_badge_url : image,
                                             TRANSLATE_SV("Achievements", "Downloading achievements data..."));
 
-    WaitForHTTPRequestsWithYield(lock);
+    WaitForServerCallsWithYield(lock);
 
     FullscreenUI::CloseLoadingScreen();
   }
@@ -2087,73 +1942,36 @@ bool Achievements::DoState(StateWrapper& sw)
   }
 }
 
-std::string Achievements::GetAchievementBadgeURL(const rc_client_achievement_t* achievement, u32 image_type)
+std::string_view Achievements::GetAchievementBadgeURL(const rc_client_achievement_t* achievement, bool locked)
 {
-  std::string url;
-  const char* url_ptr;
-
   // RAIntegration doesn't set the URL fields.
-  if (IsUsingRAIntegration() ||
-      !(url_ptr =
-          (image_type == RC_IMAGE_TYPE_ACHIEVEMENT_LOCKED) ? achievement->badge_locked_url : achievement->badge_url))
+  if (const char* url_ptr = locked ? achievement->badge_locked_url : achievement->badge_url)
   {
-    return GetImageURL(achievement->badge_name, image_type);
+    const std::string_view url(url_ptr);
+    if (url.empty()) [[unlikely]]
+      ReportFmtError("Achievement {} with badge name {} has no badge URL", achievement->id, achievement->badge_name);
+
+    return url;
   }
   else
   {
-    return std::string(url_ptr);
+    s_state.temporary_url =
+      GetImageURL(achievement->badge_name, locked ? RC_IMAGE_TYPE_ACHIEVEMENT_LOCKED : RC_IMAGE_TYPE_ACHIEVEMENT);
+    return s_state.temporary_url;
   }
 }
 
-std::string Achievements::GetAchievementBadgePath(const rc_client_achievement_t* achievement, bool locked,
-                                                  bool download_if_missing)
+std::string Achievements::GetUserBadgeURL(const char* username)
 {
-  const u32 image_type = locked ? RC_IMAGE_TYPE_ACHIEVEMENT_LOCKED : RC_IMAGE_TYPE_ACHIEVEMENT;
-  const std::string path = GetLocalImagePath(achievement->badge_name, image_type);
-  if (download_if_missing && !path.empty() && !FileSystem::FileExists(path.c_str()))
-  {
-    std::string url = GetAchievementBadgeURL(achievement, image_type);
-    if (url.empty()) [[unlikely]]
-    {
-      ReportFmtError("Achievement {} with badge name {} has no badge URL", achievement->id, achievement->badge_name);
-    }
-    else
-    {
-      DEV_LOG("Downloading badge for achievement {} from URL: {}", achievement->id, url);
-      DownloadImage(std::move(url), path);
-    }
-  }
-
-  return path;
+  return GetImageURL(username, RC_IMAGE_TYPE_USER);
 }
 
-std::string Achievements::GetLeaderboardUserBadgePath(const rc_client_leaderboard_entry_t* entry)
+std::string Achievements::GetSubsetBadgeURL(const rc_client_subset_t* subset)
 {
-  const std::string path = GetLocalImagePath(entry->user, RC_IMAGE_TYPE_USER);
-  if (!FileSystem::FileExists(path.c_str()))
-  {
-    std::string url = GetImageURL(entry->user, RC_IMAGE_TYPE_USER);
-    if (!url.empty())
-      DownloadImage(std::move(url), path);
-  }
-
-  return path;
-}
-
-std::string Achievements::GetSubsetBadgePath(const rc_client_subset_t* subset)
-{
-  std::string badge_path = GetLocalImagePath(subset->badge_name, RC_IMAGE_TYPE_GAME);
-  if (!FileSystem::FileExists(badge_path.c_str()))
-  {
-    std::string url;
-    if (IsUsingRAIntegration() || !subset->badge_url)
-      url = GetImageURL(subset->badge_name, RC_IMAGE_TYPE_GAME);
-    else
-      url = subset->badge_url;
-    DownloadImage(std::move(url), badge_path);
-  }
-
-  return badge_path;
+  if (!subset->badge_url)
+    return GetImageURL(subset->badge_name, RC_IMAGE_TYPE_GAME);
+  else
+    return subset->badge_url;
 }
 
 bool Achievements::IsLoggedIn()
@@ -2171,28 +1989,16 @@ bool Achievements::Login(const char* username, const char* password, Error* erro
   auto lock = GetLock();
 
   // We need to use a temporary client if achievements aren't currently active.
-  rc_client_t* client = s_state.client;
-  HTTPDownloader* http = s_state.http_downloader.get();
-  const bool is_temporary_client = (client == nullptr);
-  std::unique_ptr<HTTPDownloader> temporary_downloader;
-  ScopedGuard temporary_client_guard = [&client, is_temporary_client, &temporary_downloader]() {
-    if (is_temporary_client)
-      DestroyClient(&client, &temporary_downloader);
-  };
-  if (is_temporary_client)
+  const bool is_temporary_client = (s_state.client == nullptr);
+  if (is_temporary_client && !CreateClient(lock, true))
   {
-    if (!CreateClient(&client, &temporary_downloader))
-    {
-      Error::SetString(error, "Failed to create client.");
-      return false;
-    }
-    http = temporary_downloader.get();
+    Error::SetString(error, "Failed to create client.");
+    return false;
   }
 
-  LoginWithPasswordParameters params = {username, error, nullptr, false};
-
+  LoginWithPasswordParameters params = {username, error, nullptr, is_temporary_client, false};
   params.request =
-    rc_client_begin_login_with_password(client, username, password, ClientLoginWithPasswordCallback, &params);
+    rc_client_begin_login_with_password(s_state.client, username, password, ClientLoginWithPasswordCallback, &params);
   if (!params.request)
   {
     Error::SetString(error, "Failed to create login request.");
@@ -2200,21 +2006,26 @@ bool Achievements::Login(const char* username, const char* password, Error* erro
   }
 
   // Wait until the login request completes.
-  http->WaitForAllRequestsWithYield([&lock]() { lock.unlock(); }, [&lock]() { lock.lock(); });
+  WaitForServerCallsWithYield(lock);
   Assert(!params.request);
 
-  // Success? Assume the callback set the error message.
-  if (!params.result)
-    return false;
+  // Did we get enabled and disabled in the meantime?
+  if (!s_state.client)
+    return params.result;
 
-  // If we were't a temporary client, get the game loaded.
-  if (System::IsValid() && !is_temporary_client)
+  // Did we get enabled? Leave the client if so
+  if (!g_settings.achievements_enabled)
   {
-    IdentifyCurrentGame();
-    BeginLoadGame();
+    DestroyClient(lock);
+  }
+  else
+  {
+    FinishLogin();
+    FinishInitialize();
   }
 
-  return true;
+  // Success? Assume the callback set the error message.
+  return params.result;
 }
 
 void Achievements::ClientLoginWithPasswordCallback(int result, const char* error_message, rc_client_t* client,
@@ -2251,31 +2062,7 @@ void Achievements::ClientLoginWithPasswordCallback(int result, const char* error
   Core::SetBaseStringSettingValue("Cheevos", "Token", EncryptLoginToken(user->token, params->username));
   Core::SetBaseStringSettingValue("Cheevos", "LoginTimestamp", fmt::format("{}", std::time(nullptr)).c_str());
   Host::CommitBaseSettingChanges();
-
-  // Will be using temporary client if achievements are not enabled.
-  if (client == s_state.client)
-    FinishLogin();
-}
-
-void Achievements::FetchGameTitlesCallback(int result, const char* error_message, rc_client_game_title_list_t* list,
-                                           rc_client_t* client, void* userdata)
-{
-  FetchGameTitlesParameters* params = static_cast<FetchGameTitlesParameters*>(userdata);
-  params->request = nullptr;
-
-  if (result != RC_OK || !list)
-  {
-    if (error_message)
-      Error::SetString(params->error, error_message);
-    else
-      Error::SetStringFmt(params->error, TRANSLATE_FS("Achievements", "Failed to fetch game titles (code {})."),
-                          result);
-    params->success = false;
-    return;
-  }
-
-  params->list = list;
-  params->success = true;
+  s_state.has_saved_credentials = true;
 }
 
 void Achievements::ClientLoginWithTokenCallback(int result, const char* error_message, rc_client_t* client,
@@ -2310,6 +2097,10 @@ void Achievements::ClientLoginWithTokenCallback(int result, const char* error_me
   // Should be active here.
   DebugAssert(client == s_state.client);
   FinishLogin();
+
+  // Triggered through FinishInitialize(), which didn't load the game yet, so we need to do it here.
+  if (!s_state.load_game_request && System::IsValid())
+    BeginLoadGame();
 }
 
 void Achievements::FinishLogin()
@@ -2318,19 +2109,13 @@ void Achievements::FinishLogin()
   if (!user)
     return;
 
-  s_state.user_badge_path = GetLocalImagePath(user->username, RC_IMAGE_TYPE_USER);
-  if (!s_state.user_badge_path.empty() && !FileSystem::FileExists(s_state.user_badge_path.c_str()))
-  {
-    std::string url;
-    if (IsUsingRAIntegration() || !user->avatar_url)
-      url = GetImageURL(user->username, RC_IMAGE_TYPE_USER);
-    else
-      url = user->avatar_url;
+  s_state.logged_in_username = user->username ? std::string(user->username) : std::string();
+  s_state.logged_in_user_icon_url = (user->avatar_url && user->avatar_url[0] != '\0') ?
+                                      std::string(user->avatar_url) :
+                                      GetImageURL(user->username, RC_IMAGE_TYPE_USER);
 
-    DownloadImage(std::move(url), s_state.user_badge_path);
-  }
-
-  PreloadHashDatabase();
+  FetchGameListIfOutdated();
+  FetchAllProgressIfMissing();
 
   Host::OnAchievementsLoginSuccess(user->username, user->score, user->score_softcore, user->num_unread_messages);
 
@@ -2340,24 +2125,20 @@ void Achievements::FinishLogin()
     std::string summary = fmt::format(TRANSLATE_FS("Achievements", "Score: {} ({} softcore)\nUnread messages: {}"),
                                       user->score, user->score_softcore, user->num_unread_messages);
 
-    FullscreenUI::AddAchievementNotification("achievements_login", LOGIN_NOTIFICATION_TIME, s_state.user_badge_path,
-                                             user->display_name, std::move(summary), RA_LOGO_ICON_NAME,
-                                             FullscreenUI::AchievementNotificationNoteType::Image);
+    FullscreenUI::AddAchievementNotification("achievements_login", LOGIN_NOTIFICATION_TIME,
+                                             s_state.logged_in_user_icon_url, user->display_name, std::move(summary),
+                                             RA_LOGO_ICON_NAME, FullscreenUI::AchievementNotificationNoteType::Image);
   }
 }
 
-const char* Achievements::GetLoggedInUserName()
+const std::string& Achievements::GetLoggedInUserName()
 {
-  const rc_client_user_t* user = rc_client_get_user_info(s_state.client);
-  if (!user) [[unlikely]]
-    return nullptr;
-
-  return user->username;
+  return s_state.logged_in_username;
 }
 
-const std::string& Achievements::GetLoggedInUserBadgePath()
+const std::string& Achievements::GetLoggedInUserIconURL()
 {
-  return s_state.user_badge_path;
+  return s_state.logged_in_user_icon_url;
 }
 
 SmallString Achievements::GetLoggedInUserPointsSummary()
@@ -2373,125 +2154,9 @@ SmallString Achievements::GetLoggedInUserPointsSummary()
   return ret;
 }
 
-std::string Achievements::GetGameBadgePath(std::string_view badge_name)
+std::string Achievements::GetProfileURL(std::string_view username)
 {
-  return GetLocalImagePath(badge_name, RC_IMAGE_TYPE_GAME);
-}
-
-bool Achievements::DownloadGameIcons(ProgressCallback* progress, Error* error)
-{
-  // Collect all unique game IDs that don't have icons yet
-  std::vector<u32> game_ids;
-  {
-    const auto lock = GameList::GetLock();
-    for (const GameList::Entry& entry : GameList::GetEntries())
-    {
-      if (entry.achievements_game_id != 0)
-      {
-        // Check if we already have this badge
-        const std::string existing_badge = GameList::GetAchievementGameBadgePath(entry.achievements_game_id);
-        if (existing_badge.empty() &&
-            std::find(game_ids.begin(), game_ids.end(), entry.achievements_game_id) == game_ids.end())
-        {
-          game_ids.push_back(entry.achievements_game_id);
-        }
-      }
-    }
-  }
-
-  if (game_ids.empty())
-  {
-    Error::SetStringView(error, TRANSLATE_SV("Achievements", "All available icons have already been downloaded."));
-    return false;
-  }
-
-  progress->FormatStatusText(TRANSLATE_FS("Achievements", "Fetching icon info for {} games..."), game_ids.size());
-
-  auto lock = GetLock();
-  if (!IsActive())
-  {
-    Error::SetStringView(error, TRANSLATE_SV("Achievements", "Achievements are not enabled."));
-    return false;
-  }
-
-  // Fetch game titles (includes badge names) from RetroAchievements
-  FetchGameTitlesParameters params = {error, nullptr, nullptr, false};
-  params.request = rc_client_begin_fetch_game_titles(s_state.client, game_ids.data(), static_cast<u32>(game_ids.size()),
-                                                     FetchGameTitlesCallback, &params);
-  if (!params.request)
-  {
-    Error::SetStringView(error, TRANSLATE_SV("Achievements", "Failed to create game titles request."));
-    return false;
-  }
-
-  WaitForHTTPRequestsWithYield(lock);
-
-  if (!params.success || !params.list)
-    return false;
-
-  const ScopedGuard list_guard([&params]() { rc_client_destroy_game_title_list(params.list); });
-  if (params.list->num_entries == 0)
-  {
-    Error::SetStringView(error, TRANSLATE_SV("Achievements", "No image names returned."));
-    return false;
-  }
-
-  // Create all download requests in parallel
-  u32 badges_to_download = 0;
-  for (u32 i = 0; i < params.list->num_entries; i++)
-  {
-    const rc_client_game_title_entry_t& entry = params.list->entries[i];
-
-    if (entry.badge_name[0] == '\0')
-      continue;
-
-    std::string path = GetLocalImagePath(entry.badge_name, RC_IMAGE_TYPE_GAME);
-    if (FileSystem::FileExists(path.c_str()))
-    {
-      // Already have this icon, just update the cache
-      GameList::UpdateAchievementBadgeName(entry.game_id, entry.badge_name);
-      continue;
-    }
-
-    std::string url =
-      entry.badge_url ? std::string(entry.badge_url) : GetImageURL(entry.badge_name, RC_IMAGE_TYPE_GAME);
-    if (url.empty())
-      continue;
-
-    badges_to_download++;
-    s_state.http_downloader->CreateRequest(
-      std::move(url), [path = std::move(path), progress](s32 status_code, const Error& http_error, const std::string&,
-                                                         HTTPDownloader::Request::Data data) {
-        if (status_code == HTTPDownloader::HTTP_STATUS_OK)
-        {
-          INFO_LOG("Writing badge to {}...", Path::GetFileName(path));
-
-          Error write_error;
-          if (!FileSystem::FileExists(path.c_str()) && !FileSystem::WriteBinaryFile(path.c_str(), data, &write_error))
-          {
-            ERROR_LOG("Failed to write badge to {}: {}", Path::GetFileName(path), write_error.GetDescription());
-            FileSystem::DeleteFile(path.c_str());
-          }
-        }
-        else
-        {
-          ERROR_LOG("Failed to download badge: HTTP {}: {}", status_code, http_error.GetDescription());
-        }
-
-        progress->IncrementProgressValue();
-      });
-  }
-
-  if (badges_to_download == 0)
-  {
-    Error::SetStringView(error, TRANSLATE_SV("Achievements", "All icons have already been downloaded."));
-    return false;
-  }
-
-  progress->SetProgressRange(badges_to_download);
-  progress->FormatStatusText(TRANSLATE_FS("Achievements", "Downloading {} game icons..."), badges_to_download);
-  WaitForHTTPRequestsWithYield(lock);
-  return true;
+  return fmt::format("https://retroachievements.org/user/{}", Path::URLEncode(username));
 }
 
 u32 Achievements::GetPauseThrottleFrames()
@@ -2518,34 +2183,39 @@ u32 Achievements::GetPendingUnlockCount()
 
 void Achievements::Logout()
 {
+  const auto lock = GetLock();
+
   if (IsActive())
   {
-    const auto lock = GetLock();
-
     if (HasActiveGame())
     {
       ClearGameInfo();
       DisableHardcoreMode(false, false);
     }
 
-    CancelHashDatabaseRequests();
+    CancelFetchGameListRequest();
+    CancelFetchAllProgressRequest();
 
     INFO_LOG("Logging out...");
     rc_client_logout(s_state.client);
+    s_state.logged_in_username = {};
+    s_state.logged_in_user_icon_url = {};
   }
 
   INFO_LOG("Clearing credentials...");
+  s_state.has_saved_credentials = false;
   Core::DeleteBaseSettingValue("Cheevos", "Username");
   Core::DeleteBaseSettingValue("Cheevos", "Token");
   Core::DeleteBaseSettingValue("Cheevos", "LoginTimestamp");
   Host::CommitBaseSettingChanges();
+
   ClearProgressDatabase();
 }
 
 void Achievements::ConfirmHardcoreModeDisableAsync(std::string_view trigger, std::function<void(bool)> callback)
 {
   Host::ConfirmMessageAsync(
-    TRANSLATE_STR("Achievements", "Confirm Hardcore Mode Disable"),
+    RA_LOGO_SVG_ICON_NAME, TRANSLATE_STR("Achievements", "Confirm Hardcore Mode Disable"),
     fmt::format(TRANSLATE_FS("Achievements", "{0} cannot be performed while hardcore mode is active. Do you want to "
                                              "disable hardcore mode? {0} will be cancelled if you select No."),
                 trigger),
@@ -2554,7 +2224,8 @@ void Achievements::ConfirmHardcoreModeDisableAsync(std::string_view trigger, std
       Host::RunOnCoreThread([callback = std::move(callback), res]() {
         if (res)
           DisableHardcoreMode(true, true);
-        callback(res);
+        if (callback)
+          callback(res);
       });
     });
 }
@@ -2722,47 +2393,146 @@ TinyString Achievements::DecryptLoginToken(std::string_view encrypted_token, std
   return ret;
 }
 
-std::string Achievements::GetHashDatabasePath()
+bool Achievements::RefreshGameList(ProgressCallback* progress, Error* error)
 {
-  return Path::Combine(EmuFolders::Cache, "achievement_gamedb.cache");
-}
+  auto lock = GetLock();
 
-std::string Achievements::GetProgressDatabasePath()
-{
-  return Path::Combine(EmuFolders::Cache, "achievement_progress.cache");
-}
+  Error fetch_error;
+  if (!BeginFetchGameListRequest(&fetch_error))
+    return false;
 
-void Achievements::BeginRefreshHashDatabase()
-{
-  INFO_LOG("Starting hash database refresh...");
+  // refresh in progress
+  progress->SetStatusText(TRANSLATE_SV("Achievements", "Refreshing game database..."));
+  progress->SetProgressRange(0);
+  progress->SetProgressValue(0);
+  while (s_state.fetch_game_list_request)
+    WaitForServerCallsWithYield(lock);
 
-  // kick off both requests
-  CancelHashDatabaseRequests();
-  s_state.fetch_hash_library_request =
-    rc_client_begin_fetch_hash_library(s_state.client, RC_CONSOLE_PLAYSTATION, FetchHashLibraryCallback, nullptr);
-  s_state.fetch_all_progress_request =
-    rc_client_begin_fetch_all_user_progress(s_state.client, RC_CONSOLE_PLAYSTATION, FetchAllProgressCallback, nullptr);
-  if (!s_state.fetch_hash_library_request || !s_state.fetch_hash_library_request)
+  if (fetch_error.IsValid())
   {
-    ERROR_LOG("Failed to create hash database refresh requests.");
-    CancelHashDatabaseRequests();
+    ERROR_LOG("Failed to refresh game database: {}", fetch_error.GetDescription());
+    if (error)
+      *error = std::move(fetch_error);
+    return false;
+  }
+
+  INFO_LOG("Successfully refreshed game database.");
+  return true;
+}
+
+bool Achievements::BeginFetchGameListRequest(Error* error)
+{
+  if (!IsLoggedIn())
+  {
+    Error::SetStringView(error, TRANSLATE_SV("Achievements", "User is not logged in."));
+    return false;
+  }
+
+  if (s_state.fetch_game_list_request)
+  {
+    Error::SetStringView(error, TRANSLATE_SV("Achievements", "Game database is already being updated."));
+    return false;
+  }
+
+  s_state.fetch_game_list_request =
+    rc_client_begin_fetch_game_list(s_state.client, RC_CONSOLE_PLAYSTATION, FetchGameListCallback, error);
+  if (!s_state.fetch_game_list_request)
+  {
+    Error::SetStringView(error, "rc_client_begin_fetch_game_list() failed");
+    return false;
+  }
+
+  return true;
+}
+
+void Achievements::CancelFetchGameListRequest()
+{
+  if (s_state.fetch_game_list_request)
+  {
+    rc_client_abort_async(s_state.client, s_state.fetch_game_list_request);
+    s_state.fetch_game_list_request = nullptr;
   }
 }
 
-void Achievements::FetchHashLibraryCallback(int result, const char* error_message, rc_client_hash_library_t* list,
-                                            rc_client_t* client, void* callback_userdata)
+void Achievements::FetchGameListCallback(int result, const char* error_message, rc_client_game_list_t* game_list,
+                                         rc_client_t* client, void* callback_userdata)
 {
-  s_state.fetch_hash_library_request = nullptr;
+  s_state.fetch_game_list_request = nullptr;
 
+  Error* error = static_cast<Error*>(callback_userdata);
   if (result != RC_OK)
   {
-    ERROR_LOG("Fetch hash library failed: {}: {}", rc_error_str(result), error_message);
-    CancelHashDatabaseRequests();
+    ERROR_LOG("Fetch game list callback returned error: {}: {}", rc_error_str(result), error_message);
+    Error::SetStringFmt(error, "{}: {}\n{}", TRANSLATE_SV("Achievements", "Refresh game list failed"),
+                        rc_error_str(result), error_message);
     return;
   }
 
-  s_state.fetch_hash_library_result = list;
-  FinishRefreshHashDatabase();
+  WriteGameListToDatabase(game_list, error);
+  rc_client_destroy_game_list(game_list);
+
+  Host::RunOnCoreThread(&GameList::UpdateAllAchievementData);
+}
+
+bool Achievements::RefreshAllProgressDatabase(ProgressCallback* progress, Error* error)
+{
+  auto lock = GetLock();
+
+  Error fetch_error;
+  if (!BeginFetchAllProgressRequest(&fetch_error))
+    return false;
+
+  // refresh in progress
+  progress->SetStatusText(TRANSLATE_SV("Achievements", "Refreshing achievement progress..."));
+  progress->SetProgressRange(0);
+  progress->SetProgressValue(0);
+  while (s_state.fetch_all_progress_request)
+    WaitForServerCallsWithYield(lock);
+
+  if (fetch_error.IsValid())
+  {
+    ERROR_LOG("Failed to refresh progress database: {}", fetch_error.GetDescription());
+    if (error)
+      *error = std::move(fetch_error);
+    return false;
+  }
+
+  INFO_LOG("Successfully refreshed progress database.");
+  return true;
+}
+
+bool Achievements::BeginFetchAllProgressRequest(Error* error)
+{
+  if (!IsLoggedIn())
+  {
+    Error::SetStringView(error, TRANSLATE_SV("Achievements", "User is not logged in."));
+    return false;
+  }
+
+  if (s_state.fetch_all_progress_request)
+  {
+    Error::SetStringView(error, TRANSLATE_SV("Achievements", "Progress is already being updated."));
+    return false;
+  }
+
+  s_state.fetch_all_progress_request =
+    rc_client_begin_fetch_all_user_progress(s_state.client, RC_CONSOLE_PLAYSTATION, FetchAllProgressCallback, error);
+  if (!s_state.fetch_all_progress_request)
+  {
+    Error::SetStringView(error, "rc_client_begin_fetch_all_user_progress() failed");
+    return false;
+  }
+
+  return true;
+}
+
+void Achievements::CancelFetchAllProgressRequest()
+{
+  if (s_state.fetch_all_progress_request)
+  {
+    rc_client_abort_async(s_state.client, s_state.fetch_all_progress_request);
+    s_state.fetch_all_progress_request = nullptr;
+  }
 }
 
 void Achievements::FetchAllProgressCallback(int result, const char* error_message, rc_client_all_user_progress_t* list,
@@ -2770,181 +2540,171 @@ void Achievements::FetchAllProgressCallback(int result, const char* error_messag
 {
   s_state.fetch_all_progress_request = nullptr;
 
+  Error* error = static_cast<Error*>(callback_userdata);
   if (result != RC_OK)
   {
-    ERROR_LOG("Fetch all progress failed: {}: {}", rc_error_str(result), error_message);
-    CancelHashDatabaseRequests();
+    ERROR_LOG("Fetch all progress callback returned error: {}: {}", rc_error_str(result), error_message);
+    Error::SetStringFmt(error, "{}: {}\n{}", TRANSLATE_SV("Achievements", "Refresh all progress failed"),
+                        rc_error_str(result), error_message);
     return;
   }
 
-  s_state.fetch_all_progress_result = list;
-  FinishRefreshHashDatabase();
+  WriteAllProgressToDatabase(list, error);
+  rc_client_destroy_all_user_progress(list);
+
+  Host::RunOnCoreThread(&GameList::UpdateAllAchievementData);
 }
 
-void Achievements::CancelHashDatabaseRequests()
+bool Achievements::EnsureAchievementsDatabaseOpen(Error* error)
 {
-  if (s_state.fetch_all_progress_result)
+  if (s_state.achievements_db) [[likely]]
+    return true;
+  else if (!g_dyn_sqlite.Open(error)) [[unlikely]]
+    return false;
+
+  const std::string path = Path::Combine(EmuFolders::Cache, "achievements.db");
+  Error lerror;
+
+  if (!(s_state.achievements_db = SQLiteHelpers::OpenAndCheckDatabase(path.c_str(), &lerror))) [[unlikely]]
   {
-    rc_client_destroy_all_user_progress(s_state.fetch_all_progress_result);
-    s_state.fetch_all_progress_result = nullptr;
-  }
-  if (s_state.fetch_all_progress_request)
-  {
-    rc_client_abort_async(s_state.client, s_state.fetch_all_progress_request);
-    s_state.fetch_all_progress_request = nullptr;
-  }
-
-  if (s_state.fetch_hash_library_result)
-  {
-    rc_client_destroy_hash_library(s_state.fetch_hash_library_result);
-    s_state.fetch_hash_library_result = nullptr;
-  }
-  if (s_state.fetch_hash_library_request)
-  {
-    rc_client_abort_async(s_state.client, s_state.fetch_hash_library_request);
-    s_state.fetch_hash_library_request = nullptr;
-  }
-}
-
-void Achievements::FinishRefreshHashDatabase()
-{
-  if (!s_state.fetch_hash_library_result || !s_state.fetch_all_progress_result)
-  {
-    // not done yet
-    return;
-  }
-
-  // build mapping of hashes to game ids and achievement counts
-  BuildHashDatabase(s_state.fetch_hash_library_result, s_state.fetch_all_progress_result);
-
-  // update the progress tracking while we're at it
-  BuildProgressDatabase(s_state.fetch_all_progress_result);
-
-  // tidy up
-  rc_client_destroy_all_user_progress(s_state.fetch_all_progress_result);
-  s_state.fetch_all_progress_result = nullptr;
-  rc_client_destroy_hash_library(s_state.fetch_hash_library_result);
-  s_state.fetch_hash_library_result = nullptr;
-
-  // update game list, we might have some new games that weren't in the seed database
-  GameList::UpdateAllAchievementData();
-}
-
-bool Achievements::RefreshAllProgressDatabase(ProgressCallback* progress, Error* error)
-{
-  auto lock = GetLock();
-  if (!IsLoggedIn())
-  {
-    Error::SetStringView(error, TRANSLATE_SV("Achievements", "User is not logged in."));
+    ERROR_LOG("Failed to open achievements database: {}", lerror.GetDescription());
     return false;
   }
 
-  if (s_state.fetch_hash_library_request || s_state.fetch_all_progress_request || s_state.refresh_all_progress_request)
+  // Use memory journal to avoid spamming files on disk.
+  g_dyn_sqlite.sqlite3_exec(s_state.achievements_db, "PRAGMA synchronous=NORMAL;PRAGMA journal_mode=memory;", nullptr,
+                            nullptr, nullptr);
+
+  static constexpr const char* schema_sql = R"(
+CREATE TABLE IF NOT EXISTS hashes (
+  hash BLOB NOT NULL PRIMARY KEY,
+  game_id INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS games (
+  game_id INTEGER NOT NULL PRIMARY KEY,
+  title TEXT NOT NULL,
+  badge_url TEXT NOT NULL,
+  num_achievements INTEGER NOT NULL,
+  num_leaderboards INTEGER NOT NULL,
+  num_points INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS progress (
+  game_id INTEGER NOT NULL PRIMARY KEY,
+  num_unlocked INTEGER NOT NULL DEFAULT 0,
+  num_hc_unlocked INTEGER NOT NULL DEFAULT 0
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS metadata (
+  key TEXT NOT NULL PRIMARY KEY,
+  value TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS pinned_achievements (
+  game_id INTEGER NOT NULL,
+  achievement_id INTEGER NOT NULL,
+  PRIMARY KEY (game_id, achievement_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pinned_achievements_game_id ON pinned_achievements (game_id);
+)";
+
+  if (!SQLiteHelpers::Execute(s_state.achievements_db, schema_sql, &lerror))
   {
-    Error::SetStringView(error, TRANSLATE_SV("Achievements", "Progress is already being updated."));
+    ERROR_LOG("Failed to create achievements database schema: {}", lerror.GetDescription());
+    if (error)
+      *error = std::move(lerror);
+    CloseAchievementsDatabase();
     return false;
   }
 
-  // refresh in progress
-  progress->SetStatusText(TRANSLATE_SV("Achievements", "Refreshing achievement progress..."));
-  progress->SetProgressRange(0);
-  progress->SetProgressValue(0);
+  if (!s_state.badge_lookup_stmt.Prepare(s_state.achievements_db, "SELECT badge_url FROM games WHERE game_id = ?;",
+                                         &lerror) ||
+      !s_state.update_progress_stmt.Prepare(
+        s_state.achievements_db,
+        "INSERT INTO progress (game_id, num_unlocked, num_hc_unlocked) VALUES (?, ?, ?)"
+        " ON CONFLICT(game_id) DO UPDATE SET num_unlocked=excluded.num_unlocked,"
+        " num_hc_unlocked=excluded.num_hc_unlocked;",
+        &lerror))
+  {
+    ERROR_LOG("Failed to create prepared statements: {}", lerror.GetDescription());
+    if (error)
+      *error = std::move(lerror);
+    CloseAchievementsDatabase();
+    return false;
+  }
 
-  std::pair<bool, Error*> result = {false, error};
-  s_state.refresh_all_progress_request = rc_client_begin_fetch_all_user_progress(s_state.client, RC_CONSOLE_PLAYSTATION,
-                                                                                 RefreshAllProgressCallback, &result);
-  while (s_state.refresh_all_progress_request)
-    WaitForHTTPRequestsWithYield(lock);
+  // Seed the hashes table from the bundled YAML if it's empty (first run or DB was wiped).
+  if (SQLitePreparedStatement count_stmt; count_stmt.Prepare(s_state.achievements_db, "SELECT COUNT(*) FROM hashes;") &&
+                                          count_stmt.Step() == SQLITE_ROW && count_stmt.ColumnInt(0) == 0)
+  {
+    if (!CreateGameDatabaseFromSeedDatabase(&lerror))
+      WARNING_LOG("Failed to seed hash database from YAML: {}", lerror.GetDescription());
+  }
 
   return true;
 }
 
-void Achievements::RefreshAllProgressCallback(int result, const char* error_message,
-                                              rc_client_all_user_progress_t* list, rc_client_t* client,
-                                              void* callback_userdata)
+void Achievements::CloseAchievementsDatabase()
 {
-  s_state.refresh_all_progress_request = nullptr;
-
-  std::pair<bool, Error*>* result_ud = static_cast<std::pair<bool, Error*>*>(callback_userdata);
-  if (result != RC_OK)
-  {
-    if (result_ud)
-    {
-      result_ud->first = false;
-      result_ud->second->SetStringFmt("{}: {}\n{}", TRANSLATE_SV("Achievements", "Refresh all progress failed"),
-                                      rc_error_str(result), error_message);
-    }
-
+  if (!s_state.achievements_db)
     return;
-  }
 
-  BuildProgressDatabase(list);
-  rc_client_destroy_all_user_progress(list);
+  s_state.update_progress_stmt.Destroy();
+  s_state.badge_lookup_stmt.Destroy();
 
-  GameList::UpdateAllAchievementData();
-
-  if (result_ud)
-    result_ud->first = true;
+  g_dyn_sqlite.sqlite3_close(s_state.achievements_db);
+  s_state.achievements_db = nullptr;
 }
 
-void Achievements::BuildHashDatabase(const rc_client_hash_library_t* hashlib,
-                                     const rc_client_all_user_progress_t* allprog)
+std::string Achievements::GetAchievementsDatabaseMetadata(std::string_view key)
 {
-  std::vector<HashDatabaseEntry> dbentries;
-  dbentries.reserve(hashlib->num_entries);
-
-  for (const rc_client_hash_library_entry_t& entry :
-       std::span<const rc_client_hash_library_entry_t>(hashlib->entries, hashlib->num_entries))
-  {
-    HashDatabaseEntry dbentry;
-    dbentry.game_id = entry.game_id;
-    dbentry.num_achievements = 0;
-    if (StringUtil::DecodeHex(dbentry.hash, entry.hash) != GAME_HASH_LENGTH)
-    {
-      WARNING_LOG("Invalid hash '{}' in game ID {}", entry.hash, entry.game_id);
-      continue;
-    }
-
-    // Just in case...
-    if (std::any_of(dbentries.begin(), dbentries.end(),
-                    [&dbentry](const HashDatabaseEntry& e) { return (e.hash == dbentry.hash); }))
-    {
-      WARNING_LOG("Duplicate hash {}", entry.hash);
-      continue;
-    }
-
-    dbentries.push_back(dbentry);
-  }
-
-  // fill in achievement counts
-  for (const rc_client_all_user_progress_entry_t& entry :
-       std::span<const rc_client_all_user_progress_entry_t>(allprog->entries, allprog->num_entries))
-  {
-    // can have multiple hashes with the same game id, update count on all of them
-    bool found_one = false;
-    for (HashDatabaseEntry& dbentry : dbentries)
-    {
-      if (dbentry.game_id == entry.game_id)
-      {
-        dbentry.num_achievements = entry.num_achievements;
-        found_one = true;
-      }
-    }
-
-    if (!found_one)
-      WARNING_LOG("All progress contained game ID {} without hash", entry.game_id);
-  }
-
-  s_state.hashdb_entries = std::move(dbentries);
-  s_state.hashdb_loaded = true;
+  if (!EnsureAchievementsDatabaseOpen())
+    return {};
 
   Error error;
-  if (!SortAndSaveHashDatabase(&error))
-    ERROR_LOG("Failed to sort/save hash database from server: {}", error.GetDescription());
+  SQLitePreparedStatement stmt;
+  if (!stmt.Prepare(s_state.achievements_db, "SELECT value FROM metadata WHERE key = ?;", &error)) [[unlikely]]
+  {
+    ERROR_LOG("Failed to prepare database metadata query: {}", error.GetDescription());
+    return {};
+  }
+
+  stmt.BindText(1, key);
+  const int rc = stmt.Step();
+  if (rc != SQLITE_ROW)
+  {
+    if (rc != SQLITE_DONE) [[unlikely]]
+    {
+      SQLiteHelpers::SetError(&error, s_state.achievements_db);
+      ERROR_LOG("Failed to execute database metadata query: {}", error.GetDescription());
+    }
+
+    return {};
+  }
+
+  return std::string(stmt.ColumnText(0));
 }
 
-bool Achievements::CreateHashDatabaseFromSeedDatabase(const std::string& path, Error* error)
+bool Achievements::SetAchievementsDatabaseMetadata(std::string_view key, std::string_view value, Error* error)
 {
+  if (!EnsureAchievementsDatabaseOpen())
+    return {};
+
+  SQLitePreparedStatement stmt;
+  if (!stmt.Prepare(
+        s_state.achievements_db,
+        "INSERT INTO metadata (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value;", error))
+    [[unlikely]]
+  {
+    return false;
+  }
+
+  stmt.BindText(1, key);
+  stmt.BindText(2, value);
+  return stmt.Execute(s_state.achievements_db, error);
+}
+
+bool Achievements::CreateGameDatabaseFromSeedDatabase(Error* error)
+{
+  Timer timer;
+
   std::optional<std::string> yaml_data = Host::ReadResourceFileToString("achievement_hashlib.yaml", false, error);
   if (!yaml_data.has_value())
   {
@@ -2952,8 +2712,8 @@ bool Achievements::CreateHashDatabaseFromSeedDatabase(const std::string& path, E
     return false;
   }
 
-  const ryml::Tree yaml =
-    ryml::parse_in_place(to_csubstr(path), c4::substr(reinterpret_cast<char*>(yaml_data->data()), yaml_data->size()));
+  const ryml::Tree yaml = ryml::parse_in_place(
+    to_csubstr("achievement_hashlib.yaml"), c4::substr(reinterpret_cast<char*>(yaml_data->data()), yaml_data->size()));
   const ryml::ConstNodeRef root = yaml.rootref();
   if (root.empty())
   {
@@ -2961,309 +2721,440 @@ bool Achievements::CreateHashDatabaseFromSeedDatabase(const std::string& path, E
     return false;
   }
 
-  std::vector<HashDatabaseEntry> dbentries;
+  INFO_LOG("Parsed {} entries in seed database in {} ms", root.num_children(), timer.GetTimeMillisecondsAndReset());
 
-  if (const ryml::ConstNodeRef hashes = root.find_child(to_csubstr("hashes")); hashes.valid())
+  // Replace all hash entries atomically.
+  if (!SQLiteHelpers::BeginTransaction(s_state.achievements_db, error) ||
+      !SQLiteHelpers::Execute(s_state.achievements_db, "DELETE FROM hashes;", error) ||
+      !SQLiteHelpers::Execute(s_state.achievements_db, "DELETE FROM games;", error))
   {
-    dbentries.reserve(hashes.num_children());
-    for (const ryml::ConstNodeRef& current : hashes.cchildren())
-    {
-      const std::string_view hash = to_stringview(current.key());
-      const std::optional<u32> game_id = StringUtil::FromChars<u32>(to_stringview(current.val()));
-      if (!game_id.has_value())
-      {
-        WARNING_LOG("Invalid game ID {} in hash {}", to_stringview(current.val()), hash);
-        continue;
-      }
-
-      HashDatabaseEntry dbentry;
-      dbentry.game_id = game_id.value();
-      dbentry.num_achievements = 0;
-      if (StringUtil::DecodeHex(dbentry.hash, hash) != GAME_HASH_LENGTH)
-      {
-        WARNING_LOG("Invalid hash '{}' in game ID {}", hash, game_id.value());
-        continue;
-      }
-
-      dbentries.push_back(dbentry);
-    }
+    SQLiteHelpers::RollbackTransaction(s_state.achievements_db);
+    return false;
   }
 
-  if (const ryml::ConstNodeRef achievements = root.find_child(to_csubstr("achievements")); achievements.valid())
+  SQLitePreparedStatement hash_stmt, game_stmt;
+  if (!game_stmt.Prepare(s_state.achievements_db,
+                         "INSERT INTO games (game_id, title, badge_url, num_achievements, num_leaderboards, "
+                         "num_points) VALUES (?, ?, ?, ?, ?, ?);",
+                         error) ||
+      !hash_stmt.Prepare(s_state.achievements_db, "INSERT INTO hashes (hash, game_id) VALUES (?, ?);", error))
   {
-    for (const ryml::ConstNodeRef& current : achievements.cchildren())
-    {
-      const std::optional<u32> game_id = StringUtil::FromChars<u32>(to_stringview(current.key()));
-      const std::optional<u32> num_achievements = StringUtil::FromChars<u32>(to_stringview(current.val()));
-      if (!game_id.has_value() || !num_achievements.has_value())
-      {
-        WARNING_LOG("Invalid achievements entry in game ID {}", to_stringview(current.key()));
-        continue;
-      }
+    SQLiteHelpers::RollbackTransaction(s_state.achievements_db);
+    return false;
+  }
 
-      // can have multiple hashes with the same game id, update count on all of them
-      bool found_one = false;
-      for (HashDatabaseEntry& dbentry : dbentries)
+  u32 num_games = 0;
+  u32 num_hashes = 0;
+  std::string badge_name, badge_url;
+  for (const ryml::ConstNodeRef& current : root.cchildren())
+  {
+    const std::optional<u32> game_id = StringUtil::FromChars<u32>(to_stringview(current.key()));
+    std::string_view title;
+    u32 num_achievements, num_leaderboards, num_points;
+    if (!game_id.has_value() || !GetStringFromObject(current, "title", &title) ||
+        !GetStringFromObject(current, "badgeName", &badge_name) ||
+        !GetIntFromObject(current, "achievements", &num_achievements) ||
+        !GetIntFromObject(current, "leaderboards", &num_leaderboards) ||
+        !GetIntFromObject(current, "points", &num_points))
+    {
+      WARNING_LOG("Invalid game {} in hash database", to_stringview(current.key()));
+      continue;
+    }
+
+    // inlined to avoid an extra allocation
+    const rc_api_fetch_image_request_t badge_url_request = {.image_name = badge_name.c_str(),
+                                                            .image_type = RC_IMAGE_TYPE_GAME};
+    rc_api_request_t badge_url_apirequest;
+    if (rc_api_init_fetch_image_request(&badge_url_apirequest, &badge_url_request) == RC_OK)
+      badge_url = badge_url_apirequest.url;
+    else
+      badge_url.clear();
+    rc_api_destroy_request(&badge_url_apirequest);
+
+    game_stmt.BindInt(1, static_cast<int>(game_id.value()));
+    game_stmt.BindText(2, title);
+    game_stmt.BindText(3, badge_url);
+    game_stmt.BindInt(4, static_cast<int>(num_achievements));
+    game_stmt.BindInt(5, static_cast<int>(num_leaderboards));
+    game_stmt.BindInt(6, static_cast<int>(num_points));
+
+    if (!game_stmt.Execute(s_state.achievements_db, error)) [[unlikely]]
+    {
+      SQLiteHelpers::RollbackTransaction(s_state.achievements_db);
+      return false;
+    }
+
+    game_stmt.Reset();
+    num_games++;
+
+    if (const ryml::ConstNodeRef hashes = current.find_child(to_csubstr("hashes")); hashes.valid())
+    {
+      for (const ryml::ConstNodeRef& hash_node : hashes.cchildren())
       {
-        if (dbentry.game_id == game_id.value())
+        GameHash hash;
+        if (const std::string_view hash_str = to_stringview(hash_node.val());
+            StringUtil::DecodeHex(hash, hash_str) != GAME_HASH_LENGTH)
         {
-          dbentry.num_achievements = num_achievements.value();
-          found_one = true;
+          WARNING_LOG("Invalid hash '{}' in game ID {}", hash_str, game_id.value());
+          continue;
         }
+
+        hash_stmt.BindBlob(1, hash);
+        hash_stmt.BindInt(2, static_cast<int>(game_id.value()));
+        if (!hash_stmt.Execute(s_state.achievements_db, error)) [[unlikely]]
+        {
+          SQLiteHelpers::RollbackTransaction(s_state.achievements_db);
+          return false;
+        }
+
+        hash_stmt.Reset();
+        num_hashes++;
       }
-
-      if (!found_one)
-        WARNING_LOG("Seed database contained game ID {} without hash", game_id.value());
     }
-  }
-
-  if (dbentries.empty())
-  {
-    Error::SetStringView(error, "Parsed seed database was empty");
-    return false;
-  }
-
-  s_state.hashdb_entries = std::move(dbentries);
-  s_state.hashdb_loaded = true;
-
-  Error save_error;
-  if (!SortAndSaveHashDatabase(&save_error))
-    ERROR_LOG("Failed to sort/save hash database from server: {}", save_error.GetDescription());
-
-  return true;
-}
-
-bool Achievements::SortAndSaveHashDatabase(Error* error)
-{
-  // sort hashes for quick lookup
-  s_state.hashdb_entries.shrink_to_fit();
-  std::sort(s_state.hashdb_entries.begin(), s_state.hashdb_entries.end(),
-            [](const HashDatabaseEntry& lhs, const HashDatabaseEntry& rhs) {
-              return std::memcmp(lhs.hash.data(), rhs.hash.data(), GAME_HASH_LENGTH) < 0;
-            });
-
-  FileSystem::AtomicRenamedFile fp = FileSystem::CreateAtomicRenamedFile(GetHashDatabasePath().c_str(), error);
-  if (!fp)
-  {
-    Error::AddPrefix(error, "Failed to open cache for writing: ");
-    return false;
-  }
-
-  BinaryFileWriter writer(fp.get());
-  writer.WriteU32(static_cast<u32>(s_state.hashdb_entries.size()));
-  for (const HashDatabaseEntry& entry : s_state.hashdb_entries)
-  {
-    writer.Write(entry.hash.data(), GAME_HASH_LENGTH);
-    writer.WriteU32(entry.game_id);
-    writer.WriteU32(entry.num_achievements);
-  }
-
-  if (!writer.Flush(error) || !FileSystem::CommitAtomicRenamedFile(fp, error))
-  {
-    Error::AddPrefix(error, "Failed to write cache: ");
-    return false;
-  }
-
-  INFO_LOG("Wrote {} games to hash database", s_state.hashdb_entries.size());
-  return true;
-}
-
-bool Achievements::LoadHashDatabase(const std::string& path, Error* error)
-{
-  FileSystem::ManagedCFilePtr fp = FileSystem::OpenManagedCFile(path.c_str(), "rb", error);
-  if (!fp)
-  {
-    Error::AddPrefix(error, "Failed to open cache for reading: ");
-    return false;
-  }
-
-  BinaryFileReader reader(fp.get());
-  const u32 count = reader.ReadU32();
-
-  // simple sanity check on file size
-  constexpr size_t entry_size = (GAME_HASH_LENGTH + sizeof(u32) + sizeof(u32));
-  if (static_cast<s64>((count * entry_size) + sizeof(u32)) > FileSystem::FSize64(fp.get()))
-  {
-    Error::SetStringFmt(error, "Invalid entry count: {}", count);
-    return false;
-  }
-
-  s_state.hashdb_entries.resize(count);
-  for (HashDatabaseEntry& entry : s_state.hashdb_entries)
-  {
-    reader.Read(entry.hash.data(), entry.hash.size());
-    reader.ReadU32(&entry.game_id);
-    reader.ReadU32(&entry.num_achievements);
-  }
-  if (reader.HasError())
-  {
-    Error::SetStringView(error, "Error while reading cache");
-    s_state.hashdb_entries = {};
-    return false;
-  }
-
-  VERBOSE_LOG("Loaded {} entries from cached hash database", s_state.hashdb_entries.size());
-  return true;
-}
-
-const Achievements::HashDatabaseEntry* Achievements::LookupGameHash(const GameHash& hash)
-{
-  if (!s_state.hashdb_loaded) [[unlikely]]
-  {
-    // loaded by another thread?
-    std::unique_lock lock(s_state.mutex);
-    if (!s_state.hashdb_loaded)
+    else
     {
-      Error error;
-      std::string path = GetHashDatabasePath();
-      const bool hashdb_exists = FileSystem::FileExists(path.c_str());
-      if (!hashdb_exists || !LoadHashDatabase(path, &error))
-      {
-        if (hashdb_exists)
-          WARNING_LOG("Failed to load hash database: {}", error.GetDescription());
-
-        if (!CreateHashDatabaseFromSeedDatabase(path, &error))
-          ERROR_LOG("Failed to create hash database from seed database: {}", error.GetDescription());
-      }
+      WARNING_LOG("Game {} in hash database is missing hashes", to_stringview(current.key()));
     }
-
-    s_state.hashdb_loaded = true;
   }
 
-  const auto iter = std::lower_bound(s_state.hashdb_entries.begin(), s_state.hashdb_entries.end(), hash,
-                                     [](const HashDatabaseEntry& entry, const GameHash& search) {
-                                       return (std::memcmp(entry.hash.data(), search.data(), GAME_HASH_LENGTH) < 0);
-                                     });
-  return (iter != s_state.hashdb_entries.end() && std::memcmp(iter->hash.data(), hash.data(), GAME_HASH_LENGTH) == 0) ?
-           &(*iter) :
-           nullptr;
+  if (!SQLiteHelpers::CommitTransaction(s_state.achievements_db, error))
+  {
+    SQLiteHelpers::RollbackTransaction(s_state.achievements_db);
+    return false;
+  }
+
+  INFO_LOG("Wrote {} games and {} hashes to achievement database in {} ms", num_games, num_hashes,
+           timer.GetTimeMilliseconds());
+  return true;
 }
 
-void Achievements::PreloadHashDatabase()
+void Achievements::UpdateGameDatabaseFromCurrentGame()
 {
-  const std::string hash_database_path = GetHashDatabasePath();
-  const std::string progress_database_path = GetProgressDatabasePath();
-
-  bool has_hash_database = (s_state.hashdb_loaded && !s_state.hashdb_entries.empty());
-  const bool has_progress_database = FileSystem::FileExists(progress_database_path.c_str());
-
-  // if we don't have a progress database, just redownload everything, it's probably our first login
-  if (!has_hash_database && has_progress_database && FileSystem::FileExists(hash_database_path.c_str()))
-  {
-    // try loading binary cache
-    VERBOSE_LOG("Trying to load hash database from {}", hash_database_path);
-
-    Error error;
-    has_hash_database = LoadHashDatabase(hash_database_path, &error);
-    if (!has_hash_database)
-      ERROR_LOG("Failed to load hash database: {}", error.GetDescription());
-  }
-
-  // don't try to load the hash database from the game list now
-  s_state.hashdb_loaded = true;
-
-  // got everything?
-  if (has_hash_database && has_progress_database)
+  if (s_state.game_id == 0 || !s_state.game_hash.has_value() || !EnsureAchievementsDatabaseOpen())
     return;
 
-  // kick off a new download, game list will be notified when it's done
-  BeginRefreshHashDatabase();
-}
-
-FileSystem::ManagedCFilePtr Achievements::OpenProgressDatabase(bool for_write, bool truncate, Error* error)
-{
-  const std::string path = GetProgressDatabasePath();
-  const FileSystem::FileShareMode share_mode =
-    for_write ? FileSystem::FileShareMode::DenyReadWrite : FileSystem::FileShareMode::DenyWrite;
-#ifdef _WIN32
-  const char* mode = for_write ? (truncate ? "w+b" : "r+b") : "rb";
-#else
-  // Always open read/write on Linux, since we need it for flock().
-  const char* mode = truncate ? "w+b" : "r+b";
-#endif
-
-  FileSystem::ManagedCFilePtr fp = FileSystem::OpenManagedSharedCFile(path.c_str(), mode, share_mode, error);
-  if (fp)
-    return fp;
-
-  // Doesn't exist? Create it.
-  if (errno == ENOENT)
+  // update hash
+  Error error;
+  SQLitePreparedStatement stmt;
+  if (!stmt.Prepare(s_state.achievements_db, "SELECT game_id FROM hashes WHERE hash = ?;", &error))
   {
-    if (!for_write)
-      return nullptr;
-
-    mode = "w+b";
-    fp = FileSystem::OpenManagedSharedCFile(path.c_str(), mode, share_mode, error);
-    if (fp)
-      return fp;
+    ERROR_LOG("Failed to prepare hash query statement: {}", error.GetDescription());
+    return;
   }
 
-  // If there's a sharing violation, try again for 100ms.
-  if (errno != EACCES)
-    return nullptr;
+  stmt.BindBlob(1, s_state.game_hash.value());
+  int step = stmt.Step();
+  if (step != SQLITE_ROW && step != SQLITE_DONE)
+  {
+    SQLiteHelpers::SetError(&error, s_state.achievements_db);
+    ERROR_LOG("Failed to execute hash query statement: {}", error.GetDescription());
+    return;
+  }
+
+  if (step != SQLITE_ROW || static_cast<u32>(stmt.ColumnInt(0)) != s_state.game_id)
+  {
+    INFO_LOG("Updating game ID for hash {} to {} in database", GameHashToString(s_state.game_hash), s_state.game_id);
+    if (!stmt.Prepare(
+          s_state.achievements_db,
+          "INSERT INTO hashes (hash, game_id) VALUES (?, ?) ON CONFLICT(hash) DO UPDATE SET game_id=excluded.game_id;",
+          &error))
+    {
+      ERROR_LOG("Failed to prepare hash update statement: {}", error.GetDescription());
+      return;
+    }
+
+    stmt.Reset();
+    stmt.BindBlob(1, s_state.game_hash.value());
+    stmt.BindInt(2, static_cast<int>(s_state.game_id));
+    if (!stmt.Execute(s_state.achievements_db, &error))
+    {
+      ERROR_LOG("Failed to execute hash update statement: {}", error.GetDescription());
+      return;
+    }
+  }
+  stmt.Reset();
+
+  // update game details
+  const rc_client_game_t* ginfo = rc_client_get_game_info(s_state.client);
+  DebugAssert(ginfo);
+  rc_client_user_game_summary_t gsummary;
+  rc_client_get_user_game_summary(s_state.client, &gsummary);
+
+  // kinda horrible...
+  u32 num_leaderbords = 0;
+  if (s_state.has_leaderboards)
+  {
+    rc_client_leaderboard_list_t* lbinfo =
+      rc_client_create_leaderboard_list(s_state.client, RC_CLIENT_LEADERBOARD_LIST_GROUPING_NONE);
+    for (const rc_client_leaderboard_bucket_t& lbb :
+         std::span<const rc_client_leaderboard_bucket_t>(lbinfo->buckets, lbinfo->num_buckets))
+    {
+      num_leaderbords += lbb.num_leaderboards;
+    }
+    rc_client_destroy_leaderboard_list(lbinfo);
+  }
+
+  // only update if it's unchanged
+  if (!stmt.Prepare(s_state.achievements_db,
+                    "SELECT title, badge_url, num_achievements, num_leaderboards, num_points FROM games WHERE "
+                    "game_id = ?;",
+                    &error))
+  {
+    ERROR_LOG("Failed to prepare game query statement: {}", error.GetDescription());
+    return;
+  }
+
+  stmt.BindInt(1, static_cast<int>(s_state.game_id));
+  step = stmt.Step();
+  if (step != SQLITE_DONE && step != SQLITE_ROW)
+  {
+    SQLiteHelpers::SetError(&error, s_state.achievements_db);
+    ERROR_LOG("Failed to execute game query statement: {}", error.GetDescription());
+    return;
+  }
+
+  const std::string_view ginfo_title = ginfo->title ? std::string_view(ginfo->title) : std::string_view();
+  const std::string_view ginfo_badge_url =
+    ginfo->badge_url ? std::string_view(ginfo->badge_url) : s_state.game_badge_url;
+  if (step != SQLITE_ROW || (!ginfo_title.empty() && stmt.ColumnText(0) != ginfo_title) ||
+      (!ginfo_badge_url.empty() && stmt.ColumnText(1) != ginfo_badge_url) ||
+      stmt.ColumnInt(2) != static_cast<int>(gsummary.num_core_achievements) ||
+      stmt.ColumnInt(3) != static_cast<int>(num_leaderbords) ||
+      stmt.ColumnInt(4) != static_cast<int>(gsummary.points_core))
+  {
+#if 0
+    // For debugging
+    const std::string_view db_title = stmt.ColumnText(0);
+    const std::string_view db_badge_url = stmt.ColumnText(1);
+    const int db_achievements = stmt.ColumnInt(2);
+    const int db_leaderboards = stmt.ColumnInt(3);
+    const int db_points = stmt.ColumnInt(4);
+#endif
+
+    INFO_LOG("Updating game details for game ID {} ({}) in database", s_state.game_id, ginfo_title);
+
+    stmt.Reset();
+    if (!stmt.Prepare(s_state.achievements_db,
+                      "INSERT INTO games (game_id, title, badge_url, num_achievements, num_leaderboards, num_points) "
+                      "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(game_id) DO UPDATE SET title=excluded.title, "
+                      "badge_url=excluded.badge_url, num_achievements=excluded.num_achievements, "
+                      "num_leaderboards=excluded.num_leaderboards, num_points=excluded.num_points;",
+                      &error))
+    {
+      ERROR_LOG("Failed to prepare game update statement: {}", error.GetDescription());
+      return;
+    }
+
+    stmt.BindInt(1, static_cast<int>(s_state.game_id));
+    stmt.BindText(2, ginfo_title);
+    stmt.BindText(3, ginfo_badge_url);
+    stmt.BindInt(4, static_cast<int>(gsummary.num_core_achievements));
+    stmt.BindInt(5, static_cast<int>(num_leaderbords));
+    stmt.BindInt(6, static_cast<int>(gsummary.points_core));
+    if (!stmt.Execute(s_state.achievements_db, &error))
+    {
+      ERROR_LOG("Failed to execute game update statement: {}", error.GetDescription());
+      return;
+    }
+  }
+  else
+  {
+    DEV_LOG("No update needed for game ID {} ({}) in database", s_state.game_id, ginfo_title);
+  }
+}
+
+void Achievements::FetchGameListIfOutdated()
+{
+  if (!EnsureAchievementsDatabaseOpen())
+    return;
+
+  std::optional<s64> last_updated =
+    StringUtil::FromChars<s64>(GetAchievementsDatabaseMetadata(GAME_LIST_LAST_UPDATED_METADATA_KEY));
+  const s64 current_time = static_cast<s64>(std::time(nullptr));
+  const s64 max_age = current_time - GAME_LIST_MAX_AGE_SECONDS;
+  if (last_updated.value_or(0) < max_age)
+  {
+    INFO_LOG("Game list is outdated, refreshing...");
+    if (Error error; !BeginFetchGameListRequest(&error))
+      ERROR_LOG("Failed to refresh game list: {}", error.GetDescription());
+  }
+  else
+  {
+    DEV_LOG("Game list is up to date (last updated {} seconds ago)", current_time - last_updated.value_or(0));
+  }
+}
+
+bool Achievements::WriteGameListToDatabase(const rc_client_game_list_t* game_list, Error* error)
+{
+  if (!EnsureAchievementsDatabaseOpen(error))
+    return false;
 
   Timer timer;
-  while (timer.GetTimeMilliseconds() <= 100.0f)
-  {
-    fp = FileSystem::OpenManagedSharedCFile(path.c_str(), mode, share_mode, error);
-    if (fp)
-      return fp;
 
-    if (errno != EACCES)
-      return nullptr;
+  // Replace all hash entries atomically.
+  if (!SQLiteHelpers::BeginTransaction(s_state.achievements_db, error) ||
+      !SQLiteHelpers::Execute(s_state.achievements_db, "DELETE FROM hashes;", error) ||
+      !SQLiteHelpers::Execute(s_state.achievements_db, "DELETE FROM games;", error))
+  {
+    SQLiteHelpers::RollbackTransaction(s_state.achievements_db);
+    return false;
   }
 
-  Error::SetStringView(error, "Timed out while trying to open progress database.");
-  return nullptr;
-}
-
-void Achievements::BuildProgressDatabase(const rc_client_all_user_progress_t* allprog)
-{
-  // no point storing it in memory, just write directly to the file
-  Error error;
-  FileSystem::ManagedCFilePtr fp = OpenProgressDatabase(true, true, &error);
-  if (!fp)
+  SQLitePreparedStatement hash_stmt, game_stmt;
+  if (!game_stmt.Prepare(s_state.achievements_db,
+                         "INSERT INTO games (game_id, title, badge_url, num_achievements, num_leaderboards, "
+                         "num_points) VALUES (?, ?, ?, ?, ?, ?);",
+                         error) ||
+      !hash_stmt.Prepare(s_state.achievements_db, "INSERT INTO hashes (hash, game_id) VALUES (?, ?);", error))
   {
-    ERROR_LOG("Failed to build progress database: {}", error.GetDescription());
-    return;
+    SQLiteHelpers::RollbackTransaction(s_state.achievements_db);
+    return false;
   }
 
-#ifdef HAS_POSIX_FILE_LOCK
-  FileSystem::POSIXLock lock(fp.get());
-#endif
-
-  // save a rewrite at the beginning
-  u32 games_with_unlocks = 0;
-  for (u32 i = 0; i < allprog->num_entries; i++)
+  u32 num_games = 0;
+  u32 num_hashes = 0;
+  for (const rc_client_game_list_entry_t& entry :
+       std::span<const rc_client_game_list_entry_t>(game_list->entries, game_list->num_entries))
   {
-    games_with_unlocks += BoolToUInt32(
-      (allprog->entries[i].num_unlocked_achievements + allprog->entries[i].num_unlocked_achievements_hardcore) > 0);
-  }
+    const std::string_view name = entry.name ? std::string_view(entry.name) : std::string_view();
 
-  BinaryFileWriter writer(fp.get());
-  writer.WriteU32(games_with_unlocks);
-  if (games_with_unlocks > 0)
-  {
-    for (const rc_client_all_user_progress_entry_t& entry :
-         std::span<const rc_client_all_user_progress_entry_t>(allprog->entries, allprog->num_entries))
+    // ignore games which don't have any hashes, since they won't resolve
+    if (entry.num_supported_hashes == 0)
     {
-      if ((entry.num_unlocked_achievements + entry.num_unlocked_achievements_hardcore) == 0)
-        continue;
+      WARNING_LOG("Skipping game ID {} ({}) in hash database since it has no supported hashes", entry.id, name);
+      continue;
+    }
 
-      writer.WriteU32(entry.game_id);
-      writer.WriteU16(Truncate16(entry.num_unlocked_achievements));
-      writer.WriteU16(Truncate16(entry.num_unlocked_achievements_hardcore));
+    game_stmt.BindInt(1, static_cast<int>(entry.id));
+    game_stmt.BindText(2, name);
+    game_stmt.BindText(3, entry.image_url ? std::string_view(entry.image_url) : std::string_view());
+    game_stmt.BindInt(4, static_cast<int>(entry.num_achievements));
+    game_stmt.BindInt(5, static_cast<int>(entry.num_leaderboards));
+    game_stmt.BindInt(6, static_cast<int>(entry.points));
+
+    if (!game_stmt.Execute(s_state.achievements_db, error)) [[unlikely]]
+    {
+      SQLiteHelpers::RollbackTransaction(s_state.achievements_db);
+      return false;
+    }
+
+    game_stmt.Reset();
+    num_games++;
+
+    for (const char* hash_str : std::span<const char*>(entry.supported_hashes, entry.num_supported_hashes))
+    {
+      GameHash hash;
+      if (StringUtil::DecodeHex(hash, hash_str) != GAME_HASH_LENGTH)
+      {
+        WARNING_LOG("Invalid hash '{}' in game ID {}", hash_str, entry.id);
+        continue;
+      }
+
+      hash_stmt.BindBlob(1, hash);
+      hash_stmt.BindInt(2, static_cast<int>(entry.id));
+      if (!hash_stmt.Execute(s_state.achievements_db, error)) [[unlikely]]
+      {
+        SQLiteHelpers::RollbackTransaction(s_state.achievements_db);
+        return false;
+      }
+
+      hash_stmt.Reset();
+      num_hashes++;
     }
   }
 
-  if (!writer.Flush(&error))
-    ERROR_LOG("Failed to write progress database: {}", error.GetDescription());
+  if (!SetAchievementsDatabaseMetadata(GAME_LIST_LAST_UPDATED_METADATA_KEY,
+                                       StringUtil::ToChars(static_cast<s64>(std::time(nullptr))), error))
+  {
+    return false;
+  }
+
+  if (!SQLiteHelpers::CommitTransaction(s_state.achievements_db, error))
+  {
+    SQLiteHelpers::RollbackTransaction(s_state.achievements_db);
+    return false;
+  }
+
+  INFO_LOG("Wrote {} games and {} hashes to achievement game database in {} ms", num_games, num_hashes,
+           timer.GetTimeMilliseconds());
+  return true;
 }
 
-void Achievements::UpdateProgressDatabase()
+void Achievements::FetchAllProgressIfMissing()
+{
+  if (!EnsureAchievementsDatabaseOpen())
+    return;
+
+  SQLitePreparedStatement stmt;
+  if (!stmt.Prepare(s_state.achievements_db, "SELECT COUNT(*) FROM progress;") || stmt.Step() != SQLITE_ROW)
+    return;
+
+  const bool has_progress_database = (stmt.ColumnInt(0) > 0);
+  if (has_progress_database)
+  {
+    DEV_LOG("Progress database already exists, skipping fetch");
+    return;
+  }
+
+  INFO_LOG("Progress database is missing, updating...");
+  BeginFetchAllProgressRequest(nullptr);
+}
+
+bool Achievements::WriteAllProgressToDatabase(const rc_client_all_user_progress_t* allprog, Error* error)
+{
+  if (!EnsureAchievementsDatabaseOpen(error))
+    return false;
+
+  if (!SQLiteHelpers::BeginTransaction(s_state.achievements_db, error) ||
+      !SQLiteHelpers::Execute(s_state.achievements_db, "DELETE FROM progress;", error))
+  {
+    SQLiteHelpers::RollbackTransaction(s_state.achievements_db);
+    return false;
+  }
+
+  SQLitePreparedStatement stmt;
+  if (!stmt.Prepare(s_state.achievements_db,
+                    "INSERT INTO progress (game_id, num_unlocked, num_hc_unlocked) VALUES (?, ?, ?);", error))
+  {
+    SQLiteHelpers::RollbackTransaction(s_state.achievements_db);
+    return false;
+  }
+
+  u32 written = 0;
+  for (const rc_client_all_user_progress_entry_t& entry :
+       std::span<const rc_client_all_user_progress_entry_t>(allprog->entries, allprog->num_entries))
+  {
+    if ((entry.num_unlocked_achievements + entry.num_unlocked_achievements_hardcore) == 0)
+      continue;
+
+    stmt.BindInt(1, static_cast<int>(entry.game_id));
+    stmt.BindInt(2, static_cast<int>(entry.num_unlocked_achievements));
+    stmt.BindInt(3, static_cast<int>(entry.num_unlocked_achievements_hardcore));
+
+    if (!stmt.Execute(s_state.achievements_db, error))
+    {
+      SQLiteHelpers::RollbackTransaction(s_state.achievements_db);
+      return false;
+    }
+
+    stmt.Reset();
+    written++;
+  }
+
+  if (!SQLiteHelpers::CommitTransaction(s_state.achievements_db, error))
+  {
+    SQLiteHelpers::RollbackTransaction(s_state.achievements_db);
+    return false;
+  }
+
+  INFO_LOG("Wrote {} games to progress database", written);
+  return true;
+}
+
+void Achievements::UpdateProgressDatabaseFromCurrentGame()
 {
   // don't write updates in spectator mode
-  if (rc_client_get_spectator_mode_enabled(s_state.client))
+  if (s_state.game_id == 0 || rc_client_get_spectator_mode_enabled(s_state.client))
     return;
 
   // query list to get both hardcore and softcore counts
@@ -3293,131 +3184,47 @@ void Achievements::UpdateProgressDatabase()
   // update the game list, this should be fairly quick
   if (s_state.game_hash.has_value())
   {
-    GameList::UpdateAchievementData(s_state.game_hash.value(), s_state.game_id, num_achievements, achievements_unlocked,
-                                    achievements_unlocked_hardcore);
+    Host::RunOnCoreThread([game_hash = s_state.game_hash.value(), game_id = s_state.game_id, num_achievements,
+                           achievements_unlocked, achievements_unlocked_hardcore]() {
+      GameList::UpdateAchievementData(game_hash, game_id, num_achievements, achievements_unlocked,
+                                      achievements_unlocked_hardcore);
+    });
   }
 
-  // done asynchronously so we don't hitch on disk I/O
-  Host::QueueAsyncTask([game_id = s_state.game_id, achievements_unlocked, achievements_unlocked_hardcore]() {
-    // no point storing it in memory, just write directly to the file
-    Error error;
-    FileSystem::ManagedCFilePtr fp = OpenProgressDatabase(true, false, &error);
-    const s64 size = fp ? FileSystem::FSize64(fp.get(), &error) : -1;
-    if (!fp || size < 0)
+  // Write progress synchronously, single-row upsert is fast and we already hold the mutex.
+  // Skip if both counters are zero (e.g. immediately after a game reset).
+  // TODO: Is this true?
+  if ((achievements_unlocked > 0 || achievements_unlocked_hardcore > 0) && EnsureAchievementsDatabaseOpen())
+  {
+    s_state.update_progress_stmt.BindInt(1, static_cast<int>(s_state.game_id));
+    s_state.update_progress_stmt.BindInt(2, static_cast<int>(achievements_unlocked));
+    s_state.update_progress_stmt.BindInt(3, static_cast<int>(achievements_unlocked_hardcore));
+
+    if (Error error; !s_state.update_progress_stmt.Execute(s_state.achievements_db, &error))
     {
-      ERROR_LOG("Failed to update progress database: {}", error.GetDescription());
-      return;
-    }
-
-#ifdef HAS_POSIX_FILE_LOCK
-    FileSystem::POSIXLock lock(fp.get());
-#endif
-
-    BinaryFileReader reader(fp.get());
-    const u32 game_count = (size > 0) ? reader.ReadU32() : 0;
-
-    // entry exists?
-    s64 found_offset = -1;
-    for (u32 i = 0; i < game_count; i++)
-    {
-      const u32 check_game_id = reader.ReadU32();
-      if (check_game_id == game_id)
-      {
-        // do we even need to change it?
-        const u16 current_achievements_unlocked = reader.ReadU16();
-        const u16 current_achievements_unlocked_hardcore = reader.ReadU16();
-        if (current_achievements_unlocked == achievements_unlocked &&
-            current_achievements_unlocked_hardcore == achievements_unlocked_hardcore)
-        {
-          VERBOSE_LOG("No update to progress database needed for game {}", game_id);
-          return;
-        }
-
-        found_offset = FileSystem::FTell64(fp.get()) - sizeof(u16) - sizeof(u16);
-        break;
-      }
-
-      if (!FileSystem::FSeek64(fp.get(), sizeof(u16) + sizeof(u16), SEEK_CUR, &error)) [[unlikely]]
-      {
-        ERROR_LOG("Failed to seek in progress database: {}", error.GetDescription());
-        return;
-      }
-    }
-
-    // make sure we had no read errors, don't want to make corrupted files
-    if (reader.HasError())
-    {
-      ERROR_LOG("Failed to read in progress database: {}", error.GetDescription());
-      return;
-    }
-
-    BinaryFileWriter writer(fp.get());
-
-    // append/update the entry
-    if (found_offset > 0)
-    {
-      INFO_LOG("Updating game {} with {}/{} unlocked", game_id, achievements_unlocked, achievements_unlocked_hardcore);
-
-      // need to seek when switching read->write
-      if (!FileSystem::FSeek64(fp.get(), found_offset, SEEK_SET, &error))
-      {
-        ERROR_LOG("Failed to write seek in progress database: {}", error.GetDescription());
-        return;
-      }
-
-      writer.WriteU16(Truncate16(achievements_unlocked));
-      writer.WriteU16(Truncate16(achievements_unlocked_hardcore));
+      ERROR_LOG("Failed to upsert progress entry for game {}: {}", s_state.game_id, error.GetDescription());
     }
     else
     {
-      // don't write zeros to the file. we could still end up with zeros here after reset, but that's rare
-      if (achievements_unlocked == 0 && achievements_unlocked_hardcore == 0)
-        return;
-
-      INFO_LOG("Appending game {} with {}/{} unlocked", game_id, achievements_unlocked, achievements_unlocked_hardcore);
-
-      if (size == 0)
-      {
-        // if the file is empty, need to write the header
-        writer.WriteU32(1);
-      }
-      else
-      {
-        // update the count
-        if (!FileSystem::FSeek64(fp.get(), 0, SEEK_SET, &error) || !writer.WriteU32(game_count + 1) ||
-            !FileSystem::FSeek64(fp.get(), 0, SEEK_END, &error))
-        {
-          ERROR_LOG("Failed to write seek/update header in progress database: {}", error.GetDescription());
-          return;
-        }
-      }
-
-      writer.WriteU32(game_id);
-      writer.WriteU16(Truncate16(achievements_unlocked));
-      writer.WriteU16(Truncate16(achievements_unlocked_hardcore));
+      INFO_LOG("Updated game {} with {}/{} unlocked", s_state.game_id, achievements_unlocked,
+               achievements_unlocked_hardcore);
     }
 
-    if (!writer.Flush(&error))
-    {
-      ERROR_LOG("Failed to write count in progress database: {}", error.GetDescription());
-      return;
-    }
-  });
+    s_state.update_progress_stmt.Reset();
+  }
 }
 
 void Achievements::ClearProgressDatabase()
 {
-  std::string path = GetProgressDatabasePath();
-  if (FileSystem::FileExists(path.c_str()))
-  {
-    INFO_LOG("Deleting progress database {}", path);
+  if (!EnsureAchievementsDatabaseOpen())
+    return;
 
-    Error error;
-    if (!FileSystem::DeleteFile(path.c_str(), &error))
-      ERROR_LOG("Failed to delete progress database: {}", error.GetDescription());
-  }
+  if (Error error; !SQLiteHelpers::Execute(s_state.achievements_db, "DELETE FROM progress;", &error))
+    ERROR_LOG("Failed to clear progress database: {}", error.GetDescription());
+  else
+    INFO_LOG("Cleared progress database");
 
-  GameList::UpdateAllAchievementData();
+  Host::RunOnCoreThread(&GameList::UpdateAllAchievementData);
 }
 
 Achievements::ProgressDatabase::ProgressDatabase() = default;
@@ -3426,44 +3233,92 @@ Achievements::ProgressDatabase::~ProgressDatabase() = default;
 
 bool Achievements::ProgressDatabase::Load(Error* error)
 {
-  FileSystem::ManagedCFilePtr fp = OpenProgressDatabase(false, false, error);
-  if (!fp)
+  const auto lock = Achievements::GetLock();
+
+  if (!EnsureAchievementsDatabaseOpen(error))
     return false;
 
-#ifdef HAS_POSIX_FILE_LOCK
-  FileSystem::POSIXLock lock(fp.get());
-#endif
+  Timer timer;
 
-  BinaryFileReader reader(fp.get());
-  const u32 count = reader.ReadU32();
-
-  // simple sanity check on file size
-  constexpr size_t entry_size = (sizeof(u32) + sizeof(u16) + sizeof(u16));
-  if (static_cast<s64>((count * entry_size) + sizeof(u32)) > FileSystem::FSize64(fp.get()))
+  // preallocate storage to reduce fragmentation
+  SQLitePreparedStatement stmt;
+  if (stmt.Prepare(s_state.achievements_db, "SELECT COUNT(*) FROM hashes") && stmt.Step() == SQLITE_ROW)
   {
-    Error::SetStringFmt(error, "Invalid entry count: {}", count);
-    return false;
+    const int count = stmt.ColumnInt(0);
+    if (count > 0)
+      m_hashes.reserve(static_cast<size_t>(count));
   }
-
-  m_entries.reserve(count);
-  for (u32 i = 0; i < count; i++)
+  stmt.Reset();
+  if (stmt.Prepare(s_state.achievements_db, "SELECT COUNT(*) FROM games") && stmt.Step() == SQLITE_ROW)
   {
-    const Entry entry = {.game_id = reader.ReadU32(),
-                         .num_achievements_unlocked = reader.ReadU16(),
-                         .num_hc_achievements_unlocked = reader.ReadU16()};
+    const int count = stmt.ColumnInt(0);
+    if (count > 0)
+      m_entries.reserve(static_cast<size_t>(count));
+  }
+  stmt.Reset();
 
-    // Just in case...
-    if (std::any_of(m_entries.begin(), m_entries.end(),
-                    [id = entry.game_id](const Entry& e) { return (e.game_id == id); }))
+  if (!stmt.Prepare(s_state.achievements_db, "SELECT hash, game_id FROM hashes", error))
+    return false;
+
+  // read data into cache
+  for (;;)
+  {
+    const int rc = stmt.Step();
+    if (rc == SQLITE_DONE)
+      break;
+    if (rc != SQLITE_ROW) [[unlikely]]
     {
-      WARNING_LOG("Duplicate game ID {}", entry.game_id);
+      SQLiteHelpers::SetError(error, s_state.achievements_db, "Error while reading rows: ");
+      return false;
+    }
+
+    const std::span<const u8> hash_blob = stmt.ColumnBlobBytes(0);
+    if (hash_blob.size() != GAME_HASH_LENGTH) [[unlikely]]
+    {
+      ERROR_LOG("Invalid hash blob size in progress database: {}", hash_blob.size());
       continue;
     }
 
-    m_entries.push_back(entry);
+    HashEntry& entry = m_hashes.emplace_back();
+    std::memcpy(entry.hash.data(), hash_blob.data(), GAME_HASH_LENGTH);
+    entry.game_id = static_cast<u32>(stmt.ColumnInt(1));
+  }
+  stmt.Reset();
+
+  if (!stmt.Prepare(s_state.achievements_db,
+                    "SELECT games.game_id, games.num_achievements, progress.num_unlocked, progress.num_hc_unlocked "
+                    "FROM games LEFT JOIN progress ON games.game_id = progress.game_id",
+                    error))
+  {
+    return false;
   }
 
+  // read data into cache
+  for (;;)
+  {
+    const int rc = stmt.Step();
+    if (rc == SQLITE_DONE)
+      break;
+    if (rc != SQLITE_ROW) [[unlikely]]
+    {
+      SQLiteHelpers::SetError(error, s_state.achievements_db, "Error while reading rows: ");
+      return false;
+    }
+
+    Entry& entry = m_entries.emplace_back();
+    entry.game_id = static_cast<u32>(stmt.ColumnInt(0));
+    entry.num_achievements = static_cast<u16>(stmt.ColumnInt(1));
+    entry.num_achievements_unlocked = static_cast<u16>(stmt.ColumnInt(2));
+    entry.num_hc_achievements_unlocked = static_cast<u16>(stmt.ColumnInt(3));
+  }
+
+  INFO_LOG("Loaded progress database with {} hashes and {} games in {} ms", m_hashes.size(), m_entries.size(),
+           timer.GetTimeMilliseconds());
+
   // sort for quick lookup
+  m_hashes.shrink_to_fit();
+  std::sort(m_hashes.begin(), m_hashes.end(),
+            [](const HashEntry& lhs, const HashEntry& rhs) { return (lhs.hash < rhs.hash); });
   m_entries.shrink_to_fit();
   std::sort(m_entries.begin(), m_entries.end(),
             [](const Entry& lhs, const Entry& rhs) { return (lhs.game_id < rhs.game_id); });
@@ -3471,120 +3326,119 @@ bool Achievements::ProgressDatabase::Load(Error* error)
   return true;
 }
 
-const Achievements::ProgressDatabase::Entry* Achievements::ProgressDatabase::LookupGame(u32 game_id) const
+const Achievements::ProgressDatabase::Entry* Achievements::ProgressDatabase::LookupHash(const GameHash& hash) const
 {
-  const auto iter = std::lower_bound(m_entries.begin(), m_entries.end(), game_id,
-                                     [](const Entry& entry, u32 search) { return (entry.game_id < search); });
-  return (iter != m_entries.end() && iter->game_id == game_id) ? &(*iter) : nullptr;
+  const auto hash_iter =
+    std::lower_bound(m_hashes.begin(), m_hashes.end(), hash,
+                     [](const HashEntry& entry, const GameHash& search) { return (entry.hash < search); });
+  if (hash_iter == m_hashes.end() || hash_iter->hash != hash)
+    return nullptr;
+
+  const auto game_iter = std::lower_bound(m_entries.begin(), m_entries.end(), hash_iter->game_id,
+                                          [](const Entry& entry, u32 search) { return (entry.game_id < search); });
+  return (game_iter != m_entries.end() && game_iter->game_id == hash_iter->game_id) ? &(*game_iter) : nullptr;
 }
 
-std::string Achievements::GetPinnedAchievementsPath(u32 game_id)
+std::string Achievements::GetGameBadgeURL(u32 game_id)
 {
-  return Path::Combine(EmuFolders::GameSettings, fmt::format("{}_achievements.ini", game_id));
+  const auto lock = GetLock();
+
+  // don't allow use of achievement badges if we're not logged in to achievements
+  if (!s_state.has_saved_credentials || !EnsureAchievementsDatabaseOpen())
+    return {};
+
+  std::string ret;
+  s_state.badge_lookup_stmt.BindInt(1, static_cast<int>(game_id));
+  if (s_state.badge_lookup_stmt.Step() == SQLITE_ROW)
+  {
+    if (const char* badge_url = s_state.badge_lookup_stmt.ColumnTextCStr(0))
+      ret = badge_url;
+  }
+  s_state.badge_lookup_stmt.Reset();
+  return ret;
 }
 
 void Achievements::LoadPinnedAchievements()
 {
-  s_state.pinned_achievement_indicators = {};
-  if (!HasAchievements())
+  if (!HasAchievements() || !EnsureAchievementsDatabaseOpen())
     return;
 
-  const std::string path = GetPinnedAchievementsPath(s_state.game_id);
-  INISettingsInterface ini(path);
-  if (!ini.Load())
-    return;
-
-  const std::vector<std::string> ids = ini.GetStringList("PinnedAchievements", "AchievementID");
-  for (const std::string& id_str : ids)
+  Error error;
+  SQLitePreparedStatement query_stmt;
+  if (!query_stmt.Prepare(s_state.achievements_db, "SELECT achievement_id FROM pinned_achievements WHERE game_id = ?",
+                          &error)) [[unlikely]]
   {
-    const std::optional<u32> id = StringUtil::FromChars<u32>(id_str);
-    if (!id.has_value())
+    ERROR_LOG("Failed to prepare pinned achievements query: {}", error.GetDescription());
+    return;
+  }
+
+  query_stmt.BindInt(1, static_cast<int>(s_state.game_id));
+
+  for (;;)
+  {
+    const int rc = query_stmt.Step();
+    if (rc == SQLITE_DONE)
+      break;
+    if (rc != SQLITE_ROW) [[unlikely]]
     {
-      WARNING_LOG("Invalid pinned achievement ID '{}'", id_str);
-      continue;
+      SQLiteHelpers::SetError(&error, s_state.achievements_db);
+      ERROR_LOG("Failed to execute pinned achievements query: {}", error.GetDescription());
+      break;
     }
 
-    const rc_client_achievement_t* achievement = rc_client_get_achievement_info(s_state.client, id.value());
+    const u32 achievement_id = static_cast<u32>(query_stmt.ColumnInt(0));
+    const rc_client_achievement_t* achievement = rc_client_get_achievement_info(s_state.client, achievement_id);
     if (!achievement)
     {
-      WARNING_LOG("Pinned achievement {} not found in game", id.value());
+      WARNING_LOG("Pinned achievement {} not found in game, unpinning", achievement_id);
+      SetAchievementPinnedInDatabase(achievement_id, false);
       continue;
     }
 
     if (achievement->state != RC_CLIENT_ACHIEVEMENT_STATE_ACTIVE)
     {
-      WARNING_LOG("Pinned achievement {} is not unlocked, skipping", id.value());
+      WARNING_LOG("Pinned achievement {} is unlocked, unpinning", achievement_id);
+      SetAchievementPinnedInDatabase(achievement_id, false);
       continue;
     }
 
     PinnedAchievementIndicator indicator;
-    indicator.achievement_id = id.value();
-    indicator.badge_path = GetAchievementBadgePath(achievement, false);
+    indicator.achievement_id = achievement_id;
+    indicator.badge_url = GetAchievementBadgeURL(achievement, false);
     s_state.pinned_achievement_indicators.push_back(std::move(indicator));
   }
 
+  std::sort(s_state.pinned_achievement_indicators.begin(), s_state.pinned_achievement_indicators.end(),
+            [](const PinnedAchievementIndicator& lhs, const PinnedAchievementIndicator& rhs) {
+              return (lhs.achievement_id < rhs.achievement_id);
+            });
+
   DEV_LOG("Loaded {} pinned achievements for game {}", s_state.pinned_achievement_indicators.size(), s_state.game_id);
-
-  // If there's nothing, clear out the file.
-  if (ids.size() != s_state.pinned_achievement_indicators.size())
-    SavePinnedAchievements();
-}
-
-void Achievements::SavePinnedAchievements()
-{
-  if (!HasAchievements())
-    return;
-
-  std::string path = GetPinnedAchievementsPath(s_state.game_id);
-
-  if (s_state.pinned_achievement_indicators.empty())
-  {
-    // Remove the file if there are no pinned achievements.
-    if (FileSystem::FileExists(path.c_str()))
-    {
-      Error error;
-      if (!FileSystem::DeleteFile(path.c_str(), &error))
-        ERROR_LOG("Failed to remove pinned achievements file: {}", error.GetDescription());
-    }
-
-    return;
-  }
-
-  INISettingsInterface ini(std::move(path));
-  ini.Load();
-
-  std::vector<std::string> ids;
-  ids.reserve(s_state.pinned_achievement_indicators.size());
-  for (const PinnedAchievementIndicator& indicator : s_state.pinned_achievement_indicators)
-    ids.push_back(StringUtil::ToChars(indicator.achievement_id));
-
-  ini.SetStringList("PinnedAchievements", "AchievementID", ids);
-
-  Error error;
-  if (!ini.Save(&error))
-    ERROR_LOG("Failed to save pinned achievements: {}", error.GetDescription());
 }
 
 bool Achievements::IsAchievementPinned(u32 achievement_id)
 {
-  return std::any_of(
-    s_state.pinned_achievement_indicators.begin(), s_state.pinned_achievement_indicators.end(),
-    [achievement_id](const PinnedAchievementIndicator& ind) { return ind.achievement_id == achievement_id; });
+  const auto it = std::lower_bound(
+    s_state.pinned_achievement_indicators.begin(), s_state.pinned_achievement_indicators.end(), achievement_id,
+    [](const PinnedAchievementIndicator& ind, u32 search) { return ind.achievement_id < search; });
+  return (it != s_state.pinned_achievement_indicators.end() && it->achievement_id == achievement_id);
 }
 
 void Achievements::SetAchievementPinned(u32 achievement_id, bool pinned)
 {
-  const auto it = std::find_if(
-    s_state.pinned_achievement_indicators.begin(), s_state.pinned_achievement_indicators.end(),
-    [achievement_id](const PinnedAchievementIndicator& ind) { return ind.achievement_id == achievement_id; });
-
-  if ((it != s_state.pinned_achievement_indicators.end()) == pinned)
+  const auto it = std::lower_bound(
+    s_state.pinned_achievement_indicators.begin(), s_state.pinned_achievement_indicators.end(), achievement_id,
+    [](const PinnedAchievementIndicator& ind, u32 search) { return ind.achievement_id < search; });
+  const bool is_pinned = (it != s_state.pinned_achievement_indicators.end() && it->achievement_id == achievement_id);
+  if (is_pinned == pinned)
     return;
 
-  if (it != s_state.pinned_achievement_indicators.end())
+  if (is_pinned)
   {
     DEV_LOG("Unpinning achievement {}", achievement_id);
     s_state.pinned_achievement_indicators.erase(it);
+
+    SetAchievementPinnedInDatabase(achievement_id, false);
   }
   else
   {
@@ -3596,10 +3450,11 @@ void Achievements::SetAchievementPinned(u32 achievement_id, bool pinned)
     }
 
     DEV_LOG("Pinning achievement {}", achievement_id);
+
     PinnedAchievementIndicator indicator;
     indicator.achievement_id = achievement_id;
-    indicator.badge_path = GetAchievementBadgePath(achievement, false);
-    s_state.pinned_achievement_indicators.push_back(std::move(indicator));
+    indicator.badge_url = GetAchievementBadgeURL(achievement, false);
+    s_state.pinned_achievement_indicators.insert(it, std::move(indicator));
 
     // Hide progress indicator if it was set
     if (s_state.active_progress_indicator.has_value() &&
@@ -3608,9 +3463,38 @@ void Achievements::SetAchievementPinned(u32 achievement_id, bool pinned)
       DEV_COLOR_LOG(StrongYellow, "Clearing progress indicator for achievement {} due to pin", achievement_id);
       s_state.active_progress_indicator.reset();
     }
-  }
 
-  SavePinnedAchievements();
+    SetAchievementPinnedInDatabase(achievement_id, true);
+  }
+}
+
+void Achievements::SetAchievementPinnedInDatabase(u32 achievement_id, bool pinned)
+{
+  if (!EnsureAchievementsDatabaseOpen())
+    return;
+
+  Error error;
+  SQLitePreparedStatement stmt;
+  if (pinned)
+  {
+    if (!stmt.Prepare(s_state.achievements_db,
+                      "INSERT INTO pinned_achievements (game_id, achievement_id) VALUES (?, ?)", &error) ||
+        !(stmt.BindInt(1, static_cast<int>(s_state.game_id)), stmt.BindInt(2, static_cast<int>(achievement_id)),
+          stmt.Execute(s_state.achievements_db, &error)))
+    {
+      ERROR_LOG("Failed to pin achievement in database: {}", error.GetDescription());
+    }
+  }
+  else
+  {
+    if (!stmt.Prepare(s_state.achievements_db,
+                      "DELETE FROM pinned_achievements WHERE game_id = ? AND achievement_id = ?", &error) ||
+        !(stmt.BindInt(1, static_cast<int>(s_state.game_id)), stmt.BindInt(2, static_cast<int>(achievement_id)),
+          stmt.Execute(s_state.achievements_db, &error)))
+    {
+      ERROR_LOG("Failed to unpin achievement in database: {}", error.GetDescription());
+    }
+  }
 }
 
 #ifdef RC_CLIENT_SUPPORTS_RAINTEGRATION
@@ -3720,7 +3604,7 @@ void Achievements::FinishLoadRAIntegrationOnCoreThread()
   FinishInitialize();
 }
 
-void Achievements::UnloadRAIntegration()
+void Achievements::UnloadRAIntegration(std::unique_lock<std::recursive_mutex>& lock)
 {
   DebugAssert(s_state.using_raintegration && s_state.client);
 
@@ -3731,8 +3615,7 @@ void Achievements::UnloadRAIntegration()
   }
 
   // Have to unload it on the UI thread, otherwise the DLL unload races the UI thread message processing.
-  s_state.http_downloader->WaitForAllRequests();
-  s_state.http_downloader.reset();
+  WaitForServerCallsWithYield(lock);
   s_state.raintegration_loading = false;
   s_state.using_raintegration = false;
   Host::RunOnUIThread([client = std::exchange(s_state.client, nullptr)]() {

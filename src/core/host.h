@@ -13,6 +13,12 @@
 
 class Error;
 
+namespace Threading {
+class ThreadHandle;
+}
+
+enum class WindowInfoType : u8;
+
 namespace Host {
 
 /// Returns true if the specified resource file exists.
@@ -43,8 +49,9 @@ void ReportStatusMessage(std::string_view message);
 /// Displays an asynchronous confirmation on the UI thread, but does not block the caller.
 /// The callback may be executed on a different thread. Use RunOnCoreThread() in the callback to ensure safety.
 using ConfirmMessageAsyncCallback = std::function<void(bool)>;
-void ConfirmMessageAsync(std::string_view title, std::string_view message, ConfirmMessageAsyncCallback callback,
-                         std::string_view yes_text = std::string_view(), std::string_view no_text = std::string_view());
+void ConfirmMessageAsync(std::string_view icon, std::string_view title, std::string_view message,
+                         ConfirmMessageAsyncCallback callback, std::string_view yes_text = std::string_view(),
+                         std::string_view no_text = std::string_view());
 
 /// Opens a URL, using the default application.
 void OpenURL(std::string_view url);
@@ -64,6 +71,12 @@ const char* GetLanguageName(std::string_view language_code);
 /// Refreshes the UI when the language is changed.
 bool ChangeLanguage(const char* new_language);
 
+/// Gets a handle to the core thread.
+const Threading::ThreadHandle& GetCoreThreadHandle();
+
+/// Returns true if the currently executing thread is the core thread.
+bool IsOnCoreThread();
+
 /// Safely executes a function on the VM thread.
 void RunOnCoreThread(std::function<void()> function, bool block = false);
 
@@ -76,5 +89,11 @@ void WaitForAllAsyncTasks();
 
 /// Commits any changes made to the base settings layer to the host.
 void CommitBaseSettingChanges();
+
+/// Returns the window type for the host.
+WindowInfoType GetRenderWindowInfoType();
+
+/// Changes the screensaver inhibit state.
+bool SetScreensaverInhibit(bool inhibit, Error* error);
 
 } // namespace Host

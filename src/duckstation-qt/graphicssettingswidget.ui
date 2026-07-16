@@ -6,12 +6,9 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>736</width>
+    <width>776</width>
     <height>551</height>
    </rect>
-  </property>
-  <property name="windowTitle">
-   <string>Form</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout_3">
    <property name="leftMargin">
@@ -86,15 +83,50 @@
           <string/>
          </property>
          <layout class="QGridLayout" name="gridLayout_4" columnstretch="0,1">
-          <property name="topMargin">
-           <number>6</number>
-          </property>
           <item row="0" column="0">
-           <widget class="QLabel" name="resolutionScaleLabel">
-            <property name="text">
-             <string>Internal Resolution:</string>
+           <layout class="QHBoxLayout" name="resolutionScaleLabelLayout">
+            <property name="spacing">
+             <number>4</number>
             </property>
-           </widget>
+            <property name="leftMargin">
+             <number>0</number>
+            </property>
+            <property name="topMargin">
+             <number>0</number>
+            </property>
+            <property name="rightMargin">
+             <number>0</number>
+            </property>
+            <property name="bottomMargin">
+             <number>0</number>
+            </property>
+            <item>
+             <widget class="QLabel" name="resolutionScaleLabel">
+              <property name="text">
+               <string>Internal Resolution:</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="resolutionScaleWarningIcon">
+              <property name="minimumSize">
+               <size>
+                <width>16</width>
+                <height>16</height>
+               </size>
+              </property>
+              <property name="maximumSize">
+               <size>
+                <width>16</width>
+                <height>16</height>
+               </size>
+              </property>
+              <property name="visible">
+               <bool>false</bool>
+              </property>
+             </widget>
+            </item>
+           </layout>
           </item>
           <item row="0" column="1">
            <widget class="QComboBox" name="resolutionScale"/>
@@ -382,7 +414,8 @@
                <string>Reset Fine Cropping</string>
               </property>
               <property name="icon">
-               <iconset theme="delete-back-2-line"/>
+               <iconset resource="resources/duckstation-qt.qrc">
+                <normaloff>:/icons/monochrome/svg/delete-back-2-line.svg</normaloff>:/icons/monochrome/svg/delete-back-2-line.svg</iconset>
               </property>
              </widget>
             </item>
@@ -617,9 +650,6 @@
           <string/>
          </property>
          <layout class="QGridLayout" name="gridLayout_13" columnstretch="0,1">
-          <property name="topMargin">
-           <number>6</number>
-          </property>
           <item row="0" column="0">
            <widget class="QLabel" name="pgxpGeometryToleranceLabel">
             <property name="text">
@@ -628,26 +658,41 @@
            </widget>
           </item>
           <item row="0" column="1">
-           <widget class="QDoubleSpinBox" name="pgxpGeometryTolerance">
-            <property name="prefix">
-             <string/>
-            </property>
-            <property name="suffix">
-             <string>px</string>
-            </property>
-            <property name="minimum">
-             <double>-1.000000000000000</double>
-            </property>
-            <property name="maximum">
-             <double>100.000000000000000</double>
-            </property>
-            <property name="singleStep">
-             <double>0.250000000000000</double>
-            </property>
-            <property name="value">
-             <double>-1.000000000000000</double>
-            </property>
-           </widget>
+           <layout class="QHBoxLayout" name="pgxpGeometryToleranceLayout" stretch="1,0">
+            <item>
+             <widget class="QDoubleSpinBox" name="pgxpGeometryTolerance">
+              <property name="prefix">
+               <string/>
+              </property>
+              <property name="suffix">
+               <string>px</string>
+              </property>
+              <property name="minimum">
+               <double>-1.000000000000000</double>
+              </property>
+              <property name="maximum">
+               <double>100.000000000000000</double>
+              </property>
+              <property name="singleStep">
+               <double>0.250000000000000</double>
+              </property>
+              <property name="value">
+               <double>-1.000000000000000</double>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="resetPGXPGeometryTolerance">
+              <property name="toolTip">
+               <string>Reset Geometry Tolerance</string>
+              </property>
+              <property name="icon">
+               <iconset resource="resources/duckstation-qt.qrc">
+                <normaloff>:/icons/monochrome/svg/delete-back-2-line.svg</normaloff>:/icons/monochrome/svg/delete-back-2-line.svg</iconset>
+              </property>
+             </widget>
+            </item>
+           </layout>
           </item>
           <item row="1" column="0">
            <widget class="QLabel" name="pgxpDepthClearThresholdLabel">
@@ -657,11 +702,26 @@
            </widget>
           </item>
           <item row="1" column="1">
-           <widget class="QDoubleSpinBox" name="pgxpDepthClearThreshold">
-            <property name="maximum">
-             <double>65536.000000000000000</double>
-            </property>
-           </widget>
+           <layout class="QHBoxLayout" name="pgxpDepthClearThresholdLayout" stretch="1,0">
+            <item>
+             <widget class="QDoubleSpinBox" name="pgxpDepthClearThreshold">
+              <property name="maximum">
+               <double>65536.000000000000000</double>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="resetPGXPDepthClearThreshold">
+              <property name="toolTip">
+               <string>Reset Depth Clear Threshold</string>
+              </property>
+              <property name="icon">
+               <iconset resource="resources/duckstation-qt.qrc">
+                <normaloff>:/icons/monochrome/svg/delete-back-2-line.svg</normaloff>:/icons/monochrome/svg/delete-back-2-line.svg</iconset>
+              </property>
+             </widget>
+            </item>
+           </layout>
           </item>
           <item row="2" column="0" colspan="2">
            <layout class="QGridLayout" name="gridLayout">
@@ -812,7 +872,8 @@
                </sizepolicy>
               </property>
               <property name="icon">
-               <iconset theme="settings-3-line"/>
+               <iconset resource="resources/duckstation-qt.qrc">
+                <normaloff>:/icons/monochrome/svg/settings-3-line.svg</normaloff>:/icons/monochrome/svg/settings-3-line.svg</iconset>
               </property>
              </widget>
             </item>
@@ -883,22 +944,34 @@
           </item>
           <item row="1" column="1">
            <widget class="QPushButton" name="texturesDirectoryBrowse">
-            <property name="text">
+            <property name="toolTip">
              <string>Browse...</string>
+            </property>
+            <property name="icon">
+             <iconset resource="resources/duckstation-qt.qrc">
+              <normaloff>:/icons/monochrome/svg/folder-open-line.svg</normaloff>:/icons/monochrome/svg/folder-open-line.svg</iconset>
             </property>
            </widget>
           </item>
           <item row="1" column="2">
            <widget class="QPushButton" name="texturesDirectoryOpen">
-            <property name="text">
+            <property name="toolTip">
              <string>Open...</string>
+            </property>
+            <property name="icon">
+             <iconset resource="resources/duckstation-qt.qrc">
+              <normaloff>:/icons/monochrome/svg/open-folder-line.svg</normaloff>:/icons/monochrome/svg/open-folder-line.svg</iconset>
             </property>
            </widget>
           </item>
           <item row="1" column="3">
            <widget class="QPushButton" name="texturesDirectoryReset">
-            <property name="text">
+            <property name="toolTip">
              <string>Reset</string>
+            </property>
+            <property name="icon">
+             <iconset resource="resources/duckstation-qt.qrc">
+              <normaloff>:/icons/monochrome/svg/delete-back-2-line.svg</normaloff>:/icons/monochrome/svg/delete-back-2-line.svg</iconset>
             </property>
            </widget>
           </item>
@@ -952,6 +1025,24 @@
           </item>
           <item row="0" column="1">
            <widget class="QComboBox" name="gpuWireframeMode"/>
+          </item>
+          <item row="1" column="0" colspan="2">
+           <layout class="QGridLayout" name="gridLayout_3">
+            <item row="0" column="0">
+             <widget class="QCheckBox" name="gpuDisableTextures">
+              <property name="text">
+               <string>Disable Textures</string>
+              </property>
+             </widget>
+            </item>
+            <item row="0" column="1">
+             <widget class="QCheckBox" name="gpuDisableVertexLighting">
+              <property name="text">
+               <string>Disable Vertex Lighting</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
           </item>
          </layout>
         </widget>
@@ -1094,6 +1185,8 @@
    </item>
   </layout>
  </widget>
- <resources/>
+ <resources>
+  <include location="resources/duckstation-qt.qrc"/>
+ </resources>
  <connections/>
 </ui>

@@ -36,6 +36,7 @@ public:
 
   void updateRelativeMode(bool enabled);
   void updateCursor(bool hidden);
+  void setIgnoreDoubleClick(bool enabled);
 
   void checkForSizeChange(bool update_refresh_rate);
   void handleCloseEvent(QCloseEvent* event);
@@ -55,7 +56,10 @@ protected:
   bool event(QEvent* event) override;
 
 private:
-  void registerScreenChangeEvent();
+  void connectScreenChangedEvent();
+  void connectScreenRefreshRateChangedEvent();
+  void onScreenChanged();
+  void onScreenRefreshRateChanged();
   bool isActuallyFullscreen() const;
   void updateCenterPos();
 
@@ -69,11 +73,13 @@ private:
 #endif
   bool m_cursor_hidden = false;
   bool m_destroying = false;
+  bool m_ignore_double_click = false;
   bool m_screen_change_registered = false;
 
   RenderAPI m_render_api = RenderAPI::None;
   std::optional<WindowInfo> m_window_info;
 
+  QMetaObject::Connection m_screen_refresh_rate_changed_connection;
   const char* m_window_position_key = nullptr;
 };
 

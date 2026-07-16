@@ -2735,6 +2735,9 @@ SCPS-10131:
   controllers:
     - AnalogController
     - DigitalController
+  settings:
+    displayActiveStartOffset: -8
+    displayActiveEndOffset: -8
   metadata:
     publisher: "Sony"
     developer: "Sony"
@@ -2757,6 +2760,9 @@ SCPS-10132:
   controllers:
     - AnalogController
     - DigitalController
+  settings:
+    displayActiveStartOffset: -8
+    displayActiveEndOffset: -8
   metadata:
     publisher: "Sony"
     developer: "Sony"
@@ -4654,6 +4660,10 @@ SLPM-86023:
     versionTested: "0.1-884-g096ed21"
   controllers:
     - DigitalController
+  settings:
+    cdromMaxReadSpeedupCycles: 35000 # Hangs on the first loading screen.
+  traits:
+    - DisableWidescreen # Breaks sprite alignment with 3D backgrounds.
   metadata:
     publisher: "Konami"
     developer: "Konami"
@@ -4674,6 +4684,10 @@ SLPM-86073:
   saveName: "Akumajou Dracula X - Gekka no Yasoukyoku (Japan) (Rev 2)"
   controllers:
     - DigitalController
+  settings:
+    cdromMaxReadSpeedupCycles: 35000 # Hangs on the first loading screen.
+  traits:
+    - DisableWidescreen # Breaks sprite alignment with 3D backgrounds.
   codes:
     - SLPM-86073
     - SLPM-87328
@@ -16266,6 +16280,9 @@ SLPS-00222:
   saveName: "Bio Hazard (Japan)"
   controllers:
     - DigitalController
+  traits:
+    - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   metadata:
     publisher: "Capcom"
     developer: "Capcom Production Studio 4"
@@ -16284,6 +16301,9 @@ SLPM-80027:
   name: "Bio Hazard (Demo)"
   localizedName: "バイオハザード"
   saveName: "Bio Hazard (Japan) (Demo)"
+  traits:
+    - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   metadata:
     genre: "** DEMO **"
 SLPS-01513:
@@ -16292,6 +16312,9 @@ SLPS-01513:
   controllers:
     - AnalogController
     - DigitalController
+  traits:
+    - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   metadata:
     publisher: "Capcom"
     developer: "Capcom Production Studio 4"
@@ -16312,6 +16335,9 @@ SLPS-00998:
   saveName: "Bio Hazard - Director's Cut (Japan)"
   controllers:
     - DigitalController
+  traits:
+    - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   metadata:
     publisher: "Capcom"
     developer: "Capcom Production Studio 4"
@@ -16333,6 +16359,9 @@ SLPS-01512:
   controllers:
     - AnalogController
     - DigitalController
+  traits:
+    - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   metadata:
     publisher: "Capcom"
     developer: "Capcom Production Studio 4"
@@ -16380,8 +16409,9 @@ SLPS-01222:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Capcom"
     developer: "Capcom Production Studio 4"
@@ -16404,8 +16434,9 @@ SLPS-01223:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Capcom"
     developer: "Capcom Production Studio 4"
@@ -16428,8 +16459,9 @@ SLPS-00999:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
 SLPS-01510:
   name: "Biohazard 2 - Dual Shock Ver. (Disc 1) (Leon-hen)"
   localizedName: "バイオハザード２　デュアルショックバージョン"
@@ -16439,8 +16471,9 @@ SLPS-01510:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Capcom"
     developer: "Capcom Production Studio 4"
@@ -16464,8 +16497,9 @@ SLPS-01511:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Capcom"
     developer: "Capcom Production Studio 4"
@@ -22616,6 +22650,8 @@ SCUS-94426:
     - NeGcon
     - JogCon
   settings:
+    displayActiveStartOffset: 7
+    displayActiveEndOffset: 7
     gpuPGXPPreserveProjFP: false # Causes holes in geometry.
   metadata:
     publisher: "Sony"
@@ -24177,6 +24213,10 @@ SCPS-45196:
   saveName: "Castlevania - Symphony of the Night (Asia)"
   controllers:
     - DigitalController
+  settings:
+    cdromMaxReadSpeedupCycles: 35000 # Hangs on the first loading screen.
+  traits:
+    - DisableWidescreen # Breaks sprite alignment with 3D backgrounds.
 SLES-00524:
   name: "Castlevania - Symphony of the Night"
   saveName: "Castlevania - Symphony of the Night (Europe)"
@@ -24184,6 +24224,8 @@ SLES-00524:
     - DigitalController
   settings:
     cdromMaxReadSpeedupCycles: 35000 # Hangs on the first loading screen.
+  traits:
+    - DisableWidescreen # Breaks sprite alignment with 3D backgrounds.
   metadata:
     publisher: "Konami"
     developer: "Konami"
@@ -24208,6 +24250,8 @@ SLUS-00067:
     - DigitalController
   settings:
     cdromMaxReadSpeedupCycles: 35000 # Hangs on the first loading screen.
+  traits:
+    - DisableWidescreen # Breaks sprite alignment with 3D backgrounds.
   metadata:
     publisher: "Konami"
     developer: "Konami"
@@ -39988,6 +40032,8 @@ SLUS-01193:
     versionTested: "0.1-1336-gd711baa"
   controllers:
     - DigitalController
+  traits:
+    - ForcePGXPCPUMode # Required for PGXP to work properly.
   metadata:
     publisher: "Bandai"
     developer: "Bandai"
@@ -40181,6 +40227,8 @@ SLPS-02844:
   saveName: "DigimonWorld 2 (Japan)"
   controllers:
     - DigitalController
+  traits:
+    - ForcePGXPCPUMode # Required for PGXP to work properly.
   metadata:
     publisher: "Bandai"
     developer: "Bandai"
@@ -40975,7 +41023,7 @@ SLED-01109:
     - DigitalController
     - PlayStationMouse
   settings:
-    cdromMaxReadSpeedupCycles: 120000 # Stops freeze in game.
+    cdromMaxReadSpeedupCycles: 125000 # Stops freeze in game.
   metadata:
     genre: "** DEMO **"
 SLES-00793:
@@ -40988,7 +41036,7 @@ SLES-00793:
     - DigitalController
     - PlayStationMouse
   settings:
-    cdromMaxReadSpeedupCycles: 120000 # Stops freeze in game.
+    cdromMaxReadSpeedupCycles: 125000 # Stops freeze in game.
   metadata:
     publisher: "Psygnosis"
     developer: "Perfect Entertainment"
@@ -41015,7 +41063,7 @@ SCUS-94605:
     - DigitalController
     - PlayStationMouse
   settings:
-    cdromMaxReadSpeedupCycles: 120000 # Stops freeze in game.
+    cdromMaxReadSpeedupCycles: 125000 # Stops freeze in game.
   metadata:
     publisher: "Psygnosis"
     developer: "Perfect Entertainment"
@@ -41040,7 +41088,7 @@ SLES-00794:
     - DigitalController
     - PlayStationMouse
   settings:
-    cdromMaxReadSpeedupCycles: 120000 # Stops freeze in game.
+    cdromMaxReadSpeedupCycles: 125000 # Stops freeze in game.
   metadata:
     publisher: "Psygnosis"
     developer: "Perfect Entertainment"
@@ -41065,7 +41113,7 @@ SLES-00795:
     - DigitalController
     - PlayStationMouse
   settings:
-    cdromMaxReadSpeedupCycles: 120000 # Stops freeze in game.
+    cdromMaxReadSpeedupCycles: 125000 # Stops freeze in game.
   metadata:
     publisher: "Psygnosis"
     developer: "Perfect Entertainment"
@@ -50739,14 +50787,17 @@ SLPS-01518:
     - DigitalController
   traits:
     - DisableAutoAnalogMode # Analog sticks do nothing.
+  settings:
+    displayActiveStartOffset: -8
+    displayActiveEndOffset: -8
   codes:
     - SLPS-01518
     - SLPS-91143
     - SLPS-91403
   metadata:
     publisher: "From Software"
-    developer: "From Software, Inc"
-    releaseDate: "2001-11-15"
+    developer: "From Software"
+    releaseDate: "1998-08-13"
     genre: "Adventure"
     languages:
       - Japanese
@@ -50773,8 +50824,8 @@ SLUS-00820:
     displayActiveEndOffset: -8
   metadata:
     publisher: "Agetec"
-    developer: "From Software, Inc"
-    releaseDate: "1999-07-31"
+    developer: "From Software"
+    releaseDate: "1999-07-22"
     genre: "Adventure"
     languages:
       - English
@@ -50792,13 +50843,18 @@ SLPS-02167:
   controllers:
     - AnalogController
     - DigitalController
+  traits:
+    - DisableAutoAnalogMode # Analog sticks do nothing.
+  settings:
+    displayActiveStartOffset: -8
+    displayActiveEndOffset: -8
   codes:
     - SLPS-02167
     - SLPS-91425
   metadata:
     publisher: "From Software"
-    developer: "From Liquid Mirror Software"
-    releaseDate: "2001-11-29"
+    developer: "From Software"
+    releaseDate: "1999-08-05"
     genre: "Adventure"
     languages:
       - Japanese
@@ -55259,6 +55315,8 @@ SLES-03119:
     - AnalogController
     - DigitalController
     - NeGcon
+  traits:
+    - ForcePGXPCPUMode # Fixes skybox and sprite jitter.
   metadata:
     publisher: "Electronic Arts"
     developer: "EA Sports"
@@ -55283,6 +55341,8 @@ SLES-03117:
     - AnalogController
     - DigitalController
     - NeGcon
+  traits:
+    - ForcePGXPCPUMode # Fixes skybox and sprite jitter.
   metadata:
     publisher: "Electronic Arts"
     developer: "EA Sports"
@@ -55306,6 +55366,8 @@ SLES-03118:
     - AnalogController
     - DigitalController
     - NeGcon
+  traits:
+    - ForcePGXPCPUMode # Fixes skybox and sprite jitter.
   metadata:
     publisher: "Electronic Arts"
     developer: "EA Sports"
@@ -55328,6 +55390,8 @@ SLUS-01290:
     - AnalogController
     - DigitalController
     - NeGcon
+  traits:
+    - ForcePGXPCPUMode # Fixes skybox and sprite jitter.
   metadata:
     publisher: "Electronic Arts"
     developer: "EA Sports"
@@ -63697,7 +63761,8 @@ SCED-01979:
   name: "Formula One '99 (Beta)"
   saveName: "Formula One '99 (Europe) (En,Fr,De,It) (Beta)"
   traits:
-    - ForceInterpreter
+    - ForceInterpreter # Stale code execution from ICache.
+    - ForcePGXPCPUMode # Fixes skybox jitter.
   libcrypt: true
 SLED-00491:
   name: "Formula One (Demo)"
@@ -63705,7 +63770,8 @@ SLED-00491:
   metadata:
     genre: "** DEMO **"
   traits:
-    - ForceInterpreter
+    - ForceInterpreter # Stale code execution from ICache.
+    - ForcePGXPCPUMode # Fixes skybox jitter.
 SCES-02777:
   name: "Formula One 2000"
   saveName: "Formula One 2000 (Europe) (En,Fi)"
@@ -63714,7 +63780,8 @@ SCES-02777:
     - DigitalController
     - NeGcon
   traits:
-    - ForceInterpreter
+    - ForceInterpreter # Stale code execution from ICache.
+    - ForcePGXPCPUMode # Fixes skybox and sprite jitter.
   metadata:
     publisher: "Psygnosis"
     developer: "Studio 33"
@@ -63738,7 +63805,8 @@ SCES-02779:
     - DigitalController
     - NeGcon
   traits:
-    - ForceInterpreter
+    - ForceInterpreter # Stale code execution from ICache.
+    - ForcePGXPCPUMode # Fixes skybox and sprite jitter.
   metadata:
     publisher: "Psygnosis"
     developer: "Studio 33"
@@ -63762,7 +63830,8 @@ SCES-02778:
     - DigitalController
     - NeGcon
   traits:
-    - ForceInterpreter
+    - ForceInterpreter # Stale code execution from ICache.
+    - ForcePGXPCPUMode # Fixes skybox and sprite jitter.
   metadata:
     publisher: "Psygnosis"
     developer: "Studio 33"
@@ -63786,7 +63855,8 @@ SLUS-01134:
     - DigitalController
     - NeGcon
   traits:
-    - ForceInterpreter
+    - ForceInterpreter # Stale code execution from ICache.
+    - ForcePGXPCPUMode # Fixes skybox and sprite jitter.
   metadata:
     publisher: "Midway"
     developer: "Studio 33"
@@ -63811,7 +63881,8 @@ SCES-03404:
     - DigitalController
     - NeGcon
   traits:
-    - ForceInterpreter
+    - ForceInterpreter # Stale code execution from ICache.
+    - ForcePGXPCPUMode # Fixes skybox and sprite jitter.
   metadata:
     publisher: "Psygnosis"
     developer: "Studio 33"
@@ -63837,7 +63908,8 @@ SCES-03424:
     - DigitalController
     - NeGcon
   traits:
-    - ForceInterpreter
+    - ForceInterpreter # Stale code execution from ICache.
+    - ForcePGXPCPUMode # Fixes skybox and sprite jitter.
   metadata:
     publisher: "Psygnosis"
     developer: "Studio 33"
@@ -63861,7 +63933,8 @@ SCES-03423:
     - DigitalController
     - NeGcon
   traits:
-    - ForceInterpreter
+    - ForceInterpreter # Stale code execution from ICache.
+    - ForcePGXPCPUMode # Fixes skybox and sprite jitter.
   metadata:
     publisher: "Psygnosis"
     developer: "Studio 33"
@@ -63885,7 +63958,8 @@ SCES-03524:
     - DigitalController
     - NeGcon
   traits:
-    - ForceInterpreter
+    - ForceInterpreter # Stale code execution from ICache.
+    - ForcePGXPCPUMode # Fixes skybox and sprite jitter.
   metadata:
     publisher: "Psygnosis"
     developer: "Studio 33"
@@ -63908,7 +63982,8 @@ SCES-02222:
     - DigitalController
     - NeGcon
   traits:
-    - ForceInterpreter
+    - ForceInterpreter # Stale code execution from ICache.
+    - ForcePGXPCPUMode # Fixes skybox jitter.
   libcrypt: true
   metadata:
     publisher: "Psygnosis"
@@ -63934,7 +64009,8 @@ SCES-01979:
     - DigitalController
     - NeGcon
   traits:
-    - ForceInterpreter
+    - ForceInterpreter # Stale code execution from ICache.
+    - ForcePGXPCPUMode # Fixes skybox jitter.
   libcrypt: true
   metadata:
     publisher: "Psygnosis"
@@ -63962,7 +64038,8 @@ SCPS-10101:
     - DigitalController
     - NeGcon
   traits:
-    - ForceInterpreter
+    - ForceInterpreter # Stale code execution from ICache.
+    - ForcePGXPCPUMode # Fixes skybox jitter.- ForceInterpreter
   codes:
     - HASH-E379E77CF0C4F433
   metadata:
@@ -63990,7 +64067,8 @@ SLUS-00870:
     - DigitalController
     - NeGcon
   traits:
-    - ForceInterpreter
+    - ForceInterpreter # Stale code execution from ICache.
+    - ForcePGXPCPUMode # Fixes skybox jitter.
   metadata:
     publisher: "Psygnosis"
     developer: "Studio 33"
@@ -64015,7 +64093,8 @@ SCES-03886:
     - DigitalController
     - NeGcon
   traits:
-    - ForceInterpreter
+    - ForceInterpreter # Stale code execution from ICache.
+    - ForcePGXPCPUMode # Fixes skybox jitter.
   metadata:
     publisher: "Psygnosis"
     developer: "Studio 33"
@@ -90007,6 +90086,48 @@ SLPS-00247:
     vibration: false
     multitap: false
     linkCable: false
+SLPS-00017:
+  name: "King's Field"
+  localizedName: "キングスフィールド"
+  sortName: "King's Field 1"
+  saveName: "King's Field (Japan)"
+  controllers:
+    - DigitalController
+  codes:
+    - HASH-21DCDFDF43B4EB3
+  metadata:
+    publisher: "From Software"
+    developer: "From Software"
+    releaseDate: "1994-12-16"
+    genre: "First Person Action / RPG"
+    languages:
+      - Japanese
+    minPlayers: 1
+    maxPlayers: 1
+    minBlocks: 5
+    maxBlocks: 5
+    vibration: false
+    multitap: false
+    linkCable: false
+SLPS-91401:
+  name: "King's Field [PSOne Books]"
+  sortName: "King's Field 1 [PSOne Books]"
+  controllers:
+    - DigitalController
+  metadata:
+    publisher: "From Software"
+    developer: "From Software"
+    releaseDate: "2001-11-15"
+    genre: "First Person Action / RPG"
+    languages:
+      - Japanese
+    minPlayers: 1
+    maxPlayers: 1
+    minBlocks: 5
+    maxBlocks: 5
+    vibration: false
+    multitap: false
+    linkCable: false
 SCES-00510:
   name: "King's Field"
   sortName: "King's Field 2"
@@ -90017,34 +90138,12 @@ SCES-00510:
     publisher: "ASCII Entertaiment"
     developer: "From Software"
     releaseDate: "1997-03-10"
-    genre: "First Person Shooter / RPG"
+    genre: "First Person Action / RPG"
     languages:
       - English
     minPlayers: 1
     maxPlayers: 1
     minBlocks: 2
-    maxBlocks: 5
-    vibration: false
-    multitap: false
-    linkCable: false
-SLPS-00017:
-  name: "King's Field"
-  localizedName: "キングスフィールド"
-  saveName: "King's Field (Japan)"
-  controllers:
-    - DigitalController
-  codes:
-    - HASH-21DCDFDF43B4EB3
-  metadata:
-    publisher: "From Software"
-    developer: "From Software"
-    releaseDate: "1994-12-16"
-    genre: "First Person Shooter / RPG"
-    languages:
-      - Japanese
-    minPlayers: 1
-    maxPlayers: 1
-    minBlocks: 5
     maxBlocks: 5
     vibration: false
     multitap: false
@@ -90061,8 +90160,8 @@ SLUS-00158:
   metadata:
     publisher: "ASCII Entertaiment"
     developer: "From Software"
-    releaseDate: "1996-10-11"
-    genre: "First Person Shooter / RPG"
+    releaseDate: "1996-02-14"
+    genre: "First Person Action / RPG"
     languages:
       - English
     minPlayers: 1
@@ -90085,7 +90184,7 @@ SLPS-00069:
     publisher: "From Software"
     developer: "From Software"
     releaseDate: "1995-07-21"
-    genre: "First Person Shooter / RPG"
+    genre: "First Person Action / RPG"
     languages:
       - Japanese
     minPlayers: 1
@@ -90106,7 +90205,7 @@ SLPS-91003:
     publisher: "From Software"
     developer: "From Software"
     releaseDate: "1996-08-09"
-    genre: "First Person Shooter / RPG"
+    genre: "First Person Action / RPG"
     languages:
       - Japanese
     minPlayers: 1
@@ -90130,7 +90229,7 @@ SLPS-03579:
     publisher: "From Software"
     developer: "From Software"
     releaseDate: "2001-11-29"
-    genre: "First Person Shooter / RPG"
+    genre: "First Person Action / RPG"
     languages:
       - Japanese
     minPlayers: 1
@@ -90152,7 +90251,7 @@ SLUS-00255:
   metadata:
     publisher: "ASCII Entertainment"
     developer: "From Software"
-    releaseDate: "1996-11-15"
+    releaseDate: "1996-11-20"
     genre: "First Person Action / RPG"
     languages:
       - English
@@ -90213,6 +90312,22 @@ SLPM-80029:
   localizedName: "キングス・フィールドⅢ　～パイロット・スタイル～"
   sortName: "King's Field 3 - Pilot Style"
   saveName: "King's Field III - Pilot Style (Japan)"
+  controllers:
+    - DigitalController
+  metadata:
+    publisher: "From Software"
+    developer: "From Software"
+    releaseDate: "1996-08-22"
+    genre: "First Person Action / RPG"
+    languages:
+      - Japanese
+    minPlayers: 1
+    maxPlayers: 1
+    minBlocks: 0
+    maxBlocks: 0
+    vibration: false
+    multitap: false
+    linkCable: false
 SLPS-91426:
   name: "King's Field III - The Story of Verdite [PSOne Books]"
   sortName: "King's Field 3 - The Story of Verdite"
@@ -90229,24 +90344,6 @@ SLPS-91426:
     maxPlayers: 1
     minBlocks: 3
     maxBlocks: 3
-    vibration: false
-    multitap: false
-    linkCable: false
-SLPS-91401:
-  name: "King's Field [PSOne Books]"
-  controllers:
-    - DigitalController
-  metadata:
-    publisher: "From Software"
-    developer: "From Software"
-    releaseDate: "2001-11-15"
-    genre: "First Person Shooter / RPG"
-    languages:
-      - Japanese
-    minPlayers: 1
-    maxPlayers: 1
-    minBlocks: 5
-    maxBlocks: 5
     vibration: false
     multitap: false
     linkCable: false
@@ -93957,6 +94054,8 @@ SLES-03299:
   controllers:
     - AnalogController
     - DigitalController
+  traits:
+    - ForceRoundTextureCoordinates # Helps texture alignment.
   metadata:
     publisher: "LEGO Media International Inc"
     developer: "Silicon Dreams"
@@ -93977,6 +94076,8 @@ SLES-03306:
   controllers:
     - AnalogController
     - DigitalController
+  traits:
+    - ForceRoundTextureCoordinates # Helps texture alignment.
   metadata:
     publisher: "LEGO Media International Inc"
     developer: "Silicon Dreams"
@@ -94000,6 +94101,8 @@ SLES-03307:
   controllers:
     - AnalogController
     - DigitalController
+  traits:
+    - ForceRoundTextureCoordinates # Helps texture alignment.
   metadata:
     publisher: "LEGO Media International Inc"
     developer: "Silicon Dreams"
@@ -94020,6 +94123,8 @@ SLES-03308:
   controllers:
     - AnalogController
     - DigitalController
+  traits:
+    - ForceRoundTextureCoordinates # Helps texture alignment.
   metadata:
     publisher: "LEGO Media International Inc"
     developer: "Silicon Dreams"
@@ -94043,6 +94148,8 @@ SLUS-01246:
   controllers:
     - AnalogController
     - DigitalController
+  traits:
+    - ForceRoundTextureCoordinates # Helps texture alignment.
   metadata:
     publisher: "LEGO Media International Inc"
     developer: "Silicon Dreams"
@@ -94063,6 +94170,8 @@ SLES-03305:
   controllers:
     - AnalogController
     - DigitalController
+  traits:
+    - ForceRoundTextureCoordinates # Helps texture alignment.
   metadata:
     publisher: "LEGO Media International Inc"
     developer: "Silicon Dreams"
@@ -94083,6 +94192,8 @@ SLES-03300:
   controllers:
     - AnalogController
     - DigitalController
+  traits:
+    - ForceRoundTextureCoordinates # Helps texture alignment.
   metadata:
     publisher: "LEGO Media International Inc"
     developer: "Silicon Dreams"
@@ -104410,6 +104521,8 @@ SLES-01064:
   traits:
     - DisableTrueColor
     - DisableWidescreen # No effect.
+  settings:
+    cdromMaxReadSpeedupCycles: 60000
   metadata:
     publisher: "Capcom"
     developer: "Capcom Production Studio 2 / Laguna videogames"
@@ -104435,6 +104548,8 @@ SLUS-00453:
   traits:
     - DisableTrueColor
     - DisableWidescreen # No effect.
+  settings:
+    cdromMaxReadSpeedupCycles: 60000
   metadata:
     publisher: "Capcom"
     developer: "Capcom Production Studio 2 / Laguna videogames"
@@ -109796,6 +109911,8 @@ SLPS-01906:
   controllers:
     - AnalogController
     - DigitalController
+  settings:
+    cdromMaxReadSpeedupCycles: 100000 # Fixes infinite loading and graphical glitches.
   traits:
     - DisableAutoAnalogMode # Analog sticks do nothing.
   metadata:
@@ -109819,6 +109936,8 @@ SLPM-80379:
   controllers:
     - AnalogController
     - DigitalController
+  settings:
+    cdromMaxReadSpeedupCycles: 100000 # Fixes infinite loading and graphical glitches.
   traits:
     - DisableAutoAnalogMode # Analog sticks do nothing.
   metadata:
@@ -109992,6 +110111,8 @@ SLUS-00917:
   controllers:
     - DigitalController
     - AnalogController
+  settings:
+    cdromMaxReadSpeedupCycles: 100000 # Fixes infinite loading and graphical glitches.
   traits:
     - DisableAutoAnalogMode # Analog sticks do nothing.
   metadata:
@@ -110014,6 +110135,8 @@ SLUS-90071:
   controllers:
     - DigitalController
     - AnalogController
+  settings:
+    cdromMaxReadSpeedupCycles: 100000 # Fixes infinite loading and graphical glitches.
   traits:
     - DisableAutoAnalogMode # Analog sticks do nothing.
   metadata:
@@ -125018,6 +125141,10 @@ SLPS-02459:
     comments: "Does not boot with analog controller."
   controllers:
     - DigitalController
+  traits:
+    - ForceRecompilerICache # Works around crash on startup.
+  settings:
+    cpuOverclockPercent: 95 # Works around crash on startup.
   metadata:
     publisher: "Nichibutsu"
     developer: "Nichibutsu"
@@ -130107,6 +130234,7 @@ SLUS-00341:
     linkCable: false
 SLUS-00339:
   name: "Persona"
+  sortName: "Persona 1"
   saveName: "Persona (USA)"
   compatibility:
     rating: NoIssues
@@ -130134,12 +130262,16 @@ SLUS-00339:
 SLPM-86967:
   name: "Persona 2 - Batsu - Eternal Punishment (Disc 1)"
   localizedName: "ペルソナ２　罰　－ＥＴＥＲＮＡＬ　ＰＵＮＩＳＨＭＥＮＴ－ (DISC 1)"
+  sortName: "Persona 2b (Disc 1)"
   saveName: "Persona 2 - Batsu - Eternal Punishment (Japan) (Disc 1)"
   controllers:
     - AnalogController
     - DigitalController
   traits:
     - ForcePGXPCPUMode
+  settings:
+    displayActiveStartOffset: -8
+    displayActiveEndOffset: -8
   codes:
     - SLPM-86967
     - SLPS-02825
@@ -130160,12 +130292,16 @@ SLPM-86967:
 SLPS-02785:
   name: "Persona 2 - Batsu - Eternal Punishment (Disc 1) (Deluxe Pack)"
   localizedName: "ペルソナ２　罰"
+  sortName: "Persona 2b (Disc 1) (Deluxe Pack)"
   saveName: "Persona 2 - Batsu - Eternal Punishment (Japan) (Disc 1) (Deluxe Pack)"
   controllers:
     - AnalogController
     - DigitalController
   traits:
     - ForcePGXPCPUMode
+  settings:
+    displayActiveStartOffset: -8
+    displayActiveEndOffset: -8
   metadata:
     publisher: "Atlus Co"
     developer: "Atlus Co"
@@ -130183,6 +130319,7 @@ SLPS-02785:
 SLPS-02826:
   name: "Persona 2 - Batsu - Eternal Punishment (Disc 2) (Sumaru TV Special Preview Disc)"
   localizedName: "ペルソナ２　罰　－ＥＴＥＲＮＡＬ　ＰＵＮＩＳＨＭＥＮＴ－"
+  sortName: "Persona 2b (Disc 2)"
   saveName: "Persona 2 - Batsu - Eternal Punishment (Japan) (Disc 2) (Sumaru TV Special Preview Disc)"
   controllers:
     - AnalogController
@@ -130206,6 +130343,7 @@ SLPS-02826:
 SLPS-02786:
   name: "Persona 2 - Batsu - Eternal Punishment (Disc 2) (Sumaru TV Special Preview Disc) (Deluxe Pack)"
   localizedName: "ペルソナ２　罰"
+  sortName: "Persona 2b (Disc 2) (Deluxe Pack)"
   saveName: "Persona 2 - Batsu - Eternal Punishment (Japan) (Disc 2) (Sumaru TV Special Preview Disc) (Deluxe Pack)"
   controllers:
     - AnalogController
@@ -130228,6 +130366,7 @@ SLPS-02786:
     linkCable: false
 SCPS-45495:
   name: "Persona 2 - Eternal Punishment"
+  sortName: "Persona 2b"
   controllers:
     - AnalogController
     - DigitalController
@@ -130252,6 +130391,7 @@ SCPS-45495:
     linkCable: false
 SLUS-01158:
   name: "Persona 2 - Eternal Punishment"
+  sortName: "Persona 2b"
   saveName: "Persona 2 - Eternal Punishment (USA)"
   compatibility:
     rating: NoIssues
@@ -130261,6 +130401,9 @@ SLUS-01158:
     - DigitalController
   traits:
     - ForcePGXPCPUMode
+  settings:
+    displayActiveStartOffset: -8
+    displayActiveEndOffset: -8
   metadata:
     publisher: "Atlus Co"
     developer: "Atlus Co"
@@ -130277,12 +130420,11 @@ SLUS-01158:
     linkCable: false
 SLUS-01339:
   name: "Persona 2 - Eternal Punishment (Bonus Disc)"
+  sortName: "Persona 2b (Bonus Disc)"
   saveName: "Persona 2 - Eternal Punishment (USA) (Bonus Disc)"
   controllers:
     - AnalogController
     - DigitalController
-  traits:
-    - ForcePGXPCPUMode
   metadata:
     publisher: "Atlus Co"
     developer: "Atlus Co"
@@ -130299,6 +130441,7 @@ SLUS-01339:
     linkCable: false
 SCPS-45410:
   name: "Persona 2 - Innocent Sin (aka Persona 2 - Innocent Sin / Persona 2 - Tsumi)"
+  sortName: "Persona 2a"
   controllers:
     - AnalogController
     - DigitalController
@@ -130322,6 +130465,7 @@ SCPS-45410:
 SLPS-02100:
   name: "Persona 2 - Tsumi - Innocent Sin"
   localizedName: "ペルソナ２　罪"
+  sortName: "Persona 2a"
   saveName: "Persona 2 - Tsumi - Innocent Sin (Japan)"
   compatibility:
     rating: NoIssues
@@ -130332,6 +130476,9 @@ SLPS-02100:
   traits:
     - DisableAutoAnalogMode # Analog sticks do nothing.
     - ForcePGXPCPUMode
+  settings:
+    displayActiveStartOffset: -8
+    displayActiveEndOffset: -8
   metadata:
     publisher: "Atlus Co"
     developer: "Atlus Co"
@@ -130349,6 +130496,7 @@ SLPS-02100:
 SLPS-01923:
   name: "Persona 2 - Tsumi - Innocent Sin (Demo)"
   localizedName: "ペルソナ２　罪"
+  sortName: "Persona 2a (Demo)"
   saveName: "Persona 2 - Tsumi - Innocent Sin (Japan) (Demo)"
   controllers:
     - DigitalController
@@ -130371,6 +130519,7 @@ SLPS-01923:
 SLPS-91211:
   name: "Persona 2 - Tsumi - Innocent Sin"
   localizedName: "ペルソナ２　罪"
+  sortName: "Persona 2a (Rev 1)"
   saveName: "Persona 2 - Tsumi - Innocent Sin (Japan) (Rev 1)"
   controllers:
     - AnalogController
@@ -130378,6 +130527,9 @@ SLPS-91211:
   traits:
     - DisableAutoAnalogMode # Analog sticks do nothing.
     - ForcePGXPCPUMode
+  settings:
+    displayActiveStartOffset: -8
+    displayActiveEndOffset: -8
   metadata:
     publisher: "Atlus Co"
     developer: "Atlus Co"
@@ -133547,7 +133699,7 @@ SLPM-86048:
   metadata:
     publisher: "Konami"
     developer: "KCEO"
-    releaseDate: "2003-07-08"
+    releaseDate: "1996-01-19"
     genre: "Adventure / Action"
     languages:
       - Japanese
@@ -133575,7 +133727,7 @@ SLPM-86049:
   metadata:
     publisher: "Konami"
     developer: "KCEO"
-    releaseDate: "2003-07-08"
+    releaseDate: "1996-01-19"
     genre: "Adventure / Action"
     languages:
       - Japanese
@@ -138341,6 +138493,9 @@ SLUS-00797:
     - DigitalController
     - NeGcon
     - JogCon
+  settings:
+    displayActiveStartOffset: -8
+    displayActiveEndOffset: -8
   metadata:
     publisher: "Namco"
     developer: "Namco"
@@ -141869,6 +142024,7 @@ SLES-00200:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Fixes missing dialogue lines.
   metadata:
     publisher: "Virgin Interactive"
     developer: "Capcom Production Studio 4"
@@ -141890,6 +142046,7 @@ SLES-00335:
     genre: "** DEMO **"
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Fixes missing dialogue lines.
 SLES-00227:
   name: "Resident Evil"
   saveName: "Resident Evil (France)"
@@ -141897,6 +142054,7 @@ SLES-00227:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Fixes missing dialogue lines.
   metadata:
     publisher: "Virgin Interactive"
     developer: "Capcom Production Studio 4"
@@ -141918,6 +142076,7 @@ SLES-00228:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Fixes missing dialogue lines.
   metadata:
     publisher: "Virgin Interactive"
     developer: "Capcom Production Studio 4"
@@ -141939,6 +142098,7 @@ SLES-00355:
     genre: "** DEMO **"
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Fixes missing dialogue lines.
 SLUS-00170:
   name: "Resident Evil"
   saveName: "Resident Evil (USA)"
@@ -141949,6 +142109,7 @@ SLUS-00170:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Fixes missing dialogue lines.
   metadata:
     publisher: "Capcom"
     developer: "Capcom Production Studio 4"
@@ -141970,6 +142131,7 @@ SLES-00969:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Fixes missing dialogue lines.
   metadata:
     publisher: "Virgin Interactive"
     developer: "Capcom Production Studio 4"
@@ -141991,6 +142153,7 @@ SLES-00970:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Fixes missing dialogue lines.
   metadata:
     publisher: "Virgin Interactive"
     developer: "Capcom Production Studio 4"
@@ -142012,6 +142175,7 @@ SLES-00971:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Fixes missing dialogue lines.
   metadata:
     publisher: "Virgin Interactive"
     developer: "Capcom Production Studio 4"
@@ -142036,6 +142200,7 @@ SLUS-00551:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Fixes missing dialogue lines.
   metadata:
     publisher: "Capcom"
     developer: "Capcom Production Studio 4"
@@ -142058,6 +142223,7 @@ SLUS-00747:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Fixes missing dialogue lines.
   metadata:
     publisher: "Capcom"
     developer: "Capcom Production Studio 4"
@@ -142146,8 +142312,9 @@ SLES-00972:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Virgin Interactive"
     developer: "Capcom Production Studio 4"
@@ -142169,8 +142336,9 @@ SLES-10972:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Virgin Interactive"
     developer: "Capcom Production Studio 4"
@@ -142192,8 +142360,9 @@ SLED-00977:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
 SLES-00973:
   name: "Resident Evil 2 (Disc 1)"
   saveName: "Resident Evil 2 (France) (Disc 1)"
@@ -142201,8 +142370,9 @@ SLES-00973:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Virgin Interactive"
     developer: "Capcom Production Studio 4"
@@ -142224,8 +142394,9 @@ SLES-10973:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Virgin Interactive"
     developer: "Capcom Production Studio 4"
@@ -142247,8 +142418,9 @@ SLES-00974:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Virgin Interactive"
     developer: "Capcom Production Studio 4"
@@ -142270,8 +142442,9 @@ SLES-10974:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Virgin Interactive"
     developer: "Capcom Production Studio 4"
@@ -142293,8 +142466,9 @@ SLES-00975:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Virgin Interactive"
     developer: "Capcom Production Studio 4"
@@ -142316,8 +142490,9 @@ SLES-10975:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Virgin Interactive"
     developer: "Capcom Production Studio 4"
@@ -142342,8 +142517,9 @@ SLES-00976:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Virgin Interactive"
     developer: "Capcom Production Studio 4"
@@ -142368,8 +142544,9 @@ SLES-10976:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Virgin Interactive"
     developer: "Capcom Production Studio 4"
@@ -142391,8 +142568,9 @@ SLUS-80421:
     genre: "** DEMO **"
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   codes:
     - SLUS-80421
     - SLUS-90009
@@ -142406,8 +142584,9 @@ SLUS-00421:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Capcom"
     developer: "Capcom Production Studio 4"
@@ -142432,8 +142611,9 @@ SLUS-00592:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Capcom"
     developer: "Capcom Production Studio 4"
@@ -142459,8 +142639,9 @@ SLUS-00748:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Capcom"
     developer: "Capcom Production Studio 4"
@@ -142486,8 +142667,9 @@ SLUS-00756:
     - DigitalController
   traits:
     - DisableWidescreen
+    - ForceRecompilerICache # Other REs need it, probably the same here.
   settings:
-    cdromMaxReadSpeedupCycles: 70000 # Randomly hangs after certain door transitions.
+    cdromMaxReadSpeedupCycles: 65000 # Hangs on boot and after certain door transitions.
   metadata:
     publisher: "Capcom"
     developer: "Capcom Production Studio 4"
@@ -149928,6 +150110,9 @@ SCPS-45416:
   controllers:
     - AnalogController
     - DigitalController
+  traits:
+    - DisableCDROMSpeedupOnMDEC
+    - DisableWidescreen
   codes:
     - SCPS-45416
     - SLPM-87394
@@ -151223,9 +151408,9 @@ SLPS-01420:
     - DisableAutoAnalogMode # Analog sticks do nothing.
   metadata:
     publisher: "From Software"
-    developer: "From Software, Inc"
+    developer: "From Software"
     releaseDate: "1998-06-25"
-    genre: "First Person Shooter / RPG"
+    genre: "First Person Action / RPG"
     languages:
       - Japanese
     minPlayers: 1
@@ -151248,9 +151433,9 @@ SLUS-00863:
     - DisableAutoAnalogMode # Analog sticks do nothing.
   metadata:
     publisher: "Agetec Inc"
-    developer: "From Software, Inc"
+    developer: "From Software"
     releaseDate: "1999-11-10"
-    genre: "First Person Shooter / RPG"
+    genre: "First Person Action / RPG"
     languages:
       - English
     minPlayers: 1
@@ -152067,6 +152252,9 @@ SLPS-03170:
     - DigitalController
   traits:
     - DisableAutoAnalogMode # Analog sticks do nothing.
+  settings:
+    displayActiveStartOffset: -8
+    displayActiveEndOffset: -8
   metadata:
     publisher: "Atlus Co"
     developer: "Atlus Co"
@@ -159557,7 +159745,6 @@ SCPS-45260:
   localizedName: "ソルディバイド"
   saveName: "Sol Divide (Japan, Asia)"
   controllers:
-    - AnalogController
     - DigitalController
   codes:
     - SCPS-45260
@@ -159585,6 +159772,8 @@ SLUS-01519:
   controllers:
     - AnalogController
     - DigitalController
+  traits:
+    - DisableAutoAnalogMode # Analog sticks do nothing.
   metadata:
     publisher: "XS Games LLC"
     developer: "Psikyo / Boom"
@@ -163144,7 +163333,7 @@ SLPS-02117:
     - DigitalController
   metadata:
     publisher: "From Software"
-    developer: "From Liquid Mirror Software"
+    developer: "From Software"
     releaseDate: "1999-06-16"
     genre: "Action"
     languages:
@@ -201034,6 +201223,9 @@ SLUS-01411:
     - DigitalController
   traits:
     - DisableAutoAnalogMode # Analog sticks do nothing.
+  settings:
+    displayActiveStartOffset: -8
+    displayActiveEndOffset: -8
   metadata:
     publisher: "Konami"
     developer: "Konami"

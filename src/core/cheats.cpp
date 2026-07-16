@@ -4,17 +4,21 @@
 #include "cheats.h"
 #include "achievements.h"
 #include "bus.h"
+#include "cheats_private.h"
 #include "controller.h"
 #include "core.h"
 #include "cpu_core.h"
+#include "cpu_disasm.h"
 #include "game_database.h"
 #include "host.h"
 #include "system.h"
 
 #include "util/imgui_manager.h"
 #include "util/translation.h"
+#include "util/zip_helpers.h"
 
 #include "common/assert.h"
+#include "common/bitutils.h"
 #include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
@@ -22,7 +26,6 @@
 #include "common/settings_interface.h"
 #include "common/small_string.h"
 #include "common/string_util.h"
-#include "common/zip_helpers.h"
 
 #include "IconsEmoji.h"
 #include "IconsFontAwesome.h"
@@ -160,48 +163,6 @@ private:
 
 namespace Cheats {
 
-namespace {
-/// Represents a cheat code, after being parsed.
-class CheatCode
-{
-public:
-  /// Additional metadata to a cheat code, present for all types.
-  struct Metadata
-  {
-    std::string name;
-    CodeType type = CodeType::Gameshark;
-    CodeActivation activation = CodeActivation::EndFrame;
-    std::optional<u32> override_cpu_overclock;
-    std::optional<DisplayAspectRatio> override_aspect_ratio;
-    bool has_options : 1;
-    bool disable_widescreen_rendering : 1;
-    bool enable_8mb_ram : 1;
-    bool disallow_for_achievements : 1;
-  };
-
-public:
-  explicit CheatCode(Metadata metadata);
-  virtual ~CheatCode();
-
-  ALWAYS_INLINE const Metadata& GetMetadata() const { return m_metadata; }
-  ALWAYS_INLINE const std::string& GetName() const { return m_metadata.name; }
-  ALWAYS_INLINE CodeActivation GetActivation() const { return m_metadata.activation; }
-  ALWAYS_INLINE bool IsManuallyActivated() const { return (m_metadata.activation == CodeActivation::Manual); }
-  ALWAYS_INLINE bool HasOptions() const { return m_metadata.has_options; }
-
-  bool HasAnySettingOverrides() const;
-  void ApplySettingOverrides();
-
-  virtual void SetOptionValue(u32 value) = 0;
-
-  virtual void Apply() const = 0;
-  virtual void ApplyOnDisable() const = 0;
-
-protected:
-  Metadata m_metadata;
-};
-} // namespace
-
 using CheatCodeList = std::vector<std::unique_ptr<CheatCode>>;
 using ActiveCodeList = std::vector<const CheatCode*>;
 using EnableCodeList = std::vector<std::string>;
@@ -234,7 +195,6 @@ static void EnumerateChtFiles(const std::string_view serial, std::optional<GameH
 static std::optional<CodeOption> ParseOption(const std::string_view value);
 static bool ParseOptionRange(const std::string_view value, u16* out_range_start, u16* out_range_end);
 static void ParseFile(CheatCodeList* dst_list, const std::string_view file_contents);
-static std::unique_ptr<CheatCode> ParseCode(CheatCode::Metadata metadata, const std::string_view data, Error* error);
 
 static Cheats::FileFormat DetectFileFormat(const std::string_view file_contents);
 static bool ImportPCSXFile(CodeInfoList* dst, const std::string_view file_contents, bool stop_on_error, Error* error);
@@ -317,8 +277,9 @@ void Cheats::CheatCode::ApplySettingOverrides()
   }
 }
 
-static std::array<const char*, 1> s_cheat_code_type_names = {{"Gameshark"}};
-static std::array<const char*, 1> s_cheat_code_type_display_names{{TRANSLATE_NOOP("Cheats", "Gameshark")}};
+static std::array<const char*, 2> s_cheat_code_type_names = {{"Gameshark", "Assembly"}};
+static std::array<const char*, 2> s_cheat_code_type_display_names{
+  {TRANSLATE_NOOP("Cheats", "Gameshark"), TRANSLATE_NOOP("Cheats", "Assembly")}};
 
 const char* Cheats::GetTypeName(CodeType type)
 {
@@ -977,7 +938,7 @@ void Cheats::ReloadCheats(bool reload_files, bool reload_enabled_list, bool verb
                           bool show_disabled_codes)
 {
   for (const CheatCode* code : s_locals.frame_end_codes)
-    code->ApplyOnDisable();
+    code->ApplyOnDisable(nullptr);
 
   // Reload files if cheats or patches are enabled, and they were not previously.
   const bool patches_are_enabled = AreAnyPatchesEnabled();
@@ -1170,6 +1131,46 @@ void Cheats::ApplyFrameEndCodes()
 {
   for (const CheatCode* code : s_locals.frame_end_codes)
     code->Apply();
+}
+
+Cheats::RollbackLog Cheats::ApplyOnDisableCodes()
+{
+  RollbackLog ret;
+  for (const CheatCode* code : s_locals.frame_end_codes)
+    code->ApplyOnDisable(&ret);
+  return ret;
+}
+
+void Cheats::ReapplyOnDisableCodes(const RollbackLog& rollback_list)
+{
+  for (const RollbackEntry& entry : rollback_list)
+  {
+    switch (entry.size)
+    {
+      case MemoryAccessSize::Byte:
+        CPU::SafeWriteMemoryByte(entry.address, Truncate8(entry.value));
+        break;
+
+      case MemoryAccessSize::HalfWord:
+        CPU::SafeWriteMemoryHalfWord(entry.address, Truncate16(entry.value));
+        break;
+
+      case MemoryAccessSize::Word:
+        CPU::SafeWriteMemoryWord(entry.address, Truncate32(entry.value));
+        break;
+
+        UnreachableCode();
+    }
+  }
+}
+
+void Cheats::ApplyAllOnDisableCodes()
+{
+  for (const CheatCode* code : s_locals.frame_end_codes)
+  {
+    if (code->HasRestorableOnDisableEffects())
+      code->Apply();
+  }
 }
 
 bool Cheats::EnumerateManualCodes(std::function<bool(const std::string& name)> callback)
@@ -2129,120 +2130,6 @@ bool Cheats::ImportOldChtFile(const std::string_view serial)
 // Gameshark codes
 //////////////////////////////////////////////////////////////////////////
 
-namespace Cheats {
-namespace {
-
-class GamesharkCheatCode final : public CheatCode
-{
-public:
-  explicit GamesharkCheatCode(Metadata metadata);
-  ~GamesharkCheatCode() override;
-
-  static std::unique_ptr<GamesharkCheatCode> Parse(Metadata metadata, const std::string_view data, Error* error);
-
-  void SetOptionValue(u32 value) override;
-
-  void Apply() const override;
-  void ApplyOnDisable() const override;
-
-private:
-  enum class InstructionCode : u8
-  {
-    Nop = 0x00,
-    ConstantWrite8 = 0x30,
-    ConstantWrite16 = 0x80,
-    ScratchpadWrite16 = 0x1F,
-    Increment16 = 0x10,
-    Decrement16 = 0x11,
-    Increment8 = 0x20,
-    Decrement8 = 0x21,
-    DelayActivation = 0xC1,
-    SkipIfNotEqual16 = 0xC0,
-    SkipIfButtonsNotEqual = 0xD5,
-    SkipIfButtonsEqual = 0xD6,
-    CompareButtons = 0xD4,
-    CompareEqual16 = 0xD0,
-    CompareNotEqual16 = 0xD1,
-    CompareLess16 = 0xD2,
-    CompareGreater16 = 0xD3,
-    CompareEqual8 = 0xE0,
-    CompareNotEqual8 = 0xE1,
-    CompareLess8 = 0xE2,
-    CompareGreater8 = 0xE3,
-    Slide = 0x50,
-    MemoryCopy = 0xC2,
-    ExtImprovedSlide = 0x53,
-
-    // Extension opcodes, not present on original GameShark.
-    ExtConstantWrite32 = 0x90,
-    ExtScratchpadWrite32 = 0xA5,
-    ExtCompareEqual32 = 0xA0,
-    ExtCompareNotEqual32 = 0xA1,
-    ExtCompareLess32 = 0xA2,
-    ExtCompareGreater32 = 0xA3,
-    ExtSkipIfNotEqual32 = 0xA4,
-    ExtIncrement32 = 0x60,
-    ExtDecrement32 = 0x61,
-    ExtConstantWriteIfMatch16 = 0xA6,
-    ExtConstantWriteIfMatchWithRestore16 = 0xA7,
-    ExtConstantWriteIfMatchWithRestore8 = 0xA8,
-    ExtConstantForceRange8 = 0xF0,
-    ExtConstantForceRangeLimits16 = 0xF1,
-    ExtConstantForceRangeRollRound16 = 0xF2,
-    ExtConstantForceRange16 = 0xF3,
-    ExtFindAndReplace = 0xF4,
-    ExtConstantSwap16 = 0xF5,
-
-    ExtConstantBitSet8 = 0x31,
-    ExtConstantBitClear8 = 0x32,
-    ExtConstantBitSet16 = 0x81,
-    ExtConstantBitClear16 = 0x82,
-    ExtConstantBitSet32 = 0x91,
-    ExtConstantBitClear32 = 0x92,
-
-    ExtBitCompareButtons = 0xD7,
-    ExtSkipIfNotLess8 = 0xC3,
-    ExtSkipIfNotGreater8 = 0xC4,
-    ExtSkipIfNotLess16 = 0xC5,
-    ExtSkipIfNotGreater16 = 0xC6,
-    ExtMultiConditionals = 0xF6,
-
-    ExtCheatRegisters = 0x51,
-    ExtCheatRegistersCompare = 0x52,
-
-    ExtCompareBitsSet8 = 0xE4,   // Only used inside ExtMultiConditionals
-    ExtCompareBitsClear8 = 0xE5, // Only used inside ExtMultiConditionals
-  };
-
-  union Instruction
-  {
-    u64 bits;
-
-    struct
-    {
-      u32 second;
-      u32 first;
-    };
-
-    BitField<u64, InstructionCode, 32 + 24, 8> code;
-    BitField<u64, u32, 32, 24> address;
-    BitField<u64, u32, 0, 32> value32;
-    BitField<u64, u16, 0, 16> value16;
-    BitField<u64, u8, 0, 8> value8;
-  };
-
-  std::vector<Instruction> instructions;
-  std::vector<std::tuple<u32, u8, u8>> option_instruction_values;
-
-  u32 GetNextNonConditionalInstruction(u32 index) const;
-
-  static bool IsConditionalInstruction(InstructionCode code);
-};
-
-} // namespace
-
-} // namespace Cheats
-
 Cheats::GamesharkCheatCode::GamesharkCheatCode(Metadata metadata) : CheatCode(std::move(metadata))
 {
 }
@@ -2270,7 +2157,7 @@ static std::optional<u32> ParseHexOptionMask(const std::string_view str, u8* out
       else if (!last_was_option)
       {
         // ? must be consecutive
-        return false;
+        return std::nullopt;
       }
 
       option_nibble_count++;
@@ -2285,7 +2172,7 @@ static std::optional<u32> ParseHexOptionMask(const std::string_view str, u8* out
     else
     {
       // not a valid hex digit
-      return false;
+      return std::nullopt;
     }
   }
 
@@ -2723,7 +2610,10 @@ void Cheats::GamesharkCheatCode::Apply() const
         const u16 comparevalue = Truncate16(inst.value32 >> 16);
         const u16 newvalue = Truncate16(inst.value32 & 0xFFFFu);
         if (value == comparevalue)
+        {
           DoMemoryWrite<u16>(inst.address, newvalue);
+          CPU::InvalidateICacheAt(inst.address);
+        }
 
         index++;
       }
@@ -2735,7 +2625,10 @@ void Cheats::GamesharkCheatCode::Apply() const
         const u8 comparevalue = Truncate8(inst.value16 >> 8);
         const u8 newvalue = Truncate8(inst.value16 & 0xFFu);
         if (value == comparevalue)
+        {
           DoMemoryWrite<u8>(inst.address, newvalue);
+          CPU::InvalidateICacheAt(inst.address);
+        }
 
         index++;
       }
@@ -4358,7 +4251,7 @@ void Cheats::GamesharkCheatCode::Apply() const
   }
 }
 
-void Cheats::GamesharkCheatCode::ApplyOnDisable() const
+void Cheats::GamesharkCheatCode::ApplyOnDisable(RollbackLog* rollback_list) const
 {
   const u32 count = static_cast<u32>(instructions.size());
   u32 index = 0;
@@ -4442,7 +4335,13 @@ void Cheats::GamesharkCheatCode::ApplyOnDisable() const
         const u16 comparevalue = Truncate16(inst.value32 >> 16);
         const u16 newvalue = Truncate16(inst.value32 & 0xFFFFu);
         if (value == newvalue)
+        {
+          if (rollback_list)
+            rollback_list->emplace_back(MemoryAccessSize::HalfWord, inst.address, newvalue);
+
           DoMemoryWrite<u16>(inst.address, comparevalue);
+          CPU::InvalidateICacheAt(inst.address);
+        }
 
         index++;
       }
@@ -4454,7 +4353,13 @@ void Cheats::GamesharkCheatCode::ApplyOnDisable() const
         const u8 comparevalue = Truncate8(inst.value16 >> 8);
         const u8 newvalue = Truncate8(inst.value16 & 0xFFu);
         if (value == newvalue)
+        {
+          if (rollback_list)
+            rollback_list->emplace_back(MemoryAccessSize::Byte, inst.address, newvalue);
+
           DoMemoryWrite<u8>(inst.address, comparevalue);
+          CPU::InvalidateICacheAt(inst.address);
+        }
 
         index++;
       }
@@ -4471,15 +4376,294 @@ void Cheats::GamesharkCheatCode::ApplyOnDisable() const
   }
 }
 
+std::span<const Cheats::GamesharkCheatCode::Instruction> Cheats::GamesharkCheatCode::GetInstructions() const
+{
+  return instructions;
+}
+
 void Cheats::GamesharkCheatCode::SetOptionValue(u32 value)
 {
   for (const auto& [index, bitpos_start, bit_count] : option_instruction_values)
   {
     Instruction& inst = instructions[index];
-    const u32 value_mask = ((1u << bit_count) - 1);
+    const u32 value_mask = (bit_count == 32) ? std::numeric_limits<u32>::max() : ((UINT32_C(1) << bit_count) - 1);
     const u32 fixed_mask = ~(value_mask << bitpos_start);
     inst.second = (inst.second & fixed_mask) | ((value & value_mask) << bitpos_start);
   }
+}
+
+bool Cheats::GamesharkCheatCode::HasRestorableOnDisableEffects() const
+{
+  for (const Instruction& inst : instructions)
+  {
+    if (inst.code == InstructionCode::ExtConstantWriteIfMatchWithRestore16 ||
+        inst.code == InstructionCode::ExtConstantWriteIfMatchWithRestore8)
+    {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+//////////////////////////////////////////////////////////////////////////
+// Assembly codes
+//////////////////////////////////////////////////////////////////////////
+
+Cheats::AssemblyCheatCode::AssemblyCheatCode(Metadata metadata) : CheatCode(std::move(metadata))
+{
+}
+
+Cheats::AssemblyCheatCode::~AssemblyCheatCode() = default;
+
+std::unique_ptr<Cheats::AssemblyCheatCode> Cheats::AssemblyCheatCode::Parse(Metadata metadata, std::string_view data,
+                                                                            Error* error)
+{
+  if (metadata.activation != CodeActivation::EndFrame)
+  {
+    Error::SetStringView(error, "Assembly codes only support EndFrame activation.");
+    return {};
+  }
+
+  std::unique_ptr<AssemblyCheatCode> code = std::make_unique<AssemblyCheatCode>(std::move(metadata));
+  code->instructions.reserve(static_cast<size_t>(std::ranges::count(data, '\n')) + 1);
+  CPU::AssemblyLabelList labels;
+  CheatFileReader reader(data);
+  std::optional<u32> pc;
+  std::string_view line;
+  while (reader.GetLine(&line))
+  {
+    std::string_view linev = StringUtil::StripWhitespace(line);
+    const size_t comment_pos = linev.find_first_of("#;");
+    if (comment_pos != std::string_view::npos)
+      linev = StringUtil::StripWhitespace(linev.substr(0, comment_pos));
+    if (linev.empty())
+      continue;
+
+    std::string_view address_text;
+    if (linev.starts_with(".org "))
+      address_text = StringUtil::StripWhitespace(linev.substr(4));
+    else if (linev.ends_with(':') && linev.front() >= '0' && linev.front() <= '9')
+      address_text = StringUtil::StripWhitespace(linev.substr(0, linev.size() - 1));
+    if (!address_text.empty())
+    {
+      if (address_text.starts_with("0x") || address_text.starts_with("0X"))
+        address_text.remove_prefix(2);
+
+      std::string_view end;
+      const std::optional<u32> address = StringUtil::FromChars<u32>(address_text, 16, &end);
+      if (!address.has_value() || !end.empty())
+      {
+        Error::SetStringFmt(error, "Malformed starting address at line {}: {}", reader.GetCurrentLineNumber(), linev);
+        return {};
+      }
+      if ((address.value() & (CPU::INSTRUCTION_SIZE - 1)) != 0)
+      {
+        Error::SetStringFmt(error, "Unaligned starting address at line {}: {}", reader.GetCurrentLineNumber(), linev);
+        return {};
+      }
+
+      pc = address.value();
+      continue;
+    }
+
+    const size_t colon_pos = linev.find(':');
+    if (colon_pos != std::string_view::npos)
+    {
+      const std::string_view label_name = StringUtil::StripWhitespace(linev.substr(0, colon_pos));
+      if (label_name.empty() || label_name.front() == '+' || label_name.front() == '-' ||
+          (label_name.front() >= '0' && label_name.front() <= '9') || label_name.find('?') != std::string_view::npos ||
+          label_name.find_first_of(" \t\r\n") != std::string_view::npos)
+      {
+        Error::SetStringFmt(error, "Malformed label at line {}: {}", reader.GetCurrentLineNumber(), linev);
+        return {};
+      }
+      if (!pc.has_value())
+      {
+        Error::SetStringFmt(error, "Label before starting address at line {}: {}", reader.GetCurrentLineNumber(),
+                            linev);
+        return {};
+      }
+
+      CPU::AssemblyLabel* label = CPU::DefineAssemblyLabel(&labels, label_name, pc.value(), error);
+      if (!label)
+        return {};
+
+      if (!CPU::FixupAssemblyLabelBackreferences(label, code.get(), error, [](u32 pc, void* userdata) {
+            for (Instruction& inst : static_cast<AssemblyCheatCode*>(userdata)->instructions)
+            {
+              if (inst.pc == pc)
+                return &inst.new_value;
+            }
+            return static_cast<u32*>(nullptr);
+          }))
+      {
+        return {};
+      }
+
+      linev = StringUtil::StripWhitespace(linev.substr(colon_pos + 1));
+      if (linev.empty())
+        continue;
+    }
+
+    if (!pc.has_value())
+    {
+      Error::SetStringFmt(error, "Instruction before starting address at line {}: {}", reader.GetCurrentLineNumber(),
+                          linev);
+      return {};
+    }
+
+    const u32 instruction_pc = pc.value();
+    if (std::ranges::any_of(code->instructions,
+                            [instruction_pc](const Instruction& inst) { return inst.pc == instruction_pc; }))
+    {
+      Error::SetStringFmt(error, "Duplicate instruction address 0x{:08X} at line {}.", instruction_pc,
+                          reader.GetCurrentLineNumber());
+      return {};
+    }
+
+    code->instructions.emplace_back(instruction_pc, 0, UNINITIALIZED_OLD_VALUE);
+    u32& bits = code->instructions.back().new_value;
+    Error assemble_error;
+    const size_t wildcard_pos = linev.find('?');
+    if (wildcard_pos == std::string_view::npos)
+    {
+      if (!CPU::AssembleInstruction(&bits, instruction_pc, linev, &labels, &assemble_error))
+      {
+        Error::SetStringFmt(error, "Failed to assemble instruction at line {}: {}", reader.GetCurrentLineNumber(),
+                            assemble_error.GetDescription());
+        return {};
+      }
+    }
+    else
+    {
+      size_t wildcard_count = 0;
+      bool wildcard_ended = false;
+      std::string zero_instruction(linev);
+      std::string one_instruction(linev);
+      for (size_t i = 0; i < linev.size(); i++)
+      {
+        if (linev[i] == '?')
+        {
+          if (wildcard_ended || wildcard_count == 8)
+          {
+            Error::SetStringFmt(error, "Wildcards must be one contiguous group of at most 8 digits at line {}.",
+                                reader.GetCurrentLineNumber());
+            return {};
+          }
+
+          wildcard_count++;
+          zero_instruction[i] = '0';
+          one_instruction[i] = 'f';
+        }
+        else if (wildcard_count > 0)
+        {
+          wildcard_ended = true;
+        }
+      }
+
+      u32 one_bits;
+      if (!CPU::AssembleInstruction(&bits, instruction_pc, zero_instruction, &labels, &assemble_error) ||
+          !CPU::AssembleInstruction(&one_bits, instruction_pc, one_instruction, &labels, &assemble_error))
+      {
+        Error::SetStringFmt(error, "Failed to assemble wildcard instruction at line {}: {}",
+                            reader.GetCurrentLineNumber(), assemble_error.GetDescription());
+        return {};
+      }
+
+      const u32 option_mask = bits ^ one_bits;
+      const u32 option_bit_count = static_cast<u32>(wildcard_count * 4);
+      const u32 option_bit_position = option_mask ? CountTrailingZeros(option_mask) : 0;
+      const u32 expected_mask = (option_bit_count == 32) ?
+                                  std::numeric_limits<u32>::max() :
+                                  (((UINT32_C(1) << option_bit_count) - 1) << option_bit_position);
+      if (option_mask != expected_mask)
+      {
+        Error::SetStringFmt(error, "Wildcard at line {} does not map to a contiguous instruction field.",
+                            reader.GetCurrentLineNumber());
+        return {};
+      }
+
+      code->option_instruction_values.emplace_back(static_cast<u32>(code->instructions.size() - 1),
+                                                   static_cast<u8>(option_bit_position),
+                                                   static_cast<u8>(option_bit_count));
+    }
+
+    pc = instruction_pc + CPU::INSTRUCTION_SIZE;
+  }
+
+  if (code->instructions.empty())
+  {
+    Error::SetStringView(error, "No instructions in code.");
+    return {};
+  }
+  if (CPU::ContainsUnresolvedLabels(labels))
+  {
+    const auto iter =
+      std::ranges::find_if(labels, [](const CPU::AssemblyLabel& label) { return !label.address.has_value(); });
+    Error::SetStringFmt(error, "Undefined label '{}'.", iter->name);
+    return {};
+  }
+
+  return code;
+}
+
+std::span<const Cheats::AssemblyCheatCode::Instruction> Cheats::AssemblyCheatCode::GetInstructions() const
+{
+  return instructions;
+}
+
+void Cheats::AssemblyCheatCode::SetOptionValue(u32 value)
+{
+  for (const auto& [index, bit_position, bit_count] : option_instruction_values)
+  {
+    Instruction& inst = instructions[index];
+    const u32 value_mask = (bit_count == 32) ? std::numeric_limits<u32>::max() : ((UINT32_C(1) << bit_count) - 1);
+    const u32 instruction_mask = value_mask << bit_position;
+    inst.new_value = (inst.new_value & ~instruction_mask) | ((value & value_mask) << bit_position);
+  }
+}
+
+void Cheats::AssemblyCheatCode::Apply() const
+{
+  for (const Instruction& inst : instructions)
+  {
+    u32 current_value;
+    if (!CPU::SafeReadMemoryWord(inst.pc, &current_value))
+      continue;
+
+    if (current_value != inst.new_value)
+    {
+      inst.old_value = ZeroExtend64(current_value);
+      CPU::SafeWriteMemoryWord(inst.pc, inst.new_value);
+      CPU::InvalidateICacheAt(inst.pc);
+    }
+  }
+}
+
+void Cheats::AssemblyCheatCode::ApplyOnDisable(RollbackLog* rollback_list) const
+{
+  for (const Instruction& inst : instructions)
+  {
+    if (inst.old_value == UNINITIALIZED_OLD_VALUE)
+      continue;
+
+    u32 current_value;
+    if (CPU::SafeReadMemoryWord(inst.pc, &current_value) && current_value == inst.new_value &&
+        CPU::SafeWriteMemoryWord(inst.pc, Truncate32(inst.old_value)))
+    {
+      CPU::InvalidateICacheAt(inst.pc);
+      if (rollback_list)
+        rollback_list->emplace_back(MemoryAccessSize::Word, inst.pc, inst.new_value);
+    }
+
+    inst.old_value = UNINITIALIZED_OLD_VALUE;
+  }
+}
+
+bool Cheats::AssemblyCheatCode::HasRestorableOnDisableEffects() const
+{
+  return true;
 }
 
 std::unique_ptr<Cheats::CheatCode> Cheats::ParseCode(CheatCode::Metadata metadata, const std::string_view data,
@@ -4491,6 +4675,10 @@ std::unique_ptr<Cheats::CheatCode> Cheats::ParseCode(CheatCode::Metadata metadat
   {
     case CodeType::Gameshark:
       ret = GamesharkCheatCode::Parse(std::move(metadata), data, error);
+      break;
+
+    case CodeType::Assembly:
+      ret = AssemblyCheatCode::Parse(std::move(metadata), data, error);
       break;
 
     default:

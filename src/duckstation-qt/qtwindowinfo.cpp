@@ -5,7 +5,7 @@
 #include "qtutils.h"
 
 #include "core/core.h"
-#include "core/video_thread.h"
+#include "core/host.h"
 
 #include "util/gpu_device.h"
 
@@ -49,14 +49,16 @@ namespace {
 
 struct WindowInfoLocals
 {
-  bool screensaver_inhibited;
-
 #if defined(__APPLE__)
   IOPMAssertionID screensaver_inhibit_assertion;
 #elif defined(__linux__)
-  u32 screensaver_inhibit_cookie;
+  // Prevent screensaver inhibits when running on platforms that don't have it (e.g. gamescope).
   std::optional<QDBusInterface> screensaver_inhibit_interface;
+  u32 screensaver_inhibit_cookie = 0;
+  bool disable_screensaver_inhibit = false;
 #endif
+
+  bool screensaver_inhibited = false;
 };
 
 } // namespace
@@ -193,22 +195,10 @@ void QtUtils::UpdateSurfaceSize(QWidget* widget, RenderAPI render_api, WindowInf
 
 void QtUtils::UpdateSurfaceRefreshRate(QWidget* widget, WindowInfo* wi)
 {
-  // Query refresh rate, we need it for sync.
-  Error refresh_rate_error;
-  std::optional<float> surface_refresh_rate = WindowInfo::QueryRefreshRateForWindow(*wi, &refresh_rate_error);
-  if (surface_refresh_rate.value_or(0.0f) > 0.0f)
-  {
-    wi->surface_refresh_rate = surface_refresh_rate.value();
-    return;
-  }
-
-  WARNING_LOG("Failed to get refresh rate for window, falling back to Qt: {}", refresh_rate_error.GetDescription());
-
-  // Fallback to using the screen, getting the rate for Wayland is an utter mess otherwise.
   const QScreen* widget_screen = widget->screen();
   if (!widget_screen)
     widget_screen = QGuiApplication::primaryScreen();
-  wi->surface_refresh_rate = widget_screen ? static_cast<float>(widget_screen->refreshRate()) : 0.0f;
+  wi->surface_refresh_rate = widget_screen ? std::max(static_cast<float>(widget_screen->refreshRate()), 0.0f) : 0.0f;
 }
 
 #ifdef __linux__
@@ -269,6 +259,13 @@ bool Host::SetScreensaverInhibit(bool inhibit, Error* error)
 
 #elif defined(__linux__)
 
+  if (s_window_info_locals.disable_screensaver_inhibit)
+  {
+    // pretend it succeeded so the caller doesn't throw an error
+    s_window_info_locals.screensaver_inhibited = inhibit;
+    return true;
+  }
+
   if (!s_window_info_locals.screensaver_inhibit_interface.has_value())
   {
     const QDBusConnection connection = QDBusConnection::sessionBus();
@@ -291,7 +288,7 @@ bool Host::SetScreensaverInhibit(bool inhibit, Error* error)
   if (inhibit)
   {
     const QDBusReply<quint32> msg = s_window_info_locals.screensaver_inhibit_interface->call(
-      "Inhibit", "DuckStation"_L1, "DuckStation VM is running."_L1);
+      "Inhibit", u"DuckStation"_s, u"DuckStation VM is running."_s);
     if (!msg.isValid())
     {
       FormatQDBusReplyError(error, "Inhibit message call failed: ", msg.error());
@@ -342,3 +339,10 @@ bool QtUtils::SetWindowRoundedCornerState(QWidget* widget, bool enabled)
 }
 
 #endif // _WIN32
+
+void QtHost::DisableScreensaverInhibit()
+{
+#ifdef __linux__
+  s_window_info_locals.disable_screensaver_inhibit = true;
+#endif
+}

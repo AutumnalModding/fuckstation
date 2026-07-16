@@ -31,6 +31,7 @@
     <ClCompile Include="cpu_types.cpp" />
     <ClCompile Include="ddgo_controller.cpp" />
     <ClCompile Include="digital_controller.cpp" />
+    <ClCompile Include="discord_presence.cpp" />
     <ClCompile Include="fullscreenui_achievements.cpp" />
     <ClCompile Include="fullscreenui_game_list.cpp" />
     <ClCompile Include="fullscreenui_settings.cpp" />
@@ -40,7 +41,6 @@
     <ClCompile Include="game_list.cpp" />
     <ClCompile Include="gdb_server.cpp" />
     <ClCompile Include="gpu_backend.cpp" />
-    <ClCompile Include="gpu_commands.cpp" />
     <ClCompile Include="gpu_dump.cpp" />
     <ClCompile Include="gpu_hw_shadergen.cpp" />
     <ClCompile Include="gpu_hw_texture_cache.cpp" />
@@ -95,7 +95,9 @@
     <ClInclude Include="cdrom_async_reader.h" />
     <ClInclude Include="cdrom_subq_replacement.h" />
     <ClInclude Include="cheats.h" />
+    <ClInclude Include="cheats_private.h" />
     <ClInclude Include="achievements.h" />
+    <ClInclude Include="controller_helpers.h" />
     <ClInclude Include="core.h" />
     <ClInclude Include="core_private.h" />
     <ClInclude Include="cpu_code_cache_private.h" />
@@ -118,6 +120,7 @@
     </ClInclude>
     <ClInclude Include="ddgo_controller.h" />
     <ClInclude Include="digital_controller.h" />
+    <ClInclude Include="discord_presence.h" />
     <ClInclude Include="fullscreenui_private.h" />
     <ClInclude Include="fullscreenui_strings.h" />
     <ClInclude Include="fullscreenui_widgets.h" />
@@ -177,6 +180,7 @@
     <ClInclude Include="timers.h" />
     <ClInclude Include="timing_event.h" />
     <ClInclude Include="types.h" />
+    <ClInclude Include="video_thread_private.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\dep\imgui\imgui.vcxproj">

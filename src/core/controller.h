@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #pragma once
@@ -37,6 +37,7 @@ public:
     const char* name;
     const char* display_name;
     const char* icon_name;
+    const char* image_name;
     std::span<const ControllerBindingInfo> bindings;
     std::span<const SettingInfo> settings;
 
@@ -51,6 +52,9 @@ public:
   static constexpr float DEFAULT_STICK_DEADZONE = 0.0f;
   static constexpr float DEFAULT_STICK_SENSITIVITY = 1.33f;
   static constexpr float DEFAULT_BUTTON_DEADZONE = 0.25f;
+
+  /// Center position when dealing with axis values.
+  static constexpr u8 AXIS_CENTER = 0x80;
 
   explicit Controller(u32 index);
   virtual ~Controller();
@@ -92,9 +96,6 @@ public:
   static const ControllerInfo& GetControllerInfo(ControllerType type);
   static const ControllerInfo* GetControllerInfo(std::string_view name);
 
-  /// Returns true if the specified coordinates are inside a circular deadzone.
-  static bool InCircularDeadzone(float deadzone, float pos_x, float pos_y);
-
   /// Converts a global pad index to a multitap port and slot.
   static std::tuple<u32, u32> ConvertPadToPortAndSlot(u32 index);
 
@@ -110,7 +111,13 @@ public:
 
   /// Returns a printable label for a given port.
   static const char* GetPortDisplayName(u32 port, u32 slot, bool mtap);
-  static const char* GetPortDisplayName(u32 index);
+  static const char* GetPortDisplayName(u32 index, MultitapMode mode);
+
+  /// Returns true if multitap is enabled on the given port.
+  static bool IsMultitapEnabledOnPort(u32 port, MultitapMode mode);
+
+  /// Returns a boolean array of which ports have multitap enabled for a given mode.
+  static std::array<bool, 2> GetMultitapEnabledPorts(MultitapMode mode);
 
   /// List of controller indices in the order that they should be displayed.
   static const std::array<u32, NUM_CONTROLLER_AND_CARD_PORTS> PortDisplayOrder;

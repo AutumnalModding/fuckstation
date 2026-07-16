@@ -8,6 +8,8 @@
 #include "common/small_string.h"
 #include "common/string_util.h"
 
+#include <fmt/format.h>
+
 #include <cstdarg>
 #include <sstream>
 
@@ -15,6 +17,16 @@ LOG_CHANNEL(CueParser);
 
 namespace CueParser {
 static bool TokenMatch(std::string_view s1, const char* token);
+}
+
+template<typename... T>
+static void SetError(u32 line_number, Error* error, fmt::format_string<T...> fmt, T&&... args)
+{
+  SmallString str;
+  str.vformat(fmt, fmt::make_format_args(args...));
+
+  ERROR_LOG("Cue parse error at line {}: {}", line_number, str);
+  Error::SetStringFmt(error, "Cue parse error at line {}: {}", line_number, str);
 }
 
 bool CueParser::TokenMatch(std::string_view s1, const char* token)
@@ -93,18 +105,6 @@ bool CueParser::File::Parse(const std::string& buffer, Error* error)
   return true;
 }
 
-void CueParser::File::SetError(u32 line_number, Error* error, const char* format, ...)
-{
-  std::va_list ap;
-  SmallString str;
-  va_start(ap, format);
-  str.vsprintf(format, ap);
-  va_end(ap);
-
-  ERROR_LOG("Cue parse error at line {}: {}", line_number, str.c_str());
-  Error::SetStringFmt(error, "Cue parse error at line {}: {}", line_number, str);
-}
-
 std::string_view CueParser::File::GetToken(const char*& line)
 {
   std::string_view ret;
@@ -148,7 +148,7 @@ std::string_view CueParser::File::GetToken(const char*& line)
 
 std::optional<CueParser::MSF> CueParser::File::GetMSF(std::string_view token)
 {
-  static const s32 max_values[] = {std::numeric_limits<s32>::max(), 60, 75};
+  static const s32 max_values[] = {std::numeric_limits<s32>::max(), 59, 74};
 
   u32 parts[3] = {};
   u32 part = 0;
@@ -197,7 +197,7 @@ bool CueParser::File::ParseLine(const char* line, u32 line_number, Error* error)
   if (command.empty())
     return true;
 
-  if (TokenMatch(command, "REM"))
+  if (command[0] == ';' || command.starts_with("//") || TokenMatch(command, "REM"))
   {
     // comment, eat it
     return true;
@@ -213,6 +213,22 @@ bool CueParser::File::ParseLine(const char* line, u32 line_number, Error* error)
     return HandlePregapCommand(line, line_number, error);
   else if (TokenMatch(command, "FLAGS"))
     return HandleFlagCommand(line, line_number, error);
+  else if (TokenMatch(command, "COPY"))
+    return HandleCopyCommand(line_number, true, error);
+  else if (TokenMatch(command, "PRE_EMPHASIS"))
+    return HandlePreEmphasisCommand(line_number, true, error);
+  else if (TokenMatch(command, "FOUR_CHANNEL_AUDIO"))
+    return HandleFourChannelAudioCommand(line_number, true, error);
+  else if (TokenMatch(command, "TWO_CHANNEL_AUDIO"))
+    return HandleFourChannelAudioCommand(line_number, false, error);
+  else if (TokenMatch(command, "NO"))
+  {
+    const std::string_view subcommand(GetToken(line));
+    if (TokenMatch(subcommand, "COPY"))
+      return HandleCopyCommand(line_number, false, error);
+    else if (TokenMatch(subcommand, "PRE_EMPHASIS"))
+      return HandlePreEmphasisCommand(line_number, false, error);
+  }
 
   if (TokenMatch(command, "POSTGAP"))
   {
@@ -221,17 +237,20 @@ bool CueParser::File::ParseLine(const char* line, u32 line_number, Error* error)
   }
 
   // stuff we definitely ignore
-  if (TokenMatch(command, "CATALOG") || TokenMatch(command, "CDTEXTFILE") || TokenMatch(command, "ISRC") ||
-      TokenMatch(command, "TRACK_ISRC") || TokenMatch(command, "TITLE") || TokenMatch(command, "PERFORMER") ||
-      TokenMatch(command, "SONGWRITER") || TokenMatch(command, "COMPOSER") || TokenMatch(command, "ARRANGER") ||
-      TokenMatch(command, "MESSAGE") || TokenMatch(command, "DISC_ID") || TokenMatch(command, "GENRE") ||
-      TokenMatch(command, "TOC_INFO1") || TokenMatch(command, "TOC_INFO2") || TokenMatch(command, "UPC_EAN") ||
-      TokenMatch(command, "SIZE_INFO"))
+  if (TokenMatch(command, "CATALOG") || TokenMatch(command, "CD_DA") || TokenMatch(command, "CD_ROM") ||
+      TokenMatch(command, "CD_ROM_XA") || TokenMatch(command, "CD_TEXT") || TokenMatch(command, "CDTEXTFILE") ||
+      TokenMatch(command, "ISRC") || TokenMatch(command, "TRACK_ISRC") || TokenMatch(command, "TITLE") ||
+      TokenMatch(command, "PERFORMER") || TokenMatch(command, "SONGWRITER") || TokenMatch(command, "COMPOSER") ||
+      TokenMatch(command, "ARRANGER") || TokenMatch(command, "MESSAGE") || TokenMatch(command, "DISC_ID") ||
+      TokenMatch(command, "GENRE") || TokenMatch(command, "TOC_INFO1") || TokenMatch(command, "TOC_INFO2") ||
+      TokenMatch(command, "UPC_EAN") || TokenMatch(command, "SIZE_INFO") || TokenMatch(command, "DATAFILE") ||
+      TokenMatch(command, "FIFO") || TokenMatch(command, "SILENCE") || TokenMatch(command, "START") ||
+      TokenMatch(command, "ZERO"))
   {
     return true;
   }
 
-  SetError(line_number, error, "Invalid command '%*s'", static_cast<int>(command.size()), command.data());
+  SetError(line_number, error, "Invalid command '{}'", command);
   return false;
 }
 
@@ -257,7 +276,8 @@ bool CueParser::File::HandleFileCommand(const char* line, u32 line_number, Error
   }
   else
   {
-    SetError(line_number, error, "Only BINARY and WAVE modes are supported");
+    SetError(line_number, error, "Unsupported format '{}' for '{}'. Only BINARY and WAVE modes are supported", mode,
+             filename);
     return false;
   }
 
@@ -277,33 +297,54 @@ bool CueParser::File::HandleTrackCommand(const char* line, u32 line_number, Erro
     return false;
   }
 
-  const std::string_view track_number_str(GetToken(line));
+  std::string_view track_number_str(GetToken(line));
   if (track_number_str.empty())
   {
     SetError(line_number, error, "Missing track number");
     return false;
   }
 
-  const std::optional<s32> track_number = StringUtil::FromChars<s32>(track_number_str);
+  std::optional<s32> track_number = StringUtil::FromChars<s32>(track_number_str);
+  std::string_view mode_str;
+  if (track_number.has_value())
+  {
+    mode_str = GetToken(line);
+  }
+  else
+  {
+    // cdrdao can omit the track number for single-track CD_ROM CUE sheets.
+    if (!m_tracks.empty())
+    {
+      SetError(line_number, error, "Missing track number");
+      return false;
+    }
+
+    track_number = 1;
+    mode_str = track_number_str;
+  }
+
   if (track_number.value_or(0) < MIN_TRACK_NUMBER || track_number.value_or(0) > MAX_TRACK_NUMBER)
   {
-    SetError(line_number, error, "Invalid track number %d", track_number.value_or(0));
+    SetError(line_number, error, "Invalid track number {}", track_number.value_or(0));
     return false;
   }
 
-  const std::string_view mode_str = GetToken(line);
   TrackMode mode;
   if (TokenMatch(mode_str, "AUDIO"))
     mode = TrackMode::Audio;
+  else if (TokenMatch(mode_str, "MODE1_RAW"))
+    mode = TrackMode::Mode1Raw;
   else if (TokenMatch(mode_str, "MODE1/2048"))
     mode = TrackMode::Mode1;
   else if (TokenMatch(mode_str, "MODE1/2352"))
     mode = TrackMode::Mode1Raw;
+  else if (TokenMatch(mode_str, "MODE2_RAW"))
+    mode = TrackMode::Mode2Raw;
   else if (TokenMatch(mode_str, "MODE2/2336"))
     mode = TrackMode::Mode2;
   else if (TokenMatch(mode_str, "MODE2/2048"))
     mode = TrackMode::Mode2Form1;
-  else if (TokenMatch(mode_str, "MODE2/2342"))
+  else if (TokenMatch(mode_str, "MODE2/2324") || TokenMatch(mode_str, "MODE2/2342"))
     mode = TrackMode::Mode2Form2;
   else if (TokenMatch(mode_str, "MODE2/2332"))
     mode = TrackMode::Mode2FormMix;
@@ -311,7 +352,7 @@ bool CueParser::File::HandleTrackCommand(const char* line, u32 line_number, Erro
     mode = TrackMode::Mode2Raw;
   else
   {
-    SetError(line_number, error, "Invalid mode: '%*s'", static_cast<int>(mode_str.length()), mode_str.data());
+    SetError(line_number, error, "Invalid mode: '{}'", mode_str);
     return false;
   }
 
@@ -320,6 +361,54 @@ bool CueParser::File::HandleTrackCommand(const char* line, u32 line_number, Erro
   m_current_track->file = m_current_file->first;
   m_current_track->file_format = m_current_file->second;
   m_current_track->mode = mode;
+  return true;
+}
+
+bool CueParser::File::HandleCopyCommand(u32 line_number, bool enabled, Error* error)
+{
+  if (!m_current_track.has_value())
+  {
+    SetError(line_number, error, "Copy command outside of track");
+    return false;
+  }
+
+  if (enabled)
+    m_current_track->SetFlag(TrackFlag::CopyPermitted);
+  else
+    m_current_track->RemoveFlag(TrackFlag::CopyPermitted);
+
+  return true;
+}
+
+bool CueParser::File::HandlePreEmphasisCommand(u32 line_number, bool enabled, Error* error)
+{
+  if (!m_current_track.has_value())
+  {
+    SetError(line_number, error, "Pre-emphasis command outside of track");
+    return false;
+  }
+
+  if (enabled)
+    m_current_track->SetFlag(TrackFlag::PreEmphasis);
+  else
+    m_current_track->RemoveFlag(TrackFlag::PreEmphasis);
+
+  return true;
+}
+
+bool CueParser::File::HandleFourChannelAudioCommand(u32 line_number, bool enabled, Error* error)
+{
+  if (!m_current_track.has_value())
+  {
+    SetError(line_number, error, "Channel audio command outside of track");
+    return false;
+  }
+
+  if (enabled)
+    m_current_track->SetFlag(TrackFlag::FourChannelAudio);
+  else
+    m_current_track->RemoveFlag(TrackFlag::FourChannelAudio);
+
   return true;
 }
 
@@ -341,13 +430,13 @@ bool CueParser::File::HandleIndexCommand(const char* line, u32 line_number, Erro
   const std::optional<s32> index_number = StringUtil::FromChars<s32>(index_number_str);
   if (index_number.value_or(-1) < MIN_INDEX_NUMBER || index_number.value_or(-1) > MAX_INDEX_NUMBER)
   {
-    SetError(line_number, error, "Invalid index number %d", index_number.value_or(-1));
+    SetError(line_number, error, "Invalid index number {}", index_number.value_or(-1));
     return false;
   }
 
   if (m_current_track->GetIndex(static_cast<u32>(index_number.value())) != nullptr)
   {
-    SetError(line_number, error, "Duplicate index %d", index_number.value());
+    SetError(line_number, error, "Duplicate index {}", index_number.value());
     return false;
   }
 
@@ -361,7 +450,7 @@ bool CueParser::File::HandleIndexCommand(const char* line, u32 line_number, Erro
   const std::optional<MSF> msf(GetMSF(msf_str));
   if (!msf.has_value())
   {
-    SetError(line_number, error, "Invalid index location '%*s'", static_cast<int>(msf_str.size()), msf_str.data());
+    SetError(line_number, error, "Invalid index location '{}'", msf_str);
     return false;
   }
 
@@ -379,7 +468,7 @@ bool CueParser::File::HandlePregapCommand(const char* line, u32 line_number, Err
 
   if (m_current_track->zero_pregap.has_value())
   {
-    SetError(line_number, error, "Pregap already specified for track %u", m_current_track->number);
+    SetError(line_number, error, "Pregap already specified for track {}", m_current_track->number);
     return false;
   }
 
@@ -393,7 +482,7 @@ bool CueParser::File::HandlePregapCommand(const char* line, u32 line_number, Err
   const std::optional<MSF> msf(GetMSF(msf_str));
   if (!msf.has_value())
   {
-    SetError(line_number, error, "Invalid pregap location '%*s'", static_cast<int>(msf_str.size()), msf_str.data());
+    SetError(line_number, error, "Invalid pregap location '{}'", msf_str);
     return false;
   }
 
@@ -438,7 +527,7 @@ bool CueParser::File::CompleteLastTrack(u32 line_number, Error* error)
   const MSF* index1 = m_current_track->GetIndex(1);
   if (!index1)
   {
-    SetError(line_number, error, "Track %u is missing index 1", m_current_track->number);
+    SetError(line_number, error, "Track {} is missing index 1", m_current_track->number);
     return false;
   }
 
@@ -451,7 +540,7 @@ bool CueParser::File::CompleteLastTrack(u32 line_number, Error* error)
     const MSF* prev_index = m_current_track->GetIndex(index_number - 1);
     if (prev_index && *prev_index > index_msf)
     {
-      SetError(line_number, error, "Index %u is after index %u in track %u", index_number - 1, index_number,
+      SetError(line_number, error, "Index {} is after index {} in track {}", index_number - 1, index_number,
                m_current_track->number);
       return false;
     }
@@ -483,7 +572,7 @@ bool CueParser::File::SetTrackLengths(u32 line_number, Error* error)
       {
         if (previous_track->start > track.start)
         {
-          SetError(line_number, error, "Track %u start greater than track %u start", previous_track->number,
+          SetError(line_number, error, "Track {} start greater than track {} start", previous_track->number,
                    track.number);
           return false;
         }

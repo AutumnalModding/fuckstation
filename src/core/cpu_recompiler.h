@@ -80,6 +80,19 @@ public:
   // Align functions to 16 bytes.
   static constexpr u32 FUNCTION_ALIGNMENT = 16;
 
+#elif defined(CPU_ARCH_LOONGARCH64)
+
+  // Number of host registers.
+  static constexpr u32 NUM_HOST_REGS = 32;
+  static constexpr bool HAS_MEMORY_OPERANDS = false;
+
+  // A reasonable "maximum" number of bytes per instruction.
+  static constexpr u32 MAX_NEAR_HOST_BYTES_PER_INSTRUCTION = 64;
+  static constexpr u32 MIN_CODE_RESERVE_FOR_BLOCK = 512;
+
+  // Align functions to 16 bytes.
+  static constexpr u32 FUNCTION_ALIGNMENT = 16;
+
 #endif
 
 public:
@@ -429,9 +442,6 @@ protected:
                            const std::optional<VirtualMemoryAddress>& address) = 0; // swl/swr
   virtual void Compile_swc2(CompileFlags cf, MemoryAccessSize size, bool sign, bool use_fastmem,
                             const std::optional<VirtualMemoryAddress>& address) = 0;
-
-  static u32* GetCop0RegPtr(Cop0Reg reg);
-  static u32 GetCop0RegWriteMask(Cop0Reg reg);
 
   static void MIPSSignedDivide(s32 num, s32 denom, u32* lo, u32* hi);
   static void MIPSUnsignedDivide(u32 num, u32 denom, u32* lo, u32* hi);

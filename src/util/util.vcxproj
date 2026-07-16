@@ -3,6 +3,9 @@
   <Import Project="..\..\dep\vsprops\Configurations.props" />
   <ItemGroup>
     <ClInclude Include="animated_image.h" />
+    <ClInclude Include="dyn_sqlite.h" />
+    <ClInclude Include="http_cache.h" />
+    <ClInclude Include="object_archive.h" />
     <ClInclude Include="compress_helpers.h" />
     <ClInclude Include="core_audio_stream.h" />
     <ClInclude Include="dyn_shaderc.h" />
@@ -63,9 +66,6 @@
     <ClInclude Include="opengl_context_egl_xlib.h">
       <ExcludedFromBuild>true</ExcludedFromBuild>
     </ClInclude>
-    <ClInclude Include="opengl_context_sdl.h">
-      <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
-    </ClInclude>
     <ClInclude Include="opengl_context_wgl.h">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClInclude>
@@ -86,7 +86,6 @@
     </ClInclude>
     <ClInclude Include="page_fault_handler.h" />
     <ClInclude Include="pch.h" />
-    <ClInclude Include="platform_misc.h" />
     <ClInclude Include="postprocessing.h" />
     <ClInclude Include="postprocessing_shader.h" />
     <ClInclude Include="postprocessing_shader_fx.h" />
@@ -98,6 +97,7 @@
     <ClInclude Include="shiftjis.h" />
     <ClInclude Include="sockets.h" />
     <ClInclude Include="spirv_module.h" />
+    <ClInclude Include="sqlite_helpers.h" />
     <ClInclude Include="state_wrapper.h" />
     <ClInclude Include="texture_decompress.h" />
     <ClInclude Include="translation.h" />
@@ -116,10 +116,13 @@
       <ExcludedFromBuild>true</ExcludedFromBuild>
     </ClInclude>
     <ClInclude Include="xinput_source.h" />
+    <ClInclude Include="zip_helpers.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="animated_image.cpp" />
     <ClCompile Include="audio_stream.cpp" />
+    <ClCompile Include="http_cache.cpp" />
+    <ClCompile Include="object_archive.cpp" />
     <ClCompile Include="cd_image.cpp" />
     <ClCompile Include="cd_image_ccd.cpp" />
     <ClCompile Include="cd_image_chd.cpp" />
@@ -152,10 +155,6 @@
     <ClCompile Include="gpu_shader_cache.cpp" />
     <ClCompile Include="gpu_texture.cpp" />
     <ClCompile Include="http_downloader.cpp" />
-    <ClCompile Include="http_downloader_curl.cpp">
-      <ExcludedFromBuild>true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="http_downloader_winhttp.cpp" />
     <ClCompile Include="image.cpp" />
     <ClCompile Include="imgui_manager.cpp" />
     <ClCompile Include="ini_settings_interface.cpp" />
@@ -177,9 +176,6 @@
     </ClCompile>
     <ClCompile Include="opengl_context_egl_xlib.cpp">
       <ExcludedFromBuild>true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="opengl_context_sdl.cpp">
-      <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="opengl_context_wgl.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
@@ -211,6 +207,7 @@
     <ClCompile Include="page_fault_handler.cpp" />
     <ClCompile Include="sockets.cpp" />
     <ClCompile Include="spirv_module.cpp" />
+    <ClCompile Include="sqlite_helpers.cpp" />
     <ClCompile Include="state_wrapper.cpp" />
     <ClCompile Include="texture_decompress.cpp" />
     <ClCompile Include="translation.cpp" />
@@ -227,7 +224,9 @@
     <ClCompile Include="x11_tools.cpp">
       <ExcludedFromBuild>true</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="xaudio2_audio_stream.cpp" />
     <ClCompile Include="xinput_source.cpp" />
+    <ClCompile Include="zip_helpers.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\dep\cubeb\cubeb.vcxproj">
